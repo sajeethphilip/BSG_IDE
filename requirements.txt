@@ -1,0 +1,33 @@
+# GUI Requirements
+pyautogui
+customtkinter>=5.2.2
+Pillow>=10.0.0
+tk>=0.1.0
+
+# PDF and Document Processing
+PyMuPDF==1.23.7  # Specific version for stability
+python-poppler>=0.3.0
+
+# Media Processing
+opencv-python>=4.8.0
+yt-dlp>=2023.7.6
+screeninfo>=0.8.1
+
+# System Integration
+psutil>=5.9.0
+pywin32>=305; platform_system == "Windows"
+
+# Presentation Tools
+pycairo>=1.24.0
+PyGObject>=3.44.0
+pympress>=1.8.0
+
+# Utility Packages
+requests>=2.31.0
+numpy>=1.24.0
+typing-extensions>=4.7.0
+pathlib>=1.0.1
+
+# Optional but Recommended
+python-magic>=0.4.27; platform_system != "Windows"  # File type detection
+python-magic-bin>=0.4.14; platform_system == "Windows"
