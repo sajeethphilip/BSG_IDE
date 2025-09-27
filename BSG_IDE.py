@@ -34,7 +34,7 @@ PyMuPDF==1.23.7
 pyautogui
 pyspellchecker  # Add spell checking dependency
 """
-
+generate_default_requirements()
 def launch_ide():
     """Entry point for command-line launcher"""
     try:
@@ -1399,7 +1399,328 @@ class BeamerSlideEditor(ctk.CTk):
 
         # Add binding to close context menu
         self.bind("<Button-1>", self.hide_spelling_menu)
+#-------------------------------------------------------------------------------------
+    def load_tex_file(self) -> None:
+        """Load and convert a Beamer .tex file to IDE format"""
+        tex_file = filedialog.askopenfilename(
+            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
+            title="Select Beamer TeX File to Load"
+        )
 
+        if not tex_file:
+            return
+
+        try:
+            # Clear current presentation
+            self.new_file()
+
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Extract presentation information
+            self.extract_presentation_info_from_tex(content)
+
+            # Extract slides
+            slides = self.extract_slides_from_tex(content)
+
+            if not slides:
+                messagebox.showwarning("Warning", "No slides found in the TeX file!")
+                return
+
+            # Populate slides in IDE
+            self.slides = slides
+            self.current_slide_index = 0 if slides else -1
+
+            # Update UI
+            self.update_slide_list()
+            if self.slides:
+                self.load_slide(0)
+
+            # Set current file to corresponding .txt file
+            base_name = os.path.splitext(tex_file)[0]
+            self.current_file = base_name + '_converted.txt'
+
+            # Auto-save the converted text file
+            self.save_file()
+
+            self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
+            self.write(f"Converted file saved as: {self.current_file}\n", "green")
+
+            # Ask if user wants to generate PDF immediately
+            if messagebox.askyesno("Success",
+                                 "TeX file loaded successfully!\n\n"
+                                 "Would you like to generate PDF now?"):
+                self.generate_pdf()
+
+        except Exception as e:
+            error_msg = f"Error loading TeX file:\n{str(e)}"
+            self.write(f"✗ {error_msg}\n", "red")
+            messagebox.showerror("Error", error_msg)
+
+    def extract_presentation_info_from_tex(self, content: str) -> None:
+        """Extract presentation metadata from TeX content"""
+        import re
+
+        # Patterns for extracting presentation info
+        patterns = {
+            'title': r'\\title{([^}]*)}',
+            'subtitle': r'\\subtitle{([^}]*)}',
+            'author': r'\\author{([^}]*)}',
+            'institute': r'\\institute{([^}]*)}',
+            'date': r'\\date{([^}]*)}'
+        }
+
+        for key, pattern in patterns.items():
+            match = re.search(pattern, content)
+            if match:
+                # Clean up LaTeX formatting
+                value = match.group(1)
+                value = re.sub(r'\\textcolor{[^}]*}{([^}]*)}', r'\1', value)
+                value = re.sub(r'\\[a-zA-Z]+{([^}]*)}', r'\1', value)
+                self.presentation_info[key] = value.strip()
+
+        # Extract logo if present
+        logo_match = re.search(r'\\logo{([^}]*)}', content)
+        if logo_match:
+            logo_content = logo_match.group(1)
+            # Extract image path from includegraphics
+            img_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}', logo_content)
+            if img_match:
+                self.presentation_info['logo'] = img_match.group(1)
+
+    def enhanced_extract_slides_from_tex(self, content: str) -> list:
+        """Enhanced slide extraction with better content parsing"""
+        slides = []
+        import re
+
+        # First isolate the document body
+        doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', content, re.DOTALL)
+        if not doc_match:
+            self.write("✗ Could not find document body\n", "red")
+            return slides
+
+        document_content = doc_match.group(1)
+
+        # More robust frame detection
+        frame_patterns = [
+            r'\\begin{frame}(?:\[[^\]]*\])?(?:{([^}]*)})?(.*?)\\end{frame}',
+            r'\\frame(?:\[[^\]]*\])?(?:{([^}]*)})?{(.*?)}'
+        ]
+
+        all_frames = []
+        for pattern in frame_patterns:
+            frames = re.finditer(pattern, document_content, re.DOTALL)
+            all_frames.extend(frames)
+
+        if not all_frames:
+            self.write("✗ No frames found in document\n", "red")
+            return slides
+
+        self.write(f"Found {len(all_frames)} frames in document\n", "green")
+
+        for i, frame_match in enumerate(all_frames):
+            try:
+                title = frame_match.group(1) if frame_match.group(1) else ""
+                frame_content = frame_match.group(2) if frame_match.group(2) else ""
+
+                # Skip title page frames
+                if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
+                    self.write(f"Skipping title frame {i+1}\n", "yellow")
+                    continue
+
+                # Extract frametitle if no title in frame declaration
+                if not title:
+                    ft_match = re.search(r'\\frametitle{([^}]*)}', frame_content)
+                    if ft_match:
+                        title = ft_match.group(1)
+
+                # Clean title
+                if title:
+                    title = self.clean_latex_content(title)
+                else:
+                    title = f"Slide {i+1}"
+
+                # Extract media
+                media = self.extract_media_from_frame(frame_content)
+
+                # Extract content items
+                content_items = self.extract_content_from_frame(frame_content)
+
+                # Extract notes
+                notes = self.extract_notes_from_frame(frame_content)
+
+                slide_data = {
+                    'title': title,
+                    'media': media,
+                    'content': content_items,
+                    'notes': notes
+                }
+
+                slides.append(slide_data)
+                self.write(f"✓ Processed slide: {title}\n", "green")
+
+            except Exception as e:
+                self.write(f"✗ Error processing frame {i+1}: {str(e)}\n", "red")
+                continue
+
+        return slides
+
+    def extract_media_from_frame(self, frame_content: str) -> str:
+        """Extract media references from frame content"""
+        import re
+
+        media = ""
+
+        # Check for graphics
+        graphics_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}', frame_content)
+        if graphics_match:
+            media_path = graphics_match.group(1)
+            media = f"\\file {media_path}"
+
+        # Check for movies/videos
+        movie_match = re.search(r'\\movie(?:\[[^\]]*\])?{[^}]*}{([^}]*)}', frame_content)
+        if movie_match:
+            media_path = movie_match.group(1)
+            media = f"\\play {media_path}"
+
+        return media
+
+    def extract_content_from_frame(self, frame_content: str) -> list:
+        """Extract content items from frame"""
+        import re
+
+        content_items = []
+
+        # Remove media commands and notes to isolate main content
+        clean_content = re.sub(r'\\includegraphics[^}]*}|\\movie[^}]*}|\\note{[^}]*}', '', frame_content)
+
+        # Extract itemize environments
+        itemize_blocks = re.finditer(r'\\begin{itemize}(.*?)\\end{itemize}', clean_content, re.DOTALL)
+        for itemize in itemize_blocks:
+            items = re.finditer(r'\\item\s*(.*?)(?=\\item|\\end{itemize})', itemize.group(1), re.DOTALL)
+            for item in items:
+                item_text = self.clean_latex_content(item.group(1).strip())
+                if item_text:
+                    content_items.append(f"- {item_text}")
+
+        # Extract enumerate environments
+        enumerate_blocks = re.finditer(r'\\begin{enumerate}(.*?)\\end{enumerate}', clean_content, re.DOTALL)
+        for enum in enumerate_blocks:
+            items = re.finditer(r'\\item\s*(.*?)(?=\\item|\\end{enumerate})', enum.group(1), re.DOTALL)
+            for item in items:
+                item_text = self.clean_latex_content(item.group(1).strip())
+                if item_text:
+                    content_items.append(f"- {item_text}")
+
+        # Extract block content (paragraphs outside lists)
+        if not content_items:
+            # Split by double newlines and clean each block
+            blocks = re.split(r'\n\s*\n', clean_content)
+            for block in blocks:
+                block = block.strip()
+                if block and not block.startswith('\\') and len(block) > 10:  # Minimum length
+                    cleaned = self.clean_latex_content(block)
+                    if cleaned:
+                        content_items.append(f"- {cleaned}")
+
+        return content_items
+
+    def extract_notes_from_frame(self, frame_content: str) -> list:
+        """Extract speaker notes from frame"""
+        import re
+
+        notes = []
+
+        note_match = re.search(r'\\note{(.*?)}', frame_content, re.DOTALL)
+        if note_match:
+            note_content = note_match.group(1)
+            # Extract items from note content
+            note_items = re.finditer(r'\\item\s*(.*?)(?=\\item|$)', note_content, re.DOTALL)
+            for item in note_items:
+                note_text = self.clean_latex_content(item.group(1).strip())
+                if note_text:
+                    notes.append(f"• {note_text}")
+
+        return notes
+
+    def clean_latex_content(self, text: str) -> str:
+        """Clean LaTeX commands and formatting from text"""
+        import re
+
+        # Remove LaTeX commands but keep their content
+        patterns = [
+            (r'\\textcolor{[^}]*}{([^}]*)}', r'\1'),  # Keep textcolor content
+            (r'\\textbf{([^}]*)}', r'\1'),            # Remove bf but keep content
+            (r'\\textit{([^}]*)}', r'\1'),            # Remove it but keep content
+            (r'\\emph{([^}]*)}', r'\1'),              # Remove emph but keep content
+            (r'\\[a-zA-Z]+', ''),                     # Remove other commands
+            (r'~', ' '),                              # Replace non-breaking spaces
+            (r'\\&', '&'),                            # Fix ampersands
+            (r'\\%', '%'),                            # Fix percentages
+            (r'\\#', '#'),                            # Fix hashes
+            (r'\\_', '_'),                            # Fix underscores
+            (r'\s+', ' '),                            # Normalize whitespace
+        ]
+
+        for pattern, replacement in patterns:
+            text = re.sub(pattern, replacement, text)
+
+        return text.strip()
+
+    def overwrite_tex_and_generate_pdf(self) -> None:
+        """Convert current presentation back to TeX and generate PDF"""
+        if not self.current_file:
+            messagebox.showwarning("Warning", "Please save your presentation first!")
+            return
+
+        try:
+            # Save current state
+            self.save_current_slide()
+            self.save_file()
+
+            # Get corresponding .tex filename
+            base_name = os.path.splitext(self.current_file)[0]
+            if base_name.endswith('_converted'):
+                base_name = base_name[:-10]  # Remove _converted suffix
+
+            tex_file = base_name + '.tex'
+
+            # Ask for confirmation before overwriting
+            if os.path.exists(tex_file):
+                if not messagebox.askyesno("Confirm Overwrite",
+                                         f"The file '{os.path.basename(tex_file)}' already exists.\n\n"
+                                         "Do you want to overwrite it?"):
+                    return
+
+            self.write(f"Converting to TeX: {tex_file}\n", "white")
+
+            # Convert to TeX
+            self.convert_to_tex()
+
+            if not os.path.exists(tex_file):
+                self.write("✗ TeX file was not created successfully\n", "red")
+                return
+
+            self.write("✓ TeX file created successfully\n", "green")
+
+            # Generate PDF
+            self.write("Generating PDF...\n", "white")
+            self.generate_pdf()
+
+            # Preview PDF
+            pdf_file = base_name + '.pdf'
+            if os.path.exists(pdf_file):
+                if messagebox.askyesno("Success",
+                                     "PDF generated successfully!\n\n"
+                                     "Would you like to view it now?"):
+                    self.preview_pdf(pdf_file)
+
+        except Exception as e:
+            error_msg = f"Error in TeX conversion and PDF generation:\n{str(e)}"
+            self.write(f"✗ {error_msg}\n", "red")
+            messagebox.showerror("Error", error_msg)
+
+#-------------------------------------------------------------------------------------
     def setup_spellchecking(self):
         """Initialize spell checking components"""
         try:
@@ -2276,6 +2597,8 @@ Created by {self.__author__}
             ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble"),
             ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings"),
             ("Get Source", self.get_source_from_tex, "Extract source from TEX file")
+            ("Load TeX File", self.load_tex_file, "Load and convert Beamer TeX file"),
+            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF"),
         ]
 
         for i, (text, command, tooltip) in enumerate(menu_buttons):
@@ -2302,6 +2625,8 @@ Created by {self.__author__}
             width=150  # Fixed minimum width for switch
         )
         self.highlight_switch.pack(side="right", padx=5)
+
+
 
     def get_source_from_tex(self) -> None:
         """Convert a tex file back to source text format"""
@@ -3802,6 +4127,8 @@ Created by {self.__author__}
             ("Generate PDF", self.generate_pdf, "Generate PDF file"),
             ("Present with Notes", self.present_with_notes, "Launch dual-screen presentation with notes"),
             ("Preview PDF", self.preview_pdf, "View generated PDF"),
+            ("Load TeX", self.load_tex_file, "Load and convert Beamer TeX file"),
+            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF"),
             ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip")
         ]
 
