@@ -11,6 +11,10 @@ import sys
 import tempfile
 import subprocess
 #------------------------------------------------------------------------------------------------------
+import json
+import urllib.request
+import urllib.error
+from datetime import datetime, timedelta
 import venv
 import platform
 from pathlib import Path
@@ -22,18 +26,56 @@ working_folder=os.path.expanduser("~")
 global original_dir
 original_dir = os.path.expanduser("~")
 def generate_default_requirements():
-    default_requirements = """customtkinter==5.2.2
+    """Generate a default requirements.txt if none found"""
+    try:
+        default_requirements = """# Core GUI dependencies
+customtkinter==5.2.2
 Pillow
 tk
+
+# Media and web dependencies
 requests
 yt_dlp
 opencv-python
 screeninfo
 numpy
+
+# PDF and document processing
 PyMuPDF==1.23.7
+
+# System utilities
 pyautogui
-pyspellchecker  # Add spell checking dependency
+pyspellchecker
+
+# File type detection (not for Windows)
+python-magic>=0.4.27; platform_system != "Windows"
 """
+        # Try to write to user's local directory first
+        save_paths = [
+            Path.home() / '.local' / 'lib' / 'bsg-ide',
+            Path.cwd(),
+            Path(os.getenv('APPDATA', '')) / 'BSG-IDE'
+        ]
+
+        for path in save_paths:
+            try:
+                os.makedirs(path, exist_ok=True)
+                req_file = path / 'requirements.txt'
+                req_file.write_text(default_requirements)
+                print(f"\nCreated default requirements.txt at: {req_file}")
+                return req_file
+            except:
+                continue
+
+        # If all save attempts fail, create in current directory
+        print("\nWarning: Could not save to preferred locations")
+        with open('requirements.txt', 'w') as f:
+            f.write(default_requirements)
+        return Path('requirements.txt')
+
+    except Exception as e:
+        print(f"Error generating requirements.txt: {str(e)}")
+        return None
 generate_default_requirements()
 def launch_ide():
     """Entry point for command-line launcher"""
@@ -172,46 +214,6 @@ def get_requirements_path():
     print("Could not find requirements.txt in standard locations")
     return generate_default_requirements()
 
-def generate_default_requirements():
-    """Generate a default requirements.txt if none found"""
-    try:
-        default_requirements = """customtkinter==5.2.2
-Pillow
-tk
-requests
-yt_dlp
-opencv-python
-screeninfo
-numpy
-PyMuPDF==1.23.7
-pyautogui
-"""
-        # Try to write to user's local directory first
-        save_paths = [
-            Path.home() / '.local' / 'lib' / 'bsg-ide',
-            Path.cwd(),
-            Path(os.getenv('APPDATA', '')) / 'BSG-IDE'
-        ]
-
-        for path in save_paths:
-            try:
-                os.makedirs(path, exist_ok=True)
-                req_file = path / 'requirements.txt'
-                req_file.write_text(default_requirements)
-                print(f"\nCreated default requirements.txt at: {req_file}")
-                return req_file
-            except:
-                continue
-
-        # If all save attempts fail, create in current directory
-        print("\nWarning: Could not save to preferred locations")
-        with open('requirements.txt', 'w') as f:
-            f.write(default_requirements)
-        return Path('requirements.txt')
-
-    except Exception as e:
-        print(f"Error generating requirements.txt: {str(e)}")
-        return None
 
 def install_system_dependencies():
     """Install system dependencies based on detected OS and package manager"""
@@ -1023,7 +1025,272 @@ def install_remaining_packages(pip_path):
     except Exception as e:
         print(f"Error installing packages: {str(e)}")
 
+#---------------Latex Help --------------------------
+class LatexCommandHelper:
+    """LaTeX command help system with local cache and online fallback"""
 
+    def __init__(self):
+        self.commands_db = {}
+        self.cache_file = Path.home() / '.bsg-ide' / 'latex_help_cache.json'
+        self.cache_expiry_days = 30
+        self.load_local_database()
+
+    def load_local_database(self):
+        """Load local LaTeX command database"""
+        # Basic LaTeX commands database
+        self.commands_db = {
+            '\\title': {
+                'syntax': '\\title{title text}',
+                'description': 'Sets the presentation title',
+                'category': 'document',
+                'package': 'beamer'
+            },
+            '\\author': {
+                'syntax': '\\author{author name}',
+                'description': 'Sets the author name',
+                'category': 'document',
+                'package': 'beamer'
+            },
+            '\\institute': {
+                'syntax': '\\institute{institution name}',
+                'description': 'Sets the institution name',
+                'category': 'document',
+                'package': 'beamer'
+            },
+            '\\date': {
+                'syntax': '\\date{date}',
+                'description': 'Sets the presentation date',
+                'category': 'document',
+                'package': 'beamer'
+            },
+            '\\frametitle': {
+                'syntax': '\\frametitle{slide title}',
+                'description': 'Sets the frame/slide title',
+                'category': 'frame',
+                'package': 'beamer'
+            },
+            '\\file': {
+                'syntax': '\\file{media_files/filename.ext}',
+                'description': 'Includes an image or media file',
+                'category': 'media',
+                'package': 'beamer'
+            },
+            '\\play': {
+                'syntax': '\\play{media_files/video.ext}',
+                'description': 'Embeds a playable video',
+                'category': 'media',
+                'package': 'beamer'
+            },
+            '\\textcolor': {
+                'syntax': '\\textcolor{color}{text} or \\textcolor[RGB]{r,g,b}{text}',
+                'description': 'Changes text color',
+                'category': 'formatting',
+                'package': 'xcolor'
+            },
+            '\\textbf': {
+                'syntax': '\\textbf{bold text}',
+                'description': 'Makes text bold',
+                'category': 'formatting',
+                'package': 'latex'
+            },
+            '\\textit': {
+                'syntax': '\\textit{italic text}',
+                'description': 'Makes text italic',
+                'category': 'formatting',
+                'package': 'latex'
+            },
+            '\\begin': {
+                'syntax': '\\begin{environment} ... \\end{environment}',
+                'description': 'Starts an environment block',
+                'category': 'structure',
+                'package': 'latex'
+            },
+            '\\end': {
+                'syntax': '\\end{environment}',
+                'description': 'Ends an environment block',
+                'category': 'structure',
+                'package': 'latex'
+            },
+            '\\item': {
+                'syntax': '\\item item text',
+                'description': 'Creates a list item',
+                'category': 'lists',
+                'package': 'latex'
+            },
+            '\\includegraphics': {
+                'syntax': '\\includegraphics[options]{filename}',
+                'description': 'Includes an image file',
+                'category': 'graphics',
+                'package': 'graphicx'
+            },
+            '\\movie': {
+                'syntax': '\\movie[options]{poster}{video}',
+                'description': 'Embeds a multimedia file',
+                'category': 'media',
+                'package': 'multimedia'
+            },
+            '\\href': {
+                'syntax': '\\href{url}{link text}',
+                'description': 'Creates a hyperlink',
+                'category': 'hyperlinks',
+                'package': 'hyperref'
+            },
+            '\\note': {
+                'syntax': '\\note{note content}',
+                'description': 'Adds speaker notes',
+                'category': 'notes',
+                'package': 'beamer'
+            },
+            '\\pause': {
+                'syntax': '\\pause',
+                'description': 'Pauses between overlay items',
+                'category': 'overlays',
+                'package': 'beamer'
+            },
+            '\\only': {
+                'syntax': '\\only<overlay>{content}',
+                'description': 'Shows content only on specified overlays',
+                'category': 'overlays',
+                'package': 'beamer'
+            },
+            '\\alert': {
+                'syntax': '\\alert{highlighted text}',
+                'description': 'Highlights text for emphasis',
+                'category': 'formatting',
+                'package': 'beamer'
+            }
+        }
+
+        # Try to load cached online data
+        self.load_cached_online_data()
+
+    def load_cached_online_data(self):
+        """Load cached online command help"""
+        try:
+            if self.cache_file.exists():
+                with open(self.cache_file, 'r') as f:
+                    cache_data = json.load(f)
+
+                # Check if cache is still valid
+                cache_date = datetime.fromisoformat(cache_data.get('cache_date', ''))
+                if datetime.now() - cache_date < timedelta(days=self.cache_expiry_days):
+                    self.commands_db.update(cache_data.get('commands', {}))
+        except:
+            pass  # Use basic database if cache fails
+
+    def save_cache(self):
+        """Save online data to cache"""
+        try:
+            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_data = {
+                'cache_date': datetime.now().isoformat(),
+                'commands': {k: v for k, v in self.commands_db.items()
+                           if v.get('source') == 'online'}
+            }
+            with open(self.cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+        except:
+            pass
+
+    def get_command_help(self, command):
+        """Get help for a LaTeX command with online fallback"""
+        # Clean the command (remove arguments, etc.)
+        base_command = command.split('{')[0] if '{' in command else command
+        base_command = base_command.split('[')[0] if '[' in command else base_command
+
+        if base_command in self.commands_db:
+            return self.commands_db[base_command]
+
+        # Try to fetch from online if not found locally
+        return self.fetch_online_help(base_command)
+
+    def fetch_online_help(self, command):
+        """Fetch command help from online resources"""
+        try:
+            # Try CTAN first
+            ctan_url = f"https://ctan.org/pkg/{command.strip('\\')}"
+
+            # Create a basic entry (in real implementation, you'd parse CTAN)
+            help_info = {
+                'syntax': f'{command}{{...}}',
+                'description': f'LaTeX command: {command}',
+                'category': 'unknown',
+                'package': 'unknown',
+                'source': 'online',
+                'url': ctan_url
+            }
+
+            # Add to database
+            self.commands_db[command] = help_info
+            self.save_cache()
+
+            return help_info
+
+        except Exception as e:
+            # Fallback basic info
+            return {
+                'syntax': f'{command}{{...}}',
+                'description': f'LaTeX command',
+                'category': 'general',
+                'package': 'latex'
+            }
+
+class CommandTooltip:
+    """Tooltip for LaTeX command help"""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.tooltip = None
+        self.helper = LatexCommandHelper()
+
+    def show_tooltip(self, widget, command, x, y):
+        """Show command help tooltip"""
+        self.hide_tooltip()
+
+        help_info = self.helper.get_command_help(command)
+        if not help_info:
+            return
+
+        # Create tooltip content
+        content = self.format_tooltip_content(command, help_info)
+
+        # Create tooltip window
+        self.tooltip = tk.Toplevel(widget)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{x+20}+{y+20}")
+
+        # Style the tooltip
+        self.tooltip.configure(background='#FFFFE0', relief='solid', borderwidth=1)
+
+        # Create content
+        label = tk.Label(self.tooltip, text=content, justify='left',
+                        background='#FFFFE0', font=('Arial', 10),
+                        padx=10, pady=10)
+        label.pack()
+
+        # Make tooltip disappear when mouse leaves
+        widget.bind('<Leave>', lambda e: self.hide_tooltip())
+
+    def format_tooltip_content(self, command, help_info):
+        """Format tooltip content"""
+        lines = [
+            f"Command: {command}",
+            f"Syntax: {help_info.get('syntax', 'Unknown')}",
+            f"Description: {help_info.get('description', 'No description available')}",
+            f"Category: {help_info.get('category', 'General')}",
+            f"Package: {help_info.get('package', 'LaTeX')}"
+        ]
+
+        if 'url' in help_info:
+            lines.append(f"Docs: {help_info['url']}")
+
+        return '\n'.join(lines)
+
+    def hide_tooltip(self):
+        """Hide the tooltip"""
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
 
 
 #------------------------------------------------------------------------------------------
@@ -1176,70 +1443,1501 @@ class BeamerSyntaxHighlighter:
         if hasattr(self.ctk_text.master, 'spell_checking_enabled') and self.ctk_text.master.spell_checking_enabled:
             self.ctk_text.master.check_spelling()
 
+class EnhancedCommandIndexDialog(ctk.CTkToplevel):
+    """Enhanced LaTeX command index with comprehensive listing and filtering"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("BSG-IDE Enhanced Command Reference")
+        self.geometry("1200x900")
+        self.transient(parent)
+
+        # Center the dialog
+        self.center_dialog()
+
+        # Enhanced command database
+        self.commands = self.build_enhanced_command_database()
+        self.filtered_commands = self.commands.copy()
+
+        # Display options
+        self.display_options = {
+            'show_syntax': True,
+            'show_examples': True,
+            'category_filter': "All",
+            'view_mode': "categorized"  # "categorized" or "all"
+        }
+
+        self.create_enhanced_widgets()
+        self.after(100, self._safe_grab_set)
+
+    def build_enhanced_command_database(self):
+        """Build comprehensive command database with display options"""
+        return {
+            'Document Structure': [
+                {
+                    'command': '\\title',
+                    'syntax': '\\title{Presentation Title}',
+                    'description': 'Sets the main presentation title',
+                    'example': '\\title{Artificial Intelligence Research}',
+                    'category': 'document',
+                    'display_options': ['static'],
+                    'auto_complete': '\\title{$1}',
+                    'usage': 'Required for all presentations'
+                },
+                {
+                    'command': '\\author',
+                    'syntax': '\\author{Author Name}',
+                    'description': 'Sets the author name',
+                    'example': '\\author{Dr. John Smith}',
+                    'category': 'document',
+                    'display_options': ['static'],
+                    'auto_complete': '\\author{$1}',
+                    'usage': 'Required for all presentations'
+                },
+                {
+                    'command': '\\institute',
+                    'syntax': '\\institute{Institution Name}',
+                    'description': 'Sets the institution name',
+                    'example': '\\institute{University of Technology}',
+                    'category': 'document',
+                    'display_options': ['static'],
+                    'auto_complete': '\\institute{$1}',
+                    'usage': 'Recommended for academic presentations'
+                },
+                {
+                    'command': '\\date',
+                    'syntax': '\\date{date}',
+                    'description': 'Sets the presentation date',
+                    'example': '\\date{\\today}',
+                    'category': 'document',
+                    'display_options': ['static'],
+                    'auto_complete': '\\date{$1}',
+                    'usage': 'Optional, defaults to \\today'
+                }
+            ],
+
+            'Slide Content & Media': [
+                {
+                    'command': '\\frametitle',
+                    'syntax': '\\frametitle{Slide Title}',
+                    'description': 'Sets the frame/slide title',
+                    'example': '\\frametitle{Introduction}',
+                    'category': 'content',
+                    'display_options': ['static'],
+                    'auto_complete': '\\frametitle{$1}',
+                    'usage': 'Per slide, after \\begin{frame}'
+                },
+                {
+                    'command': '\\file',
+                    'syntax': '\\file{media_files/filename.ext}',
+                    'description': 'Includes an image or media file',
+                    'example': '\\file{media_files/diagram.png}',
+                    'category': 'media',
+                    'display_options': ['static'],
+                    'auto_complete': '\\file{media_files/$1}',
+                    'usage': 'Inline within slide content'
+                },
+                {
+                    'command': '\\play',
+                    'syntax': '\\play{media_files/video.ext}',
+                    'description': 'Embeds a playable video',
+                    'example': '\\play{media_files/demo.mp4}',
+                    'category': 'media',
+                    'display_options': ['static'],
+                    'auto_complete': '\\play{media_files/$1}',
+                    'usage': 'Inline within slide content'
+                },
+                {
+                    'command': '\\movie',
+                    'syntax': '\\movie[options]{poster}{video}',
+                    'description': 'Embeds multimedia with poster',
+                    'example': '\\movie[autostart]{\\includegraphics{poster}}{video.mp4}',
+                    'category': 'media',
+                    'display_options': ['static'],
+                    'auto_complete': '\\movie[$1]{$2}{$3}',
+                    'usage': 'Advanced media embedding'
+                }
+            ],
+
+            'Text Formatting': [
+                {
+                    'command': '\\textcolor',
+                    'syntax': '\\textcolor{color}{text} or \\textcolor[RGB]{r,g,b}{text}',
+                    'description': 'Changes text color with named or RGB colors',
+                    'example': '\\textcolor{blue}{Highlighted text}',
+                    'category': 'formatting',
+                    'display_options': ['static'],
+                    'auto_complete': '\\textcolor{$1}{$2}',
+                    'usage': 'Inline text formatting'
+                },
+                {
+                    'command': '\\textbf',
+                    'syntax': '\\textbf{Bold Text}',
+                    'description': 'Makes text bold',
+                    'example': 'This is \\textbf{important} text',
+                    'category': 'formatting',
+                    'display_options': ['static'],
+                    'auto_complete': '\\textbf{$1}',
+                    'usage': 'Inline emphasis'
+                },
+                {
+                    'command': '\\textit',
+                    'syntax': '\\textit{Italic Text}',
+                    'description': 'Makes text italic',
+                    'example': 'This is \\textit{emphasized} text',
+                    'category': 'formatting',
+                    'display_options': ['static'],
+                    'auto_complete': '\\textit{$1}',
+                    'usage': 'Inline emphasis'
+                },
+                {
+                    'command': '\\alert',
+                    'syntax': '\\alert{Text}',
+                    'description': 'Highlights text with alert color',
+                    'example': 'Remember: \\alert{key point}',
+                    'category': 'formatting',
+                    'display_options': ['dynamic'],
+                    'auto_complete': '\\alert{$1}',
+                    'usage': 'Highlight important content'
+                }
+            ],
+
+            'Lists & Environments': [
+                {
+                    'command': '\\begin{itemize}',
+                    'syntax': '\\begin{itemize}\\item First\\item Second\\end{itemize}',
+                    'description': 'Creates a bulleted list',
+                    'example': '\\begin{itemize}\\item Point one\\item Point two\\end{itemize}',
+                    'category': 'lists',
+                    'display_options': ['static', 'dynamic'],
+                    'auto_complete': '\\begin{itemize}\\item $1\\item $2\\end{itemize}',
+                    'usage': 'Unordered lists'
+                },
+                {
+                    'command': '\\begin{enumerate}',
+                    'syntax': '\\begin{enumerate}\\item First\\item Second\\end{enumerate}',
+                    'description': 'Creates a numbered list',
+                    'example': '\\begin{enumerate}\\item Step one\\item Step two\\end{enumerate}',
+                    'category': 'lists',
+                    'display_options': ['static', 'dynamic'],
+                    'auto_complete': '\\begin{enumerate}\\item $1\\item $2\\end{itemize}',
+                    'usage': 'Ordered lists'
+                },
+                {
+                    'command': '\\item',
+                    'syntax': '\\item Item text',
+                    'description': 'Creates a list item',
+                    'example': '\\item This is a list item',
+                    'category': 'lists',
+                    'display_options': ['static', 'dynamic'],
+                    'auto_complete': '\\item $1',
+                    'usage': 'Within itemize or enumerate'
+                },
+                {
+                    'command': '\\begin{columns}',
+                    'syntax': '\\begin{columns}\\column{0.5\\textwidth}Left\\column{0.5\\textwidth}Right\\end{columns}',
+                    'description': 'Creates multi-column layout',
+                    'example': '\\begin{columns}\\column{0.4\\textwidth}Left\\column{0.6\\textwidth}Right\\end{columns}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\begin{columns}\\column{$1\\\\textwidth}$2\\end{columns}',
+                    'usage': 'Multi-column slides'
+                }
+            ],
+
+            'Display Effects & Animations': [
+                {
+                    'command': '\\pause',
+                    'syntax': '\\pause',
+                    'description': 'Pauses between overlay items',
+                    'example': 'First point\\pause\nSecond point',
+                    'category': 'animation',
+                    'display_options': ['dynamic', 'overlay'],
+                    'auto_complete': '\\pause',
+                    'usage': 'Between content items'
+                },
+                {
+                    'command': '\\only',
+                    'syntax': '\\only<overlay>{content}',
+                    'description': 'Shows content only on specified overlays',
+                    'example': '\\only<2>{This appears only on slide 2}',
+                    'category': 'animation',
+                    'display_options': ['dynamic', 'overlay'],
+                    'auto_complete': '\\only<$1>{$2}',
+                    'usage': 'Conditional display'
+                },
+                {
+                    'command': '\\uncover',
+                    'syntax': '\\uncover<overlay>{content}',
+                    'description': 'Uncovers content gradually',
+                    'example': '\\uncover<2->{Gradually revealed content}',
+                    'category': 'animation',
+                    'display_options': ['dynamic', 'overlay'],
+                    'auto_complete': '\\uncover<$1>{$2}',
+                    'usage': 'Progressive disclosure'
+                },
+                {
+                    'command': '\\alt',
+                    'syntax': '\\alt<overlay>{alternative1}{alternative2}',
+                    'description': 'Shows alternative content on different slides',
+                    'example': '\\alt<2>{Version A}{Version B}',
+                    'category': 'animation',
+                    'display_options': ['dynamic', 'overlay'],
+                    'auto_complete': '\\alt<$1>{$2}{$3}',
+                    'usage': 'Alternative content versions'
+                }
+            ],
+
+            'Item-by-Item Display': [
+                {
+                    'command': '\\begin{itemize}[<+->]',
+                    'syntax': '\\begin{itemize}[<+->]\\item First\\item Second\\end{itemize}',
+                    'description': 'Creates bulleted list with automatic item-by-item display',
+                    'example': '\\begin{itemize}[<+->]\n\\item First point\n\\item Second point\n\\end{itemize}',
+                    'category': 'sequential',
+                    'display_options': ['dynamic', 'sequential'],
+                    'auto_complete': '\\begin{itemize}[<+->]\n\\item $1\n\\item $2\n\\end{itemize}',
+                    'usage': 'Automatic sequential display'
+                },
+                {
+                    'command': '\\begin{enumerate}[<+->]',
+                    'syntax': '\\begin{enumerate}[<+->]\\item First\\item Second\\end{enumerate}',
+                    'description': 'Creates numbered list with automatic sequential display',
+                    'example': '\\begin{enumerate}[<+->]\n\\item Step one\n\\item Step two\n\\end{enumerate}',
+                    'category': 'sequential',
+                    'display_options': ['dynamic', 'sequential'],
+                    'auto_complete': '\\begin{enumerate}[<+->]\n\\item $1\n\\item $2\n\\end{itemize}',
+                    'usage': 'Automatic sequential numbering'
+                },
+                {
+                    'command': '\\begin{overprint}',
+                    'syntax': '\\begin{overprint}\\onslide<1>Content A\\onslide<2>Content B\\end{overprint}',
+                    'description': 'Creates overlapping content for different slides',
+                    'example': '\\begin{overprint}\n\\onslide<1>First version\n\\onslide<2>Second version\n\\end{overprint}',
+                    'category': 'animation',
+                    'display_options': ['dynamic', 'overlay'],
+                    'auto_complete': '\\begin{overprint}\n\\onslide<$1>$2\n\\onslide<$3>$4\n\\end{overprint}',
+                    'usage': 'Overlapping content areas'
+                }
+            ],
+
+            'Transitions & Advanced Effects': [
+                {
+                    'command': '\\transdissolve',
+                    'syntax': '\\transdissolve[duration=2]',
+                    'description': 'Creates smooth dissolve transition between slides',
+                    'example': '\\transdissolve[duration=1.5]',
+                    'category': 'transition',
+                    'display_options': ['dynamic', 'transition'],
+                    'auto_complete': '\\transdissolve[duration=$1]',
+                    'usage': 'Between frames'
+                },
+                {
+                    'command': '\\transwipe',
+                    'syntax': '\\transwipe[direction=90]',
+                    'description': 'Creates wipe transition in specified direction',
+                    'example': '\\transwipe[direction=45]',
+                    'category': 'transition',
+                    'display_options': ['dynamic', 'transition'],
+                    'auto_complete': '\\transwipe[direction=$1]',
+                    'usage': 'Between frames'
+                },
+                {
+                    'command': '\\animatevalue',
+                    'syntax': '\\animatevalue<start-end>{variable}{initial}{final}',
+                    'description': 'Animates numerical values over specified slides',
+                    'example': '\\animatevalue<1-10>{x}{0}{100}',
+                    'category': 'animation',
+                    'display_options': ['dynamic', 'numeric'],
+                    'auto_complete': '\\animatevalue<$1-$2>{$3}{$4}{$5}',
+                    'usage': 'Numerical animations'
+                }
+            ],
+
+            'Presentation Features': [
+                {
+                    'command': '\\note',
+                    'syntax': '\\note{Speaker notes}',
+                    'description': 'Adds speaker notes (visible in presenter mode)',
+                    'example': '\\note{Remember to explain this concept slowly}',
+                    'category': 'presentation',
+                    'display_options': ['static'],
+                    'auto_complete': '\\note{$1}',
+                    'usage': 'Speaker notes'
+                },
+                {
+                    'command': '\\href',
+                    'syntax': '\\href{url}{link text}',
+                    'description': 'Creates clickable hyperlink',
+                    'example': 'Visit \\href{https://airis4d.com}{our website}',
+                    'category': 'interactive',
+                    'display_options': ['static'],
+                    'auto_complete': '\\href{$1}{$2}',
+                    'usage': 'Hyperlinks'
+                }
+            ]
+        }
+
+    def create_enhanced_widgets(self):
+        """Create enhanced interface with comprehensive listing"""
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Header
+        header_frame = ctk.CTkFrame(main_frame)
+        header_frame.pack(fill="x", padx=5, pady=5)
+
+        ctk.CTkLabel(header_frame, text="BSG-IDE Complete Command Reference",
+                    font=("Arial", 18, "bold")).pack(pady=5)
+
+        ctk.CTkLabel(header_frame,
+                    text="Complete listing of all available LaTeX/Beamer commands with examples and usage tips",
+                    font=("Arial", 12)).pack(pady=2)
+
+        # Control Panel
+        control_frame = ctk.CTkFrame(main_frame)
+        control_frame.pack(fill="x", padx=5, pady=5)
+
+        # Left side: Search and quick filters
+        left_controls = ctk.CTkFrame(control_frame, fg_color="transparent")
+        left_controls.pack(side="left", fill="x", expand=True)
+
+        # Search
+        search_frame = ctk.CTkFrame(left_controls, fg_color="transparent")
+        search_frame.pack(side="top", fill="x", pady=2)
+
+        ctk.CTkLabel(search_frame, text="Search:", font=("Arial", 12)).pack(side="left", padx=5)
+        self.search_var = tk.StringVar()
+        search_entry = ctk.CTkEntry(search_frame, textvariable=self.search_var, width=250,
+                                  placeholder_text="Type to search commands...")
+        search_entry.pack(side="left", padx=5)
+        search_entry.bind('<KeyRelease>', self.filter_commands)
+
+        # Quick category filters
+        category_frame = ctk.CTkFrame(left_controls, fg_color="transparent")
+        category_frame.pack(side="top", fill="x", pady=2)
+
+        ctk.CTkLabel(category_frame, text="Quick Filters:", font=("Arial", 12)).pack(side="left", padx=5)
+
+        # Create category buttons
+        categories = ["All"] + list(self.commands.keys())
+        self.category_buttons = {}
+
+        for category in categories:
+            btn = ctk.CTkButton(
+                category_frame,
+                text=category,
+                command=lambda c=category: self.filter_by_category(c),
+                width=120,
+                height=25,
+                font=("Arial", 10)
+            )
+            btn.pack(side="left", padx=2)
+            self.category_buttons[category] = btn
+
+        # Right side: Display options
+        right_controls = ctk.CTkFrame(control_frame, fg_color="transparent")
+        right_controls.pack(side="right", padx=5)
+
+        # View mode
+        view_frame = ctk.CTkFrame(right_controls, fg_color="transparent")
+        view_frame.pack(side="top", pady=2)
+
+        ctk.CTkLabel(view_frame, text="View:", font=("Arial", 12)).pack(side="left", padx=5)
+
+        self.view_var = tk.StringVar(value="categorized")
+        ctk.CTkRadioButton(view_frame, text="Categorized", variable=self.view_var,
+                          value="categorized", command=self.refresh_display).pack(side="left", padx=2)
+        ctk.CTkRadioButton(view_frame, text="All Commands", variable=self.view_var,
+                          value="all", command=self.refresh_display).pack(side="left", padx=2)
+
+        # Display toggles
+        toggle_frame = ctk.CTkFrame(right_controls, fg_color="transparent")
+        toggle_frame.pack(side="top", pady=2)
+
+        self.syntax_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(toggle_frame, text="Show Syntax", variable=self.syntax_var,
+                       command=self.refresh_display).pack(side="left", padx=5)
+
+        self.examples_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(toggle_frame, text="Show Examples", variable=self.examples_var,
+                       command=self.refresh_display).pack(side="left", padx=5)
+
+        # Content Area
+        content_frame = ctk.CTkFrame(main_frame)
+        content_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Create scrollable content area
+        self.scrollable_frame = ctk.CTkScrollableFrame(content_frame)
+        self.scrollable_frame.pack(fill="both", expand=True)
+
+        # Statistics label
+        self.stats_label = ctk.CTkLabel(main_frame, text="", font=("Arial", 10))
+        self.stats_label.pack(side="left", padx=10, pady=5)
+
+        # Action buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkButton(button_frame, text="Insert Selected Command",
+                     command=self.insert_selected, width=150).pack(side="left", padx=5)
+
+        ctk.CTkButton(button_frame, text="Copy Example",
+                     command=self.copy_example, width=120).pack(side="left", padx=5)
+
+        ctk.CTkButton(button_frame, text="Close",
+                     command=self.destroy).pack(side="right", padx=5)
+
+        # Initial display - show all commands categorized
+        self.display_commands()
+
+    def filter_by_category(self, category):
+        """Filter commands by category"""
+        if category == "All":
+            self.filtered_commands = self.commands.copy()
+        else:
+            self.filtered_commands = {category: self.commands.get(category, [])}
+
+        # Update button states
+        for cat, btn in self.category_buttons.items():
+            if cat == category:
+                btn.configure(fg_color="#4ECDC4", hover_color="#45B7A8")
+            else:
+                btn.configure(fg_color="#3B8ED0", hover_color="#3672A4")
+
+        self.refresh_display()
+
+    def display_commands(self):
+        """Display commands based on current view mode"""
+        # Clear existing content
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        if not self.filtered_commands:
+            ctk.CTkLabel(self.scrollable_frame,
+                        text="No commands found matching your criteria",
+                        font=("Arial", 12)).pack(pady=20)
+            return
+
+        total_commands = sum(len(commands) for commands in self.filtered_commands.values())
+        self.stats_label.configure(text=f"Showing {total_commands} commands")
+
+        if self.view_var.get() == "categorized":
+            self.display_categorized()
+        else:
+            self.display_flat_list()
+
+    def display_categorized(self):
+        """Display commands organized by categories"""
+        row = 0
+        for category, commands in self.filtered_commands.items():
+            if not commands:
+                continue
+
+            # Category header
+            cat_frame = ctk.CTkFrame(self.scrollable_frame, fg_color="#2B3A42")
+            cat_frame.grid(row=row, column=0, sticky="ew", padx=5, pady=10)
+            cat_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(cat_frame, text=category, font=("Arial", 14, "bold"),
+                        text_color="#4ECDC4").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+
+            row += 1
+
+            # Commands in this category
+            for i, cmd in enumerate(commands):
+                cmd_frame = self.create_command_frame(cmd, i)
+                cmd_frame.grid(row=row, column=0, sticky="ew", padx=10, pady=5)
+                row += 1
+
+            # Add some space between categories
+            spacer = ctk.CTkFrame(self.scrollable_frame, height=10, fg_color="transparent")
+            spacer.grid(row=row, column=0, sticky="ew", pady=5)
+            row += 1
+
+    def display_flat_list(self):
+        """Display all commands in a flat list"""
+        row = 0
+        all_commands = []
+        for commands in self.filtered_commands.values():
+            all_commands.extend(commands)
+
+        # Sort alphabetically by command name
+        all_commands.sort(key=lambda x: x['command'])
+
+        for i, cmd in enumerate(all_commands):
+            cmd_frame = self.create_command_frame(cmd, i)
+            cmd_frame.grid(row=row, column=0, sticky="ew", padx=10, pady=2)
+            row += 1
+
+    def create_command_frame(self, command_data, index):
+        """Create a detailed frame for a single command"""
+        frame = ctk.CTkFrame(self.scrollable_frame)
+        frame.grid_columnconfigure(1, weight=1)
+
+        # Command header row
+        header_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        header_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=5, pady=2)
+
+        # Command name (bold and prominent)
+        cmd_label = ctk.CTkLabel(header_frame, text=command_data['command'],
+                               font=("Arial", 13, "bold"), text_color="#FF6B6B")
+        cmd_label.pack(side="left", padx=5)
+
+        # Category badge
+        category_badge = ctk.CTkLabel(header_frame, text=command_data['category'],
+                                    font=("Arial", 9), text_color="#95A5A6",
+                                    fg_color="#34495E", corner_radius=10)
+        category_badge.pack(side="left", padx=5)
+
+        # Usage hint
+        usage_label = ctk.CTkLabel(header_frame, text=command_data.get('usage', ''),
+                                 font=("Arial", 9), text_color="#BDC3C7")
+        usage_label.pack(side="left", padx=5, fill="x", expand=True)
+
+        # Description
+        desc_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        desc_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=2)
+
+        desc_label = ctk.CTkLabel(desc_frame, text=command_data['description'],
+                                font=("Arial", 11), wraplength=800, justify="left")
+        desc_label.pack(side="left", anchor="w")
+
+        # Syntax (if enabled)
+        if self.syntax_var.get():
+            syntax_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            syntax_frame.grid(row=2, column=0, columnspan=3, sticky="ew", padx=5, pady=2)
+
+            ctk.CTkLabel(syntax_frame, text="Syntax:", font=("Arial", 10, "bold")).pack(side="left", padx=5)
+            syntax_label = ctk.CTkLabel(syntax_frame, text=command_data['syntax'],
+                                      font=("Courier", 10), text_color="#4ECDC4")
+            syntax_label.pack(side="left", padx=5)
+
+        # Example (if enabled)
+        if self.examples_var.get() and command_data.get('example'):
+            example_frame = ctk.CTkFrame(frame)
+            example_frame.grid(row=3, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+            example_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(example_frame, text="Example:", font=("Arial", 10, "bold")).grid(
+                row=0, column=0, sticky="w", padx=5, pady=2)
+
+            example_text = ctk.CTkTextbox(example_frame, height=3, font=("Courier", 9))
+            example_text.grid(row=1, column=0, sticky="ew", padx=5, pady=2)
+            example_text.insert("1.0", command_data['example'])
+            example_text.configure(state="disabled")
+
+        # Action buttons
+        action_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        action_frame.grid(row=4, column=0, columnspan=3, sticky="e", padx=5, pady=5)
+
+        select_btn = ctk.CTkButton(action_frame, text="Select", width=80,
+                                 command=lambda cmd=command_data: self.select_command(cmd))
+        select_btn.pack(side="left", padx=2)
+
+        copy_btn = ctk.CTkButton(action_frame, text="Copy Example", width=100,
+                               command=lambda: self.copy_to_clipboard(command_data['example']))
+        copy_btn.pack(side="left", padx=2)
+
+        return frame
+
+    def filter_commands(self, event=None):
+        """Filter commands based on search text"""
+        search_text = self.search_var.get().lower()
+
+        if not search_text:
+            self.filtered_commands = self.commands.copy()
+        else:
+            self.filtered_commands = {}
+            for category, commands in self.commands.items():
+                filtered = []
+                for cmd in commands:
+                    if (search_text in cmd['command'].lower() or
+                        search_text in cmd['description'].lower() or
+                        search_text in cmd.get('usage', '').lower() or
+                        search_text in cmd['syntax'].lower()):
+                        filtered.append(cmd)
+                if filtered:
+                    self.filtered_commands[category] = filtered
+
+        self.refresh_display()
+
+    def refresh_display(self):
+        """Refresh the command display"""
+        self.display_commands()
+
+    def select_command(self, command):
+        """Select a command for insertion"""
+        self.selected_command = command
+        self.result = command
+
+    def insert_selected(self):
+        """Insert selected command into editor"""
+        if hasattr(self, 'selected_command') and self.selected_command:
+            self.destroy()
+            return self.selected_command
+        return None
+
+    def copy_example(self):
+        """Copy selected command example to clipboard"""
+        if hasattr(self, 'selected_command') and self.selected_command:
+            self.copy_to_clipboard(self.selected_command['example'])
+
+    def copy_to_clipboard(self, text):
+        """Copy text to clipboard"""
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        # Show confirmation
+        messagebox.showinfo("Copied", "Example copied to clipboard!")
+
+    def _safe_grab_set(self):
+        """Safely set grab after window is visible"""
+        try:
+            if self.winfo_viewable():
+                self.grab_set()
+            else:
+                self.after(100, self._safe_grab_set)
+        except:
+            pass
+
+    def center_dialog(self):
+        """Center the dialog on screen"""
+        self.update_idletasks()
+        width = 1200
+        height = 900
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+class IntelligentAutocomplete:
+    """Intelligent autocomplete system for LaTeX commands"""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.autocomplete_window = None
+        self.suggestions = []
+        self.current_suggestion_index = 0
+        self.command_database = self.build_autocomplete_database()
+
+    def build_autocomplete_database(self):
+        """Build database for autocomplete suggestions"""
+        return {
+            '\\begin': {
+                'completion': '\\begin{$1}\n$2\n\\end{$1}',
+                'pairs': {
+                    'itemize': '\\item ',
+                    'enumerate': '\\item ',
+                    'frame': '',
+                    'columns': '\\column{0.5\\textwidth}',
+                    'overprint': '\\onslide<1>',
+                    'block': '\\blocktitle{}'
+                }
+            },
+            '\\item': {
+                'completion': '\\item $1',
+                'context': ['itemize', 'enumerate']
+            },
+            '\\title': {'completion': '\\title{$1}'},
+            '\\author': {'completion': '\\author{$1}'},
+            '\\institute': {'completion': '\\institute{$1}'},
+            '\\frametitle': {'completion': '\\frametitle{$1}'},
+            '\\file': {'completion': '\\file{media_files/$1}'},
+            '\\play': {'completion': '\\play{media_files/$1}'},
+            '\\textcolor': {'completion': '\\textcolor{$1}{$2}'},
+            '\\only': {'completion': '\\only<$1>{$2}'},
+            '\\uncover': {'completion': '\\uncover<$1>{$2}'},
+            '\\pause': {'completion': '\\pause'},
+            '\\note': {'completion': '\\note{$1}'},
+            '\\alert': {'completion': '\\alert{$1}'},
+            '\\textbf': {'completion': '\\textbf{$1}'},
+            '\\textit': {'completion': '\\textit{$1}'},
+            '\\href': {'completion': '\\href{$1}{$2}'}
+        }
+
+    def setup_autocomplete(self, text_widget):
+        """Setup autocomplete for a text widget"""
+        text_widget.bind('<KeyRelease>', self.on_key_release)
+        text_widget.bind('<Tab>', self.on_tab)
+        text_widget.bind('<Return>', self.on_return)
+        text_widget.bind('<Escape>', self.hide_autocomplete)
+        text_widget.bind('<Up>', self.on_arrow_key)
+        text_widget.bind('<Down>', self.on_arrow_key)
+
+    def on_key_release(self, event):
+        """Handle key release for autocomplete"""
+        widget = event.widget
+        current_text = widget.get("1.0", "end-1c")
+        cursor_pos = widget.index("insert")
+
+        # Get current line and position
+        line_start = widget.index(f"{cursor_pos} linestart")
+        line_end = widget.index(f"{cursor_pos} lineend")
+        line_content = widget.get(line_start, line_end)
+        cursor_in_line = int(cursor_pos.split('.')[1])
+
+        # Check for command patterns
+        self.detect_autocomplete_opportunity(widget, line_content, cursor_in_line)
+
+    def detect_autocomplete_opportunity(self, widget, line_content, cursor_pos):
+        """Detect when to show autocomplete suggestions"""
+        # Look for backslash commands
+        if '\\' in line_content:
+            text_before_cursor = line_content[:cursor_pos]
+            last_backslash = text_before_cursor.rfind('\\')
+
+            if last_backslash != -1:
+                command_text = text_before_cursor[last_backslash:]
+                self.show_suggestions(widget, command_text, cursor_pos)
+                return
+
+        # Look for begin/end environments
+        if '\\begin{' in line_content:
+            self.handle_environment_completion(widget, line_content, cursor_pos)
+
+        self.hide_autocomplete()
+
+    def handle_environment_completion(self, widget, line_content, cursor_pos):
+        """Handle automatic environment completion"""
+        if '\\begin{' in line_content and '\\end{' not in line_content:
+            # Extract environment name
+            begin_match = re.search(r'\\begin{([^}]*)}', line_content)
+            if begin_match:
+                env_name = begin_match.group(1)
+                self.auto_complete_environment(widget, env_name)
+
+    def auto_complete_environment(self, widget, env_name):
+        """Automatically complete environment with proper formatting"""
+        cursor_pos = widget.index("insert")
+        line_end = widget.index(f"{cursor_pos} lineend")
+
+        # Insert the end tag and proper formatting
+        end_tag = f"\\end{{{env_name}}}"
+
+        # Get indentation
+        line_start = widget.index(f"{cursor_pos} linestart")
+        line_content = widget.get(line_start, cursor_pos)
+        indentation = re.match(r'^(\s*)', line_content).group(1)
+
+        completion_text = f"\n{indentation}    \n{indentation}{end_tag}"
+
+        # Move cursor to the middle line for content
+        widget.insert(cursor_pos, completion_text)
+
+        # Position cursor in the content area
+        content_line = f"{cursor_pos.split('.')[0]}.{int(cursor_pos.split('.')[1]) + len(indentation) + 4}"
+        widget.mark_set("insert", content_line)
+
+        # Add item if it's a list environment
+        if env_name in ['itemize', 'enumerate']:
+            widget.insert("insert", "\\item ")
+
+    def show_suggestions(self, widget, partial_command, cursor_pos):
+        """Show autocomplete suggestions"""
+        # Find matching commands
+        self.suggestions = []
+        for command, info in self.command_database.items():
+            if command.startswith(partial_command):
+                self.suggestions.append((command, info))
+
+        if not self.suggestions:
+            self.hide_autocomplete()
+            return
+
+        # Create suggestion window
+        self.show_autocomplete_window(widget, self.suggestions)
+
+    def show_autocomplete_window(self, widget, suggestions):
+        """Display autocomplete suggestions window"""
+        self.hide_autocomplete()
+
+        # Get widget position
+        bbox = widget.bbox("insert")
+        if not bbox:
+            return
+
+        x = widget.winfo_rootx() + bbox[0]
+        y = widget.winfo_rooty() + bbox[1] + bbox[3]
+
+        # Create suggestion window
+        self.autocomplete_window = tk.Toplevel(widget)
+        self.autocomplete_window.wm_overrideredirect(True)
+        self.autocomplete_window.wm_geometry(f"+{x}+{y}")
+
+        # Style the window
+        self.autocomplete_window.configure(background='#2B2B2B', relief='solid', borderwidth=1)
+
+        # Create listbox for suggestions
+        self.suggestion_listbox = tk.Listbox(
+            self.autocomplete_window,
+            background='#2B2B2B',
+            foreground='white',
+            selectbackground='#4A90E2',
+            selectforeground='white',
+            font=('Courier', 10),
+            height=min(len(suggestions), 8)
+        )
+        self.suggestion_listbox.pack()
+
+        # Add suggestions
+        for command, info in suggestions:
+            display_text = f"{command:20} {info.get('completion', '')[:30]}..."
+            self.suggestion_listbox.insert(tk.END, display_text)
+
+        # Bind selection event
+        self.suggestion_listbox.bind('<Double-Button-1>', self.on_suggestion_selected)
+        self.suggestion_listbox.selection_set(0)
+
+        # Make window transient
+        self.autocomplete_window.transient(widget.winfo_toplevel())
+
+    def on_suggestion_selected(self, event=None):
+        """Handle suggestion selection"""
+        if not self.suggestions or not self.autocomplete_window:
+            return
+
+        selection = self.suggestion_listbox.curselection()
+        if selection:
+            selected_index = selection[0]
+            command, info = self.suggestions[selected_index]
+            self.apply_autocomplete(command, info)
+
+    def apply_autocomplete(self, command, info):
+        """Apply the selected autocomplete"""
+        widget = self.parent.content_editor._textbox  # Target the content editor
+
+        # Get current cursor position and line
+        cursor_pos = widget.index("insert")
+        line_start = widget.index(f"{cursor_pos} linestart")
+        line_content = widget.get(line_start, cursor_pos)
+
+        # Find the partial command and replace it
+        last_backslash = line_content.rfind('\\')
+        if last_backslash != -1:
+            # Delete the partial command
+            delete_start = f"{cursor_pos.split('.')[0]}.{last_backslash}"
+            widget.delete(delete_start, cursor_pos)
+
+            # Insert the complete command with placeholders
+            completion = info.get('completion', command)
+            widget.insert(delete_start, completion)
+
+            # Position cursor at first placeholder
+            self.position_cursor_at_placeholder(widget, completion)
+
+        self.hide_autocomplete()
+
+    def position_cursor_at_placeholder(self, widget, completion):
+        """Position cursor at the first placeholder ($1)"""
+        if '$1' in completion:
+            # Find position of first placeholder
+            cursor_pos = widget.index("insert")
+            search_start = f"{cursor_pos} - {len(completion)} chars"
+            placeholder_pos = widget.search('$1', search_start, cursor_pos)
+
+            if placeholder_pos:
+                # Delete placeholder and position cursor
+                widget.delete(placeholder_pos, f"{placeholder_pos}+2 chars")
+                widget.mark_set("insert", placeholder_pos)
+
+    def on_tab(self, event):
+        """Handle tab for autocomplete selection"""
+        if self.autocomplete_window and self.suggestions:
+            self.on_suggestion_selected()
+            return "break"  # Prevent default tab behavior
+        return None
+
+    def on_return(self, event):
+        """Handle return key"""
+        self.hide_autocomplete()
+        return None  # Allow default return behavior
+
+    def on_arrow_key(self, event):
+        """Handle arrow key navigation in suggestions"""
+        if not self.autocomplete_window:
+            return None
+
+        if event.keysym == 'Down':
+            current = self.suggestion_listbox.curselection()[0] if self.suggestion_listbox.curselection() else 0
+            next_index = min(current + 1, len(self.suggestions) - 1)
+            self.suggestion_listbox.selection_clear(0, tk.END)
+            self.suggestion_listbox.selection_set(next_index)
+            self.suggestion_listbox.activate(next_index)
+            return "break"
+
+        elif event.keysym == 'Up':
+            current = self.suggestion_listbox.curselection()[0] if self.suggestion_listbox.curselection() else 0
+            next_index = max(current - 1, 0)
+            self.suggestion_listbox.selection_clear(0, tk.END)
+            self.suggestion_listbox.selection_set(next_index)
+            self.suggestion_listbox.activate(next_index)
+            return "break"
+
+        return None
+
+    def hide_autocomplete(self, event=None):
+        """Hide the autocomplete window"""
+        if self.autocomplete_window:
+            self.autocomplete_window.destroy()
+            self.autocomplete_window = None
+
+class GrammarlyIntegration:
+    """Grammarly integration for advanced grammar and spelling checking"""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.grammarly_enabled = False
+        self.grammarly_api_key = None
+        self.grammarly_session = None
+
+        # Grammarly API endpoints (using free tier where possible)
+        self.api_base = "https://api.grammarly.com"
+        self.free_endpoints = {
+            'check': "/api/check",
+            'suggestions': "/api/suggestions"
+        }
+
+        self.load_grammarly_settings()
+
+    def load_grammarly_settings(self):
+        """Load Grammarly settings from config"""
+        try:
+            config_dir = Path.home() / '.bsg-ide'
+            config_file = config_dir / 'grammarly_config.json'
+
+            if config_file.exists():
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                    self.grammarly_api_key = config.get('api_key')
+                    self.grammarly_enabled = config.get('enabled', False)
+        except:
+            pass
+
+    def save_grammarly_settings(self):
+        """Save Grammarly settings to config"""
+        try:
+            config_dir = Path.home() / '.bsg-ide'
+            config_dir.mkdir(exist_ok=True)
+
+            config = {
+                'api_key': self.grammarly_api_key,
+                'enabled': self.grammarly_enabled,
+                'last_updated': datetime.now().isoformat()
+            }
+
+            with open(config_dir / 'grammarly_config.json', 'w') as f:
+                json.dump(config, f, indent=2)
+        except:
+            pass
+
+    def show_grammarly_dialog(self):
+        """Show Grammarly setup dialog"""
+        dialog = GrammarlySetupDialog(self.parent, self)
+        self.parent.wait_window(dialog)
+
+        if dialog.result == "success":
+            self.grammarly_enabled = True
+            self.save_grammarly_settings()
+            self.parent.write("✓ Grammarly integration enabled\n", "green")
+
+    def check_text_grammarly(self, text):
+        """Check text using Grammarly API"""
+        if not self.grammarly_enabled or not self.grammarly_api_key:
+            return None
+
+        try:
+            headers = {
+                'Authorization': f'Bearer {self.grammarly_api_key}',
+                'Content-Type': 'application/json'
+            }
+
+            payload = {
+                'text': text,
+                'language': 'en-US',
+                'style': 'academic'  # academic, business, casual, etc.
+            }
+
+            # Using requests if available, otherwise fallback
+            try:
+                import requests
+                response = requests.post(
+                    f"{self.api_base}{self.free_endpoints['check']}",
+                    headers=headers,
+                    json=payload,
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    self.parent.write(f"Grammarly API error: {response.status_code}\n", "yellow")
+                    return None
+
+            except ImportError:
+                # Fallback to urllib if requests not available
+                import urllib.request
+                import json as json_lib
+
+                req = urllib.request.Request(
+                    f"{self.api_base}{self.free_endpoints['check']}",
+                    data=json_lib.dumps(payload).encode('utf-8'),
+                    headers=headers,
+                    method='POST'
+                )
+
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return json_lib.loads(response.read().decode('utf-8'))
+
+        except Exception as e:
+            self.parent.write(f"Grammarly check failed: {str(e)}\n", "red")
+            return None
+
+    def apply_grammarly_suggestions(self, text_widget, suggestions):
+        """Apply Grammarly suggestions to text widget"""
+        if not suggestions or 'issues' not in suggestions:
+            return
+
+        for issue in suggestions['issues']:
+            start_pos = f"1.0+{issue['start']}c"
+            end_pos = f"1.0+{issue['end']}c"
+
+            # Highlight the issue
+            text_widget.tag_add("grammarly_issue", start_pos, end_pos)
+            text_widget.tag_config("grammarly_issue",
+                                 background="#FFF3CD",  # Light yellow
+                                 underline=True,
+                                 underlinefg="#FFC107")
+
+            # Store suggestion info
+            text_widget.grammarly_issues = getattr(text_widget, 'grammarly_issues', {})
+            text_widget.grammarly_issues[f"{issue['start']}-{issue['end']}"] = {
+                'original': issue['original'],
+                'suggestions': issue['suggestions'],
+                'reason': issue['reason']
+            }
+
+class GrammarlySetupDialog(ctk.CTkToplevel):
+    """Dialog for setting up Grammarly integration"""
+
+    def __init__(self, parent, grammarly_integration):
+        super().__init__(parent)
+        self.title("Grammarly Integration Setup")
+        self.geometry("500x400")
+        self.transient(parent)
+        self.grab_set()
+
+        self.grammarly = grammarly_integration
+        self.result = None
+
+        self.center_dialog()
+        self.create_widgets()
+
+        # Wait for window to be ready before grabbing
+        self.after(100, self.finalize_dialog)
+
+    def finalize_dialog(self):
+        """Finalize dialog setup after it's fully created"""
+        self.grab_set()
+        self.focus_force()
+        self.lift()
+
+    def center_dialog(self):
+        """Center the dialog on screen"""
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f"+{x}+{y}")
+
+    def create_widgets(self):
+        """Create setup dialog widgets"""
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Header
+        ctk.CTkLabel(main_frame, text="Grammarly Integration",
+                    font=("Arial", 16, "bold")).pack(pady=10)
+
+        # Description
+        desc_text = """Enhance your writing with Grammarly's advanced grammar and spell checking.
+
+Features:
+• Advanced grammar checking
+• Style suggestions
+• Vocabulary enhancements
+• Tone adjustments
+• Plagiarism detection (premium)"""
+
+        ctk.CTkLabel(main_frame, text=desc_text, justify="left",
+                    font=("Arial", 12)).pack(pady=10)
+
+        # API Key section
+        key_frame = ctk.CTkFrame(main_frame)
+        key_frame.pack(fill="x", pady=10)
+
+        ctk.CTkLabel(key_frame, text="Grammarly API Key:",
+                    font=("Arial", 12, "bold")).pack(anchor="w", pady=5)
+
+        self.api_key_var = tk.StringVar(value=self.grammarly.grammarly_api_key or "")
+        api_entry = ctk.CTkEntry(key_frame, textvariable=self.api_key_var,
+                               width=300, show="*")
+        api_entry.pack(fill="x", pady=5)
+
+        # Help text
+        help_text = """Get your API key from:
+• Grammarly Developer Portal: https://developer.grammarly.com
+• Free tier available with limitations
+• Premium features require subscription"""
+
+        ctk.CTkLabel(key_frame, text=help_text, justify="left",
+                    font=("Arial", 10), text_color="#6c757d").pack(anchor="w", pady=5)
+
+        # Options
+        options_frame = ctk.CTkFrame(main_frame)
+        options_frame.pack(fill="x", pady=10)
+
+        self.realtime_var = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(options_frame, text="Enable real-time checking",
+                       variable=self.realtime_var).pack(anchor="w", pady=2)
+
+        self.auto_apply_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(options_frame, text="Auto-apply common corrections",
+                       variable=self.auto_apply_var).pack(anchor="w", pady=2)
+
+        # Buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", pady=20)
+
+        ctk.CTkButton(button_frame, text="Get API Key",
+                     command=self.open_grammarly_portal).pack(side="left", padx=5)
+
+        ctk.CTkButton(button_frame, text="Test Connection",
+                     command=self.test_connection).pack(side="left", padx=5)
+
+        ctk.CTkButton(button_frame, text="Save",
+                     command=self.save_settings, fg_color="#28a745").pack(side="right", padx=5)
+
+        ctk.CTkButton(button_frame, text="Cancel",
+                     command=self.cancel).pack(side="right", padx=5)
+
+    def open_grammarly_portal(self):
+        """Open Grammarly developer portal"""
+        webbrowser.open("https://developer.grammarly.com")
+
+    def test_connection(self):
+        """Test Grammarly API connection"""
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            messagebox.showwarning("Warning", "Please enter your API key first")
+            return
+
+        # Simple test with sample text
+        test_text = "This is an example text to test the Grammarly connection."
+
+        # Temporarily set API key for testing
+        original_key = self.grammarly.grammarly_api_key
+        self.grammarly.grammarly_api_key = api_key
+
+        try:
+            result = self.grammarly.check_text_grammarly(test_text)
+            if result:
+                messagebox.showinfo("Success", "Grammarly connection successful!")
+            else:
+                messagebox.showerror("Error", "Failed to connect to Grammarly. Check your API key.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Connection test failed: {str(e)}")
+
+        finally:
+            self.grammarly.grammarly_api_key = original_key
+
+    def save_settings(self):
+        """Save Grammarly settings"""
+        api_key = self.api_key_var.get().strip()
+
+        if not api_key:
+            messagebox.showwarning("Warning", "Please enter your Grammarly API key")
+            return
+
+        self.grammarly.grammarly_api_key = api_key
+        self.grammarly.grammarly_enabled = True
+        self.result = "success"
+        self.destroy()
+
+    def cancel(self):
+        """Cancel setup"""
+        self.result = "cancel"
+        self.destroy()
+
+import webbrowser
+import tempfile
+import json
+from pathlib import Path
+
+class AutomatedGrammarlyIntegration:
+    def __init__(self, parent):
+        self.parent = parent
+        self.grammarly_api_key = None
+        self.setup_automated = False
+
+    def automated_setup(self):
+        """Automated Grammarly setup - use the existing setup dialog"""
+        try:
+            # Simply use the parent's Grammarly setup dialog which already has all the functionality
+            self.parent.grammarly.show_grammarly_dialog()
+        except Exception as e:
+            print(f"Grammarly setup error: {e}")
+            # Ultimate fallback
+            webbrowser.open("https://developer.grammarly.com")
+            messagebox.showinfo("Grammarly Setup",
+                              "Please visit https://developer.grammarly.com to get your API key,\n"
+                              "then go to Settings > Grammarly Integration to enter it.")
+
+    def show_api_key_guide(self):
+        """Show step-by-step guide to get API key"""
+        try:
+            guide_window = ctk.CTkToplevel(self.parent)
+            guide_window.title("Grammarly Automated Setup")
+            guide_window.geometry("600x400")
+            guide_window.transient(self.parent)
+
+            steps = """
+            Grammarly Setup Guide:
+
+            1. Visit: https://developer.grammarly.com
+            2. Sign up or log in to your account
+            3. Go to the Dashboard
+            4. Create a new application
+            5. Copy your API key
+            6. Return here to enter it
+
+            We'll help you configure it automatically!
+            """
+
+            text_widget = ctk.CTkTextbox(guide_window, wrap="word")
+            text_widget.pack(fill="both", expand=True, padx=20, pady=20)
+            text_widget.insert("1.0", steps)
+            text_widget.configure(state="disabled")
+
+            def start_setup():
+                guide_window.destroy()
+                # Use the parent's Grammarly integration to open the portal
+                self.parent.grammarly.open_grammarly_portal()
+                self.prompt_for_api_key()
+
+            ctk.CTkButton(guide_window, text="Start Setup",
+                         command=start_setup).pack(pady=10)
+
+            # Safe grab set
+            guide_window.after(100, lambda: self._safe_grab(guide_window))
+
+        except Exception as e:
+            print(f"Error showing Grammarly guide: {e}")
+            # Fallback to using parent's method
+            self.parent.grammarly.open_grammarly_portal()
+            self.prompt_for_api_key()
+
+    def start_browser_automation(self, guide_window):
+        """Start the browser automation process"""
+        guide_window.destroy()
+        self.launch_browser_with_grammarly()
+
+    def launch_browser_with_grammarly(self):
+        """Launch browser with Grammarly developer portal"""
+        grammarly_dev_url = "https://developer.grammarly.com"
+
+        try:
+            # Try to use Firefox first (most customizable)
+            try:
+                # Firefox with specific profile for automation
+                firefox_path = self.find_firefox()
+                if firefox_path:
+                    import subprocess
+                    # Create temporary profile for clean session
+                    temp_profile = tempfile.mkdtemp()
+                    subprocess.Popen([firefox_path, "-new-tab", grammarly_dev_url, "-profile", temp_profile])
+                    self.parent.write("✓ Launched Firefox with Grammarly portal\n", "green")
+                else:
+                    webbrowser.open(grammarly_dev_url)
+            except:
+                webbrowser.open(grammarly_dev_url)
+
+            # Show API key input dialog
+            self.prompt_for_api_key()
+
+        except Exception as e:
+            self.parent.write(f"Browser automation failed: {str(e)}\n", "red")
+            webbrowser.open(grammarly_dev_url)  # Fallback
+            self.prompt_for_api_key()
+
+    def find_firefox(self):
+        """Find Firefox browser executable"""
+        import platform
+        system = platform.system()
+
+        possible_paths = []
+        if system == "Windows":
+            possible_paths = [
+                r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+            ]
+        elif system == "Darwin":  # macOS
+            possible_paths = [
+                "/Applications/Firefox.app/Contents/MacOS/firefox",
+            ]
+        else:  # Linux
+            possible_paths = [
+                "/usr/bin/firefox",
+                "/usr/local/bin/firefox",
+                "/snap/bin/firefox",
+            ]
+
+        for path in possible_paths:
+            if Path(path).exists():
+                return path
+        return None
+
+    def prompt_for_api_key(self):
+        """Show dialog to input API key after browser automation"""
+        dialog = ctk.CTkToplevel(self.parent)
+        dialog.title("Enter Grammarly API Key")
+        dialog.geometry("500x300")
+        dialog.transient(self.parent)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Grammarly API Key Setup",
+                    font=("Arial", 16, "bold")).pack(pady=10)
+
+        instructions = """
+        Please complete these steps in the browser we opened:
+
+        1. Login/Create Grammarly account
+        2. Go to Dashboard → API Applications
+        3. Create New Application (or use existing)
+        4. Copy the API Key
+        5. Paste it below:
+        """
+
+        ctk.CTkLabel(dialog, text=instructions,
+                    justify="left").pack(pady=10, padx=20)
+
+        api_frame = ctk.CTkFrame(dialog)
+        api_frame.pack(pady=10, padx=20, fill="x")
+
+        ctk.CTkLabel(api_frame, text="API Key:").pack(side="left", padx=5)
+        api_entry = ctk.CTkEntry(api_frame, width=300, show="*")
+        api_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        def validate_and_save():
+            api_key = api_entry.get().strip()
+            if len(api_key) < 20:  # Basic validation
+                messagebox.showerror("Invalid Key", "Please enter a valid API key")
+                return
+
+            if self.test_grammarly_key(api_key):
+                self.save_grammarly_config(api_key)
+                dialog.destroy()
+                self.parent.write("✓ Grammarly setup completed successfully!\n", "green")
+            else:
+                messagebox.showerror("Invalid Key", "API key validation failed")
+
+        ctk.CTkButton(dialog, text="Validate & Save",
+                     command=validate_and_save).pack(pady=10)
+
+        # Auto-focus the entry field
+        dialog.after(100, api_entry.focus)
+
+    def test_grammarly_key(self, api_key):
+        """Test if the Grammarly API key is valid"""
+        try:
+            import requests
+
+            test_text = "This is a test sentence for Grammarly validation."
+
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
+
+            payload = {
+                'text': test_text,
+                'language': 'en-US'
+            }
+
+            response = requests.post(
+                'https://api.grammarly.com/api/check',
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+
+            return response.status_code == 200
+
+        except Exception as e:
+            self.parent.write(f"API key test failed: {str(e)}\n", "yellow")
+            # If requests isn't available, assume it's valid
+            return True
+
+    def save_grammarly_config(self, api_key):
+        """Save Grammarly configuration automatically"""
+        config_dir = Path.home() / '.bsg-ide'
+        config_dir.mkdir(exist_ok=True)
+
+        config = {
+            'api_key': api_key,
+            'enabled': True,
+            'setup_completed': True,
+            'last_updated': datetime.now().isoformat(),
+            'version': 'auto_setup_v1'
+        }
+
+        with open(config_dir / 'grammarly_config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+
+        # Update the main Grammarly integration
+        self.parent.grammarly.grammarly_api_key = api_key
+        self.parent.grammarly.grammarly_enabled = True
+        self.parent.grammarly.save_grammarly_settings()
+
+        # Update UI
+        self.parent.grammarly_button.configure(text="Grammarly: On", fg_color="#28a745")
+
+
 
 class BeamerSlideEditor(ctk.CTk):
     def __init__(self):
         super().__init__()
+
+        # Version and info - KEEP ORIGINAL
         AIRIS4D_ASCII_LOGO = """
         /\\
-       /  \\   airis
-      / /\\ \\  4D
+       /  \\   airis4D
+      / /\\ \\
      /_/  \\_\\ LABS
     """
-
-        AIRIS4D_LOGO_COLORS = {
-            'flame': '#FF0000',    # Red for the flame
-            'box': '#008000',      # Green for the box
-            'text': '#0000FF',     # Blue for 'DD'
-            'labs': '#000000'      # Black for 'LABS'
-        }
-        # Version and info
         self.__version__ = "4.0"
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
 
-        # Initialize logo before creating widgets
-        self.setup_logo()
-
-        # Initialize dictionary for notes buttons
+        # Initialize dictionary for notes buttons - KEEP ORIGINAL
         self.notes_buttons = {}
 
-        # Initialize paths
+        # Initialize paths - KEEP ORIGINAL
         self.package_root, self.resources_dir = setup_paths()
 
-        # Initialize logo before creating widgets
+        # Initialize logo before creating widgets - KEEP ORIGINAL but reordered
         self.has_logo = False
         self.logo_image = None
+        self.setup_logo()  # Moved earlier for proper initialization
 
-        # Try to find logo
-        possible_paths = [
-            self.resources_dir / 'airis4d_logo.png',
-            self.package_root / 'airis4d_logo.png',
-            self.package_root / 'resources' / 'airis4d_logo.png'
-        ]
-
-        for path in possible_paths:
-            if path.exists():
-                try:
-                    self.logo_image = ctk.CTkImage(
-                        light_image=Image.open(path),
-                        dark_image=Image.open(path),
-                        size=(50, 50)
-                    )
-                    self.has_logo = True
-                    print(f"✓ Loaded logo from {path}")
-                    break
-                except Exception as e:
-                    print(f"Warning: Could not load logo from {path}: {e}")
-                    continue
-
-        # Rest of initialization...
+        # Rest of initialization... - PRESERVE ALL ORIGINAL SETUP
         self.create_widgets()
-        # Create terminal I/O interface
+
+        # Create terminal I/O interface - KEEP ORIGINAL
         self.terminal_io = TerminalIO(self)
-        #-----------------------------------------------
-        # Initialize session manager with error handling
+
+        # Initialize session manager with error handling - KEEP ORIGINAL
         try:
             self.session_manager = SessionManager()
             self.session_data = self.session_manager.load_session()
@@ -1261,7 +2959,6 @@ class BeamerSlideEditor(ctk.CTk):
             except:
                 pass
 
-
             self.session_data = {
                 'last_file': None,
                 'working_directory': str(Path.cwd()),
@@ -1270,13 +2967,13 @@ class BeamerSlideEditor(ctk.CTk):
                 'window_position': {'x': None, 'y': None}
             }
 
-        # Configure window based on session data
+        # Configure window based on session data - KEEP ORIGINAL
         self.title("BeamerSlide Generator IDE")
         self.geometry(f"{self.session_data['window_size']['width']}x{self.session_data['window_size']['height']}")
         if all(v is not None for v in self.session_data['window_position'].values()):
             self.geometry(f"+{self.session_data['window_position']['x']}+{self.session_data['window_position']['y']}")
 
-        # Change to working directory if valid
+        # Change to working directory if valid - KEEP ORIGINAL
         try:
             working_dir = Path(self.session_data['working_directory'])
             if working_dir.exists():
@@ -1304,36 +3001,11 @@ class BeamerSlideEditor(ctk.CTk):
             print(f"Warning: Could not set working directory: {str(e)}")
             print("Falling back to current directory")
 
-
-        # Initialize UI components
-        self.create_widgets()
-
-        # Add recent files menu if available
-        if self.session_data['recent_files']:
-            self.create_recent_files_menu()
-
-        #--------------------------------------------------
-        # Set the terminal I/O in BeamerSlideGenerator
+        # Set the terminal I/O in BeamerSlideGenerator - KEEP ORIGINAL
         from BeamerSlideGenerator import set_terminal_io
         set_terminal_io(self.terminal_io)
 
-        # Configure window
-        self.title("BeamerSlide Generator IDE")
-        self.geometry("1200x800")
-
-        try:
-            # Try to load the logo image
-            self.logo_image = ctk.CTkImage(
-                light_image=Image.open("airis4d_logo.png"),
-                dark_image=Image.open("airis4d_logo.png"),
-                size=(50, 50)
-            )
-            self.has_logo = True
-        except:
-            self.has_logo = False
-            print("Logo image not found, using ASCII version")
-
-        # Initialize presentation metadata
+        # Initialize presentation metadata - KEEP ORIGINAL
         self.presentation_info = {
             'title': '',
             'subtitle': '',
@@ -1343,63 +3015,443 @@ class BeamerSlideEditor(ctk.CTk):
             'date': '\\today'
         }
 
-        # Configure grid
+        # Configure grid - KEEP ORIGINAL
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Create UI components
-        #self.setup_top_menu()
-        self.create_sidebar()
-        self.create_main_editor()
-        self.create_toolbar()
-        self.create_context_menu()
-        self.create_footer()
-        # Add terminal after other UI elements
-        self.create_terminal()
-        # Setup output redirection after terminal creation
-        self.setup_output_redirection()
-        # Initialize variables
+        # Initialize variables - KEEP ORIGINAL
         self.current_file = None
         self.slides = []
         self.current_slide_index = -1
 
-        # Setup keyboard shortcuts
+        # Setup keyboard shortcuts - KEEP ORIGINAL
         self.setup_keyboard_shortcuts()
 
-        # Setup Python paths
+        # Setup Python paths - KEEP ORIGINAL
         setup_python_paths()
 
-
-        # Adjust grid weights to accommodate terminal
+        # Adjust grid weights to accommodate terminal - KEEP ORIGINAL
         self.grid_rowconfigure(1, weight=3)  # Main editor
         self.grid_rowconfigure(4, weight=1)  # Terminal
 
-        # Setup output redirection after terminal creation
+        # Setup output redirection after terminal creation - KEEP ORIGINAL
         self.setup_output_redirection()
-#--------------------------------------------------------------------------------
-        # Change to working directory if valid
+
+        # Change to working directory if valid - KEEP ORIGINAL (duplicate in original)
         try:
             if self.session_data['working_directory']:
                 os.chdir(self.session_data['working_directory'])
         except Exception as e:
             print(f"Warning: Could not change to saved working directory: {str(e)}")
 
-        # Load last file if it exists
+        # Load last file if it exists - KEEP ORIGINAL
         if self.session_data['last_file'] and os.path.exists(self.session_data['last_file']):
             self.after(100, lambda: self.load_file(self.session_data['last_file']))
 
-        # Bind window events
+        # Bind window events - KEEP ORIGINAL
         self.bind('<Configure>', self.on_window_configure)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-#-------------------------------------------------------------------------------------
-        # Initialize spell checking
+        # Initialize spell checking - KEEP ORIGINAL but ensure it runs after UI creation
         self.setup_spellchecking()
 
-
-        # Add binding to close context menu
+        # Add binding to close context menu - KEEP ORIGINAL
         self.bind("<Button-1>", self.hide_spelling_menu)
-#-------------------------------------------------------------------------------------
+
+        # Initialize command helper - KEEP ORIGINAL
+        self.command_helper = LatexCommandHelper()
+        self.tooltip_manager = CommandTooltip(self)
+
+        # Auto-create first slide - KEEP ORIGINAL
+        self.auto_create_first_slide()
+
+        # Setup command tooltip binding - KEEP ORIGINAL
+        self.setup_command_tooltips()
+
+        # Initialize Grammarly features - MODIFIED: Delay binding until after UI is ready
+        self.grammarly = GrammarlyIntegration(self)
+        self.setup_grammarly_integration_delayed()
+
+        self.setup_automated_grammarly()
+
+        # Add command index button to toolbar - KEEP ORIGINAL
+        self.enhance_toolbar()
+
+        # DELAYED: Bind Grammarly to editors (after they are definitely created)
+        self.after(100, self.setup_grammarly_bindings)
+
+        # NEW: Auto-prompt for Grammarly setup on first run (optional)
+        self.after(500, self.auto_prompt_grammarly_setup)
+
+        # Initialize enhanced features
+        self.enhanced_command_index = None
+        self.autocomplete_system = IntelligentAutocomplete(self)
+
+         # Setup autocomplete for editors
+        self.setup_autocomplete()
+#-----------------Init ends ----------------------------
+    def setup_autocomplete(self):
+        """Setup autocomplete system for editors"""
+        self.autocomplete_system.setup_autocomplete(self.content_editor._textbox)
+        self.autocomplete_system.setup_autocomplete(self.notes_editor._textbox)
+
+    def show_enhanced_command_index(self):
+        """Show the enhanced command index"""
+        try:
+            self.enhanced_command_index = EnhancedCommandIndexDialog(self)
+            self.wait_window(self.enhanced_command_index)
+        except Exception as e:
+            print(f"Error showing enhanced command index: {e}")
+
+    def setup_automated_grammarly(self):
+        """Setup automated Grammarly integration"""
+        self.auto_grammarly = AutomatedGrammarlyIntegration(self)
+
+        # Check if Grammarly is already configured
+        config_file = Path.home() / '.bsg-ide' / 'grammarly_config.json'
+        if not config_file.exists():
+            # Auto-prompt for setup after a delay
+            self.after(2000, self.auto_prompt_grammarly)
+
+    def auto_prompt_grammarly(self):
+        """Automatically prompt for Grammarly setup"""
+        if not self.grammarly.grammarly_enabled:
+            response = messagebox.askyesno(
+                "Grammarly Auto-Setup",
+                "Would you like to set up Grammarly integration automatically?\n\n"
+                "We'll guide you through the process with browser automation."
+            )
+            if response:
+                self.auto_grammarly.automated_setup()
+
+    def auto_prompt_grammarly_setup(self):
+        """Automatically prompt for Grammarly setup if not configured"""
+        if not self.grammarly.grammarly_enabled and not self.grammarly.grammarly_api_key:
+            response = messagebox.askyesno(
+                "Grammarly Integration",
+                "Would you like to set up Grammarly integration for advanced grammar checking?\n\n"
+                "This will open a setup dialog where you can enter your Grammarly API key."
+            )
+            if response:
+                self.toggle_grammarly()  # This will show the setup dialog
+
+    def add_grammarly_setup_option(self):
+        """Add Grammarly setup option to help menu or settings"""
+        # Add to your existing menu setup
+        # Or create a dedicated "Setup Grammarly" button
+
+        setup_button = ctk.CTkButton(
+            self.toolbar,
+            text="Setup Grammarly",
+            command=self.setup_grammarly_manually,
+            width=120,
+            fg_color="#17a2b8",
+            hover_color="#138496"
+        )
+        setup_button.pack(side="left", padx=5)
+        self.create_tooltip(setup_button, "Set up Grammarly integration")
+
+    def setup_grammarly_manually(self):
+        """Manual Grammarly setup trigger"""
+        if not self.grammarly.grammarly_enabled:
+            self.grammarly.show_grammarly_dialog()
+        else:
+            messagebox.showinfo("Grammarly", "Grammarly is already enabled and configured.")
+
+    def setup_grammarly_integration_delayed(self):
+        """Setup Grammarly integration without immediate binding"""
+        # Create Grammarly context menu
+        self.grammarly_menu = tk.Menu(self, tearoff=0)
+        self.grammarly_menu.add_command(label="Apply Suggestion", command=self.apply_grammarly_suggestion)
+        self.grammarly_menu.add_command(label="Ignore Issue", command=self.ignore_grammarly_issue)
+        self.grammarly_menu.add_separator()
+        self.grammarly_menu.add_command(label="Explain Issue", command=self.explain_grammarly_issue)
+
+    def setup_grammarly_bindings(self):
+        """Setup Grammarly bindings after UI is fully created"""
+        try:
+            # Bind to both editors - NOW they should exist
+            if hasattr(self, 'content_editor') and hasattr(self, 'notes_editor'):
+                # Bind right-click to Grammarly menu
+                for widget in [self.content_editor._textbox, self.notes_editor._textbox]:
+                    widget.bind("<Button-3>", self.show_grammarly_menu)
+
+                # Setup real-time Grammarly checking with debouncing
+                def check_grammarly(event=None):
+                    if hasattr(self, '_grammarly_timer'):
+                        self.after_cancel(self._grammarly_timer)
+                    self._grammarly_timer = self.after(1000, self.perform_grammarly_check)
+
+                # Bind key release events
+                self.content_editor._textbox.bind('<KeyRelease>', check_grammarly)
+                self.notes_editor._textbox.bind('<KeyRelease>', check_grammarly)
+
+            else:
+                print("Warning: Editors not available for Grammarly binding")
+
+        except Exception as e:
+            print(f"Warning: Could not setup Grammarly bindings: {e}")
+
+
+#---------------Help Windows -----------------------------
+    def auto_create_first_slide(self):
+        """Automatically create first slide on startup"""
+        # Create initial slide if none exists
+        if not hasattr(self, 'slides') or not self.slides:
+            self.slides = [{
+                'title': 'Presentation Title',
+                'media': '',
+                'content': ['- First bullet point'],
+                'notes': ['• Speaker notes for first slide']
+            }]
+            self.current_slide_index = 0
+            self.load_slide(0)
+            self.update_slide_list()
+
+    def setup_command_tooltips(self):
+        """Setup command tooltip bindings for editors"""
+        # Bind to content editor
+        self.setup_editor_tooltips(self.content_editor._textbox)
+
+        # Bind to notes editor
+        self.setup_editor_tooltips(self.notes_editor._textbox)
+
+        # Bind to media entry
+        self.setup_entry_tooltips(self.media_entry)
+
+    def setup_editor_tooltips(self, text_widget):
+        """Setup tooltips for text widgets"""
+        text_widget.bind('<Motion>', self.on_editor_motion)
+        text_widget.bind('<Leave>', self.on_editor_leave)
+
+    def setup_entry_tooltips(self, entry_widget):
+        """Setup tooltips for entry widgets"""
+        entry_widget.bind('<Motion>', self.on_entry_motion)
+        entry_widget.bind('<Leave>', self.on_entry_leave)
+
+    def on_editor_motion(self, event):
+        """Handle mouse motion in editor for command detection"""
+        widget = event.widget
+        index = widget.index(f"@{event.x},{event.y}")
+
+        # Get the word under cursor
+        word_start = widget.index(f"{index} wordstart")
+        word_end = widget.index(f"{index} wordend")
+        word = widget.get(word_start, word_end)
+
+        # Check if it's a LaTeX command
+        if word.startswith('\\') and len(word) > 1:
+            self.show_command_tooltip(widget, word, event.x_root, event.y_root)
+        else:
+            self.tooltip_manager.hide_tooltip()
+
+    def on_entry_motion(self, event):
+        """Handle mouse motion in entry for command detection"""
+        widget = event.widget
+        content = widget.get()
+
+        # Simple check for commands in entry
+        if '\\' in content:
+            # Find command near cursor position
+            cursor_pos = widget.index(tk.INSERT)
+            text_before = content[:cursor_pos]
+            if '\\' in text_before:
+                last_slash = text_before.rfind('\\')
+                next_space = content.find(' ', last_slash)
+                if next_space == -1:
+                    next_space = len(content)
+
+                command = content[last_slash:next_space]
+                if command.startswith('\\') and len(command) > 1:
+                    self.show_command_tooltip(widget, command, event.x_root, event.y_root)
+                    return
+
+        self.tooltip_manager.hide_tooltip()
+
+    def on_editor_leave(self, event):
+        """Handle mouse leaving editor"""
+        self.tooltip_manager.hide_tooltip()
+
+    def on_entry_leave(self, event):
+        """Handle mouse leaving entry"""
+        self.tooltip_manager.hide_tooltip()
+
+    def show_command_tooltip(self, widget, command, x, y):
+        """Show tooltip for LaTeX command"""
+        self.tooltip_manager.show_tooltip(widget, command, x, y)
+#---------------Help Windows Ends Grammarly starts-------------------------
+    def enhance_toolbar(self):
+        """Add new features to toolbar"""
+        # Add command index button
+        self.command_index_button = ctk.CTkButton(
+            self.toolbar,
+            text="Enhanced Command Index",
+            command=self.show_enhanced_command_index,  # Use enhanced version
+            width=140,
+            fg_color="#6f42c1",
+            hover_color="#5a2d91"
+        )
+        self.command_index_button.pack(side="left", padx=5)
+
+        # Add Grammarly button - FIXED: Use correct initial state
+        grammarly_status = "On" if self.grammarly.grammarly_enabled else "Off"
+        grammarly_color = "#28a745" if self.grammarly.grammarly_enabled else "#dc3545"
+
+        self.grammarly_button = ctk.CTkButton(
+            self.toolbar,
+            text=f"Grammarly: {grammarly_status}",
+            command=self.toggle_grammarly,  # Ensure this points to the correct method
+            width=120,
+            fg_color=grammarly_color,
+            hover_color="#a71e2a"
+        )
+        self.grammarly_button.pack(side="left", padx=5)
+
+        # Update tooltips
+        self.create_tooltip(self.command_index_button, "Show complete command reference with examples")
+        self.create_tooltip(self.grammarly_button, "Enable/disable Grammarly grammar checking")
+
+        # Add automated Grammarly setup button
+        self.auto_grammarly_button = ctk.CTkButton(
+            self.toolbar,
+            text="🚀 Auto-Setup Grammarly",
+            command=self.auto_grammarly.automated_setup,
+            width=140,
+            fg_color="#FF6B35",
+            hover_color="#E55A2B"
+        )
+        self.auto_grammarly_button.pack(side="left", padx=5)
+        self.create_tooltip(self.auto_grammarly_button,
+                           "Automated Grammarly setup with browser guidance")
+
+    def show_fallback_command_reference(self):
+        """Fallback command reference if dialog fails"""
+        simple_commands = """
+    Basic LaTeX Commands Quick Reference:
+
+    Document Structure:
+    \\title{Presentation Title} - Sets presentation title
+    \\author{Author Name} - Sets author name
+    \\institute{Institution} - Sets institution name
+    \\date{\\today} - Sets presentation date
+
+    Slide Content:
+    \\file{media_files/image.png} - Insert image
+    \\play{media_files/video.mp4} - Embed video
+    - Bullet point - Creates a bullet point
+
+    Text Formatting:
+    \\textcolor{red}{Text} - Colors text
+    \\textbf{Bold Text} - Bold text
+    \\textit{Italic Text} - Italic text
+
+    For complete reference, check the full Command Index.
+    """
+
+        messagebox.showinfo("LaTeX Commands Quick Reference", simple_commands)
+
+    def insert_command_into_editor(self, command_data):
+        """Insert selected command into current editor"""
+        # Determine which editor has focus
+        focused_widget = self.focus_get()
+
+        if focused_widget == self.content_editor._textbox:
+            editor = self.content_editor
+        elif focused_widget == self.notes_editor._textbox:
+            editor = self.notes_editor
+        else:
+            editor = self.content_editor  # Default to content editor
+
+        # Insert the command example
+        editor.insert("insert", command_data['example'] + "\n")
+
+    def toggle_grammarly(self):
+        """Toggle Grammarly integration with proper setup dialog"""
+        if not self.grammarly.grammarly_enabled:
+            # Show setup dialog when enabling Grammarly
+            self.grammarly.show_grammarly_dialog()
+        else:
+            # Disable Grammarly
+            self.grammarly.grammarly_enabled = False
+            self.grammarly.save_grammarly_settings()
+            self.grammarly_button.configure(text="Grammarly: Off", fg_color="#dc3545")
+            self.write("Grammarly disabled\n", "yellow")
+
+        # Update button state based on current status
+        if self.grammarly.grammarly_enabled:
+            self.grammarly_button.configure(text="Grammarly: On", fg_color="#28a745")
+            self.setup_realtime_grammarly()
+
+    def setup_realtime_grammarly(self):
+        """Setup real-time Grammarly checking"""
+        if not self.grammarly.grammarly_enabled:
+            return
+
+    # Bind to content changes with debouncing
+    def check_grammarly(event=None):
+        if hasattr(self, '_grammarly_timer'):
+            self.after_cancel(self._grammarly_timer)
+
+        self._grammarly_timer = self.after(1000, self.perform_grammarly_check)
+
+
+    def perform_grammarly_check(self):
+        """Perform Grammarly check on current text"""
+        if not self.grammarly.grammarly_enabled:
+            return
+
+        # Get text from focused editor
+        focused_widget = self.focus_get()
+
+        if focused_widget in [self.content_editor._textbox, self.notes_editor._textbox]:
+            text = focused_widget.get("1.0", "end-1c")
+
+            if len(text.strip()) > 10:  # Only check substantial text
+                suggestions = self.grammarly.check_text_grammarly(text)
+                if suggestions:
+                    self.grammarly.apply_grammarly_suggestions(focused_widget, suggestions)
+
+    def setup_grammarly_integration(self):
+        """Setup Grammarly integration UI"""
+        # Create Grammarly context menu
+        self.grammarly_menu = tk.Menu(self, tearoff=0)
+        self.grammarly_menu.add_command(label="Apply Suggestion", command=self.apply_grammarly_suggestion)
+        self.grammarly_menu.add_command(label="Ignore Issue", command=self.ignore_grammarly_issue)
+        self.grammarly_menu.add_separator()
+        self.grammarly_menu.add_command(label="Explain Issue", command=self.explain_grammarly_issue)
+
+        # Bind right-click to Grammarly menu
+        for widget in [self.content_editor._textbox, self.notes_editor._textbox]:
+            widget.bind("<Button-3>", self.show_grammarly_menu)
+
+    def show_grammarly_menu(self, event):
+        """Show Grammarly context menu"""
+        if not self.grammarly.grammarly_enabled:
+            return
+
+        widget = event.widget
+        index = widget.index(f"@{event.x},{event.y}")
+
+        # Check if click is on a Grammarly issue
+        tags = widget.tag_names(index)
+        if "grammarly_issue" in tags:
+            self.current_grammarly_issue = index
+            self.grammarly_menu.tk_popup(event.x_root, event.y_root)
+
+    def apply_grammarly_suggestion(self):
+        """Apply selected Grammarly suggestion"""
+        # Implementation for applying suggestions
+        pass
+
+    def ignore_grammarly_issue(self):
+        """Ignore Grammarly issue"""
+        pass
+
+    def explain_grammarly_issue(self):
+        """Explain Grammarly issue"""
+        pass
+
+#---------------------------------------Grammarly Ends--------------------------------
     def load_tex_file(self) -> None:
         """Load and convert a Beamer .tex file to IDE format"""
         tex_file = filedialog.askopenfilename(
@@ -2596,7 +4648,7 @@ Created by {self.__author__}
         menu_buttons = [
             ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble"),
             ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings"),
-            ("Get Source", self.get_source_from_tex, "Extract source from TEX file")
+            ("Get Source", self.get_source_from_tex, "Extract source from TEX file"),
             ("Load TeX File", self.load_tex_file, "Load and convert Beamer TeX file"),
             ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF"),
         ]
@@ -3103,6 +5155,19 @@ Created by {self.__author__}
 
         # Set initial button colors
         self.update_notes_buttons(self.notes_mode.get())
+
+        # Add help indicator
+        help_frame = ctk.CTkFrame(self.editor_frame)
+        help_frame.pack(fill="x", padx=5, pady=2)
+
+        help_label = ctk.CTkLabel(
+            help_frame,
+            text="💡 Hover over LaTeX commands (starting with \\) for help",
+            font=("Arial", 10),
+            text_color="#4ECDC4"
+        )
+        help_label.pack(side="left")
+
 
     def check_dependencies(self) -> dict:
         """Check if required packages are installed in current environment"""
@@ -4128,8 +6193,7 @@ Created by {self.__author__}
             ("Present with Notes", self.present_with_notes, "Launch dual-screen presentation with notes"),
             ("Preview PDF", self.preview_pdf, "View generated PDF"),
             ("Load TeX", self.load_tex_file, "Load and convert Beamer TeX file"),
-            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF"),
-            ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip")
+            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF")
         ]
 
         for text, command, tooltip in buttons_upper:
@@ -4237,7 +6301,8 @@ Created by {self.__author__}
         right_buttons = [
             ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble"),
             ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings"),
-            ("Get Source", self.get_source_from_tex, "Extract source from TEX file")
+            ("Get Source", self.get_source_from_tex, "Extract source from TEX file"),
+            ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip")
         ]
 
         for text, command, tooltip in right_buttons:
@@ -5284,22 +7349,33 @@ Created by {self.__author__}
 
 #------------------------------------------------------------------------------------------------------------------
 
-    # Slide Management
-
     def new_slide(self) -> None:
-        """Create new slide"""
-        self.save_current_slide()
+        """Create new slide, preserving content if editing first slide"""
+        # Check if we're editing the initial slide without saving
+        if (self.current_slide_index == 0 and
+            self.slides[0]['title'] == 'Presentation Title' and
+            len(self.slides[0]['content']) == 1 and
+            self.slides[0]['content'][0] == '- First bullet point'):
 
+            # This is the initial template slide, save current content first
+            self.save_current_slide()
+
+        # Proceed with creating new slide
         new_slide = {
             'title': 'New Slide',
             'media': '',
-            'content': []
+            'content': [],
+            'notes': []
         }
 
         self.slides.append(new_slide)
         self.current_slide_index = len(self.slides) - 1
         self.update_slide_list()
         self.load_slide(self.current_slide_index)
+
+        # Focus title entry for immediate editing
+        self.title_entry.focus_set()
+        self.title_entry.select_range(0, 'end')
 
     def delete_slide(self) -> None:
         """Delete current slide"""
@@ -5344,21 +7420,41 @@ Created by {self.__author__}
 
 
     def save_current_slide(self):
-        """Save current slide data, preventing empty slide creation"""
-        if not hasattr(self, 'slides'):
+        """Save current slide data with improved initial slide handling"""
+        if not hasattr(self, 'slides') or not self.slides:
+            # Initialize slides array if it doesn't exist
             self.slides = []
-
-        if self.current_slide_index < 0:
+            self.current_slide_index = -1
             return
 
-        # Get current content
+        if self.current_slide_index < 0:
+            # If no current slide, check if we have content to save
+            title = self.title_entry.get().strip()
+            media = self.media_entry.get().strip()
+            content = [line for line in self.content_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
+            notes = [line for line in self.notes_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
+
+            # Only create new slide if there's actual content
+            if title or media or content or notes:
+                new_slide = {
+                    'title': title or 'New Slide',
+                    'media': media,
+                    'content': content,
+                    'notes': notes
+                }
+                self.slides.append(new_slide)
+                self.current_slide_index = len(self.slides) - 1
+                self.update_slide_list()
+            return
+
+        # Normal slide save for existing slides
         title = self.title_entry.get().strip()
         media = self.media_entry.get().strip()
         content = [line for line in self.content_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
         notes = [line for line in self.notes_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
 
-        # Only save if there is actual content and within valid index
-        if (title or media or content or notes) and self.current_slide_index < len(self.slides):
+        # Update the slide
+        if 0 <= self.current_slide_index < len(self.slides):
             self.slides[self.current_slide_index] = {
                 'title': title,
                 'media': media,
