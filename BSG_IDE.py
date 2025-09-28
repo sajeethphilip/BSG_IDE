@@ -1066,11 +1066,13 @@ from pathlib import Path
 from PIL import Image
 #from BSE_ITR import InteractiveTerminal
 
-from Grammarly import *
-from EnhancedCommandDialog import *
-from LatexHelp import *
-from InteractiveTerminal import *
-from BSG_IDE_Utils import *
+from Grammarly import  GrammarlyIntegration,GrammarlySetupDialog,AutomatedGrammarlyIntegration
+from EnhancedCommandDialog import  EnhancedCommandIndexDialog
+#from LatexHelp import *
+from InteractiveTerminal import InteractiveTerminal
+from BSG_IDE_Utils import (SimpleRedirector,IntelligentAutocomplete,SessionManager,InstitutionNameDialog,
+MediaSelectionDialog,MediaURLDialog,NotesToolbar,EnhancedNotesEditor,FileThumbnailBrowser,PreambleEditor,
+NotesToggleFrame,TerminalIO,InstallationDialog,InstallationManager)
 
 #------------------------------------------------------------------------------------------
 class BeamerSyntaxHighlighter:
@@ -1429,7 +1431,7 @@ class BeamerSlideEditor(ctk.CTk):
         """Show the enhanced command index using the new library"""
         if LATEX_HELP_AVAILABLE and hasattr(self, 'latex_help_lib'):
             try:
-                from LatexHelp import EnhancedCommandIndexDialog
+                from EnhancedCommandDialog import EnhancedCommandIndexDialog
                 self.enhanced_command_index = EnhancedCommandIndexDialog(self, self.command_helper)
 
                 def on_closed():
