@@ -105,6 +105,14 @@ def launch_ide():
         traceback.print_exc()
         sys.exit(1)
 
+try:
+    from LatexHelp import LatexHelpLibrary, LatexCommandHelper, LatexAutocomplete, CommandTooltip
+    LATEX_HELP_AVAILABLE = True
+except ImportError as e:
+    print(f"LatexHelp module not available: {e}")
+    LATEX_HELP_AVAILABLE = False
+    # Fallback to basic implementation
+    from Grammarly import LatexCommandHelper, CommandTooltip
 
 def check_internet_connection():
     """Check internet connection without external dependencies"""
@@ -1322,15 +1330,16 @@ class BeamerSlideEditor(ctk.CTk):
         # Add binding to close context menu - KEEP ORIGINAL
         self.bind("<Button-1>", self.hide_spelling_menu)
 
-        # Initialize command helper - KEEP ORIGINAL
-        self.command_helper = LatexCommandHelper()
-        self.tooltip_manager = CommandTooltip(self)
+        # === ENHANCED FEATURES INITIALIZATION ===
+
+        # Initialize enhanced LaTeX help system
+        self.setup_enhanced_latex_help()
+
+        # Initialize enhanced tooltip system
+        self.setup_enhanced_tooltips()
 
         # Auto-create first slide - KEEP ORIGINAL
         self.auto_create_first_slide()
-
-        # Setup command tooltip binding - KEEP ORIGINAL
-        self.setup_command_tooltips()
 
         # Initialize Grammarly features - MODIFIED: Delay binding until after UI is ready
         self.grammarly = GrammarlyIntegration(self)
@@ -1349,15 +1358,111 @@ class BeamerSlideEditor(ctk.CTk):
 
         # Initialize enhanced features
         self.enhanced_command_index = None
+
+        # Initialize autocomplete system (replaces old setup_autocomplete calls)
         self.autocomplete_system = IntelligentAutocomplete(self)
 
-         # Setup autocomplete for editors
+        # Setup enhanced features after UI is ready
+        self.after(150, self.initialize_enhanced_features)
+
+    def setup_enhanced_latex_help(self):
+        """Setup enhanced LaTeX help with real-time autocomplete"""
+        try:
+            # Try to import the enhanced LatexHelp module
+            from LatexHelp import LatexHelpLibrary, LatexCommandHelper
+            self.latex_help_lib = LatexHelpLibrary()
+            self.command_helper = self.latex_help_lib.helper
+            self.use_enhanced_latex = True
+            print("✓ Enhanced LaTeX help system loaded")
+        except ImportError as e:
+            print(f"Using basic LaTeX help system: {e}")
+            self.command_helper = LatexCommandHelper()
+            self.use_enhanced_latex = False
+
+    def setup_enhanced_tooltips(self):
+        """Setup enhanced command tooltips with LatexHelp integration"""
+        try:
+            # Try to import enhanced CommandTooltip from LatexHelp module
+            from LatexHelp import CommandTooltip as EnhancedCommandTooltip
+            self.tooltip_manager = EnhancedCommandTooltip(self)
+            self.use_enhanced_tooltips = True
+            print("✓ Enhanced command tooltips loaded")
+        except ImportError as e:
+            print(f"Using basic command tooltips: {e}")
+            # Fallback to the existing basic implementation
+            self.tooltip_manager = CommandTooltip(self)
+            self.use_enhanced_tooltips = False
+
+    def initialize_enhanced_features(self):
+        """Initialize enhanced features after UI is ready"""
+        # Setup enhanced autocomplete
         self.setup_autocomplete()
-#-----------------Init ends ----------------------------
+
+        # Setup enhanced tooltips
+        self.setup_command_tooltips()
+
     def setup_autocomplete(self):
         """Setup autocomplete system for editors"""
         self.autocomplete_system.setup_autocomplete(self.content_editor._textbox)
         self.autocomplete_system.setup_autocomplete(self.notes_editor._textbox)
+
+    def setup_command_tooltips(self):
+        """Setup command tooltip bindings for editors"""
+        # Enhanced tooltips handle their own bindings automatically
+        if self.use_enhanced_tooltips:
+            print("Enhanced tooltip system active")
+        else:
+            # Fallback to basic tooltip setup
+            self.setup_editor_tooltips(self.content_editor._textbox)
+            self.setup_editor_tooltips(self.notes_editor._textbox)
+            self.setup_entry_tooltips(self.media_entry)
+#-----------------Init ends ----------------------------
+
+    def setup_basic_latex_help(self):
+        """Fallback to basic LaTeX help"""
+        self.command_helper = LatexCommandHelper()
+        self.autocomplete_system = None
+        print("Using basic LaTeX help system")
+
+
+    def show_enhanced_command_index(self):
+        """Show the enhanced command index using the new library"""
+        if LATEX_HELP_AVAILABLE and hasattr(self, 'latex_help_lib'):
+            try:
+                from LatexHelp import EnhancedCommandIndexDialog
+                self.enhanced_command_index = EnhancedCommandIndexDialog(self, self.command_helper)
+
+                def on_closed():
+                    if hasattr(self.enhanced_command_index, 'selected_command'):
+                        command = self.enhanced_command_index.selected_command
+                        if command:
+                            self.insert_command_into_editor(command)
+                    self.enhanced_command_index = None
+
+                self.enhanced_command_index.protocol("WM_DELETE_WINDOW", on_closed)
+
+            except ImportError:
+                self.show_fallback_command_reference()
+        else:
+            self.show_fallback_command_reference()
+
+    def insert_command_into_editor(self, command_data):
+        """Insert selected command into current editor using enhanced system"""
+        focused_widget = self.focus_get()
+
+        if focused_widget == self.content_editor._textbox:
+            editor = self.content_editor
+        elif focused_widget == self.notes_editor._textbox:
+            editor = self.notes_editor
+        else:
+            editor = self.content_editor
+
+        # Use enhanced command data if available
+        if isinstance(command_data, dict) and 'example' in command_data:
+            editor.insert("insert", command_data['example'] + "\n")
+        else:
+            editor.insert("insert", command_data + "\n")
+
 
     def show_enhanced_command_index(self):
         """Show the enhanced command index as a floating window"""
@@ -1491,17 +1596,6 @@ class BeamerSlideEditor(ctk.CTk):
             self.current_slide_index = 0
             self.load_slide(0)
             self.update_slide_list()
-
-    def setup_command_tooltips(self):
-        """Setup command tooltip bindings for editors"""
-        # Bind to content editor
-        self.setup_editor_tooltips(self.content_editor._textbox)
-
-        # Bind to notes editor
-        self.setup_editor_tooltips(self.notes_editor._textbox)
-
-        # Bind to media entry
-        self.setup_entry_tooltips(self.media_entry)
 
     def setup_editor_tooltips(self, text_widget):
         """Setup tooltips for text widgets"""

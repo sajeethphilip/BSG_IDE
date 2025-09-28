@@ -1864,17 +1864,33 @@ class SimpleRedirector:
 
 
 class IntelligentAutocomplete:
-    """Intelligent autocomplete system for LaTeX commands"""
+    """Intelligent autocomplete system for LaTeX commands with enhanced module integration"""
 
     def __init__(self, parent):
         self.parent = parent
         self.autocomplete_window = None
         self.suggestions = []
         self.current_suggestion_index = 0
-        self.command_database = self.build_autocomplete_database()
+
+        # Try to use enhanced LatexHelp module, fallback to basic
+        self.setup_autocomplete_system()
+
+    def setup_autocomplete_system(self):
+        """Setup the appropriate autocomplete system"""
+        try:
+            # Try to import and use the enhanced LatexHelp module
+            from LatexHelp import LatexAutocomplete, LatexCommandHelper
+            self.enhanced_system = LatexAutocomplete(LatexCommandHelper())
+            self.use_enhanced = True
+            print("✓ Enhanced LaTeX autocomplete system loaded")
+        except ImportError as e:
+            print(f"Using basic autocomplete system: {e}")
+            self.enhanced_system = None
+            self.use_enhanced = False
+            self.command_database = self.build_autocomplete_database()
 
     def build_autocomplete_database(self):
-        """Build database for autocomplete suggestions"""
+        """Build database for autocomplete suggestions (fallback)"""
         return {
             '\\begin': {
                 'completion': '\\begin{$1}\n$2\n\\end{$1}',
@@ -1910,15 +1926,24 @@ class IntelligentAutocomplete:
 
     def setup_autocomplete(self, text_widget):
         """Setup autocomplete for a text widget"""
-        text_widget.bind('<KeyRelease>', self.on_key_release)
-        text_widget.bind('<Tab>', self.on_tab)
-        text_widget.bind('<Return>', self.on_return)
-        text_widget.bind('<Escape>', self.hide_autocomplete)
-        text_widget.bind('<Up>', self.on_arrow_key)
-        text_widget.bind('<Down>', self.on_arrow_key)
+        if self.use_enhanced and hasattr(self.enhanced_system, 'setup_autocomplete'):
+            # Use enhanced system setup
+            self.enhanced_system.setup_autocomplete(text_widget)
+        else:
+            # Fallback to basic setup
+            text_widget.bind('<KeyRelease>', self.on_key_release)
+            text_widget.bind('<Tab>', self.on_tab)
+            text_widget.bind('<Return>', self.on_return)
+            text_widget.bind('<Escape>', self.hide_autocomplete)
+            text_widget.bind('<Up>', self.on_arrow_key)
+            text_widget.bind('<Down>', self.on_arrow_key)
 
     def on_key_release(self, event):
         """Handle key release for autocomplete"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_key_release'):
+            return self.enhanced_system.on_key_release(event)
+
+        # Fallback implementation
         widget = event.widget
         current_text = widget.get("1.0", "end-1c")
         cursor_pos = widget.index("insert")
@@ -1934,6 +1959,10 @@ class IntelligentAutocomplete:
 
     def detect_autocomplete_opportunity(self, widget, line_content, cursor_pos):
         """Detect when to show autocomplete suggestions"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'detect_autocomplete_opportunity'):
+            return self.enhanced_system.detect_autocomplete_opportunity(widget, line_content, cursor_pos)
+
+        # Fallback implementation
         # Look for backslash commands
         if '\\' in line_content:
             text_before_cursor = line_content[:cursor_pos]
@@ -1952,6 +1981,10 @@ class IntelligentAutocomplete:
 
     def handle_environment_completion(self, widget, line_content, cursor_pos):
         """Handle automatic environment completion"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'handle_environment_completion'):
+            return self.enhanced_system.handle_environment_completion(widget, line_content, cursor_pos)
+
+        # Fallback implementation
         if '\\begin{' in line_content and '\\end{' not in line_content:
             # Extract environment name
             begin_match = re.search(r'\\begin{([^}]*)}', line_content)
@@ -1961,6 +1994,10 @@ class IntelligentAutocomplete:
 
     def auto_complete_environment(self, widget, env_name):
         """Automatically complete environment with proper formatting"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'auto_complete_environment'):
+            return self.enhanced_system.auto_complete_environment(widget, env_name)
+
+        # Fallback implementation
         cursor_pos = widget.index("insert")
         line_end = widget.index(f"{cursor_pos} lineend")
 
@@ -1987,6 +2024,10 @@ class IntelligentAutocomplete:
 
     def show_suggestions(self, widget, partial_command, cursor_pos):
         """Show autocomplete suggestions"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'show_suggestions'):
+            return self.enhanced_system.show_suggestions(widget, partial_command, cursor_pos)
+
+        # Fallback implementation
         # Find matching commands
         self.suggestions = []
         for command, info in self.command_database.items():
@@ -2002,6 +2043,10 @@ class IntelligentAutocomplete:
 
     def show_autocomplete_window(self, widget, suggestions):
         """Display autocomplete suggestions window"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'show_autocomplete_window'):
+            return self.enhanced_system.show_autocomplete_window(widget, suggestions)
+
+        # Fallback implementation
         self.hide_autocomplete()
 
         # Get widget position
@@ -2046,6 +2091,10 @@ class IntelligentAutocomplete:
 
     def on_suggestion_selected(self, event=None):
         """Handle suggestion selection"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_selected'):
+            return self.enhanced_system.on_suggestion_selected(event)
+
+        # Fallback implementation
         if not self.suggestions or not self.autocomplete_window:
             return
 
@@ -2057,6 +2106,10 @@ class IntelligentAutocomplete:
 
     def apply_autocomplete(self, command, info):
         """Apply the selected autocomplete"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'apply_autocomplete'):
+            return self.enhanced_system.apply_autocomplete(command, info)
+
+        # Fallback implementation
         widget = self.parent.content_editor._textbox  # Target the content editor
 
         # Get current cursor position and line
@@ -2082,6 +2135,10 @@ class IntelligentAutocomplete:
 
     def position_cursor_at_placeholder(self, widget, completion):
         """Position cursor at the first placeholder ($1)"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'position_cursor_at_placeholder'):
+            return self.enhanced_system.position_cursor_at_placeholder(widget, completion)
+
+        # Fallback implementation
         if '$1' in completion:
             # Find position of first placeholder
             cursor_pos = widget.index("insert")
@@ -2095,6 +2152,10 @@ class IntelligentAutocomplete:
 
     def on_tab(self, event):
         """Handle tab for autocomplete selection"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_tab'):
+            return self.enhanced_system.on_tab(event)
+
+        # Fallback implementation
         if self.autocomplete_window and self.suggestions:
             self.on_suggestion_selected()
             return "break"  # Prevent default tab behavior
@@ -2102,11 +2163,19 @@ class IntelligentAutocomplete:
 
     def on_return(self, event):
         """Handle return key"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_return'):
+            return self.enhanced_system.on_return(event)
+
+        # Fallback implementation
         self.hide_autocomplete()
         return None  # Allow default return behavior
 
     def on_arrow_key(self, event):
         """Handle arrow key navigation in suggestions"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_arrow_key'):
+            return self.enhanced_system.on_arrow_key(event)
+
+        # Fallback implementation
         if not self.autocomplete_window:
             return None
 
@@ -2130,7 +2199,22 @@ class IntelligentAutocomplete:
 
     def hide_autocomplete(self, event=None):
         """Hide the autocomplete window"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'hide_autocomplete'):
+            return self.enhanced_system.hide_autocomplete(event)
+
+        # Fallback implementation
         if self.autocomplete_window:
             self.autocomplete_window.destroy()
             self.autocomplete_window = None
 
+    def get_suggestions(self, text: str, cursor_position: int):
+        """Get autocomplete suggestions - interface for enhanced system"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'get_suggestions'):
+            return self.enhanced_system.get_suggestions(text, cursor_position)
+        return []
+
+    def complete_command(self, text: str, cursor_position: int, suggestion: str):
+        """Complete command - interface for enhanced system"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'complete_command'):
+            return self.enhanced_system.complete_command(text, cursor_position, suggestion)
+        return text, cursor_position
