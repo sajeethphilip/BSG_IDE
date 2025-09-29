@@ -1921,7 +1921,7 @@ class BeamerSlideEditor(ctk.CTk):
                 self.presentation_info['logo'] = img_match.group(1)
 
     def enhanced_extract_slides_from_tex(self, content: str) -> list:
-        """Enhanced slide extraction with better content parsing"""
+        """Enhanced slide extraction with simplified content parsing"""
         slides = []
         import re
 
@@ -1975,7 +1975,7 @@ class BeamerSlideEditor(ctk.CTk):
                 # Extract media
                 media = self.extract_media_from_frame(frame_content)
 
-                # Extract content items
+                # Extract content using simplified approach
                 content_items = self.extract_content_from_frame(frame_content)
 
                 # Extract notes
@@ -2018,7 +2018,7 @@ class BeamerSlideEditor(ctk.CTk):
         return media
 
     def extract_content_from_frame(self, frame_content: str) -> list:
-        """Extract content items from frame"""
+        """Extract content items from frame - treat as plain text unless explicit \item"""
         import re
 
         content_items = []
@@ -2026,34 +2026,32 @@ class BeamerSlideEditor(ctk.CTk):
         # Remove media commands and notes to isolate main content
         clean_content = re.sub(r'\\includegraphics[^}]*}|\\movie[^}]*}|\\note{[^}]*}', '', frame_content)
 
-        # Extract itemize environments
-        itemize_blocks = re.finditer(r'\\begin{itemize}(.*?)\\end{itemize}', clean_content, re.DOTALL)
-        for itemize in itemize_blocks:
-            items = re.finditer(r'\\item\s*(.*?)(?=\\item|\\end{itemize})', itemize.group(1), re.DOTALL)
-            for item in items:
-                item_text = self.clean_latex_content(item.group(1).strip())
-                if item_text:
-                    content_items.append(f"- {item_text}")
+        # Only extract explicit \item commands with bullets
+        # Look for \item commands anywhere in the content
+        items = re.finditer(r'\\item\s*(.*?)(?=\\item|\\end{itemize}|\\end{enumerate}|$)',
+                           clean_content, re.DOTALL)
 
-        # Extract enumerate environments
-        enumerate_blocks = re.finditer(r'\\begin{enumerate}(.*?)\\end{enumerate}', clean_content, re.DOTALL)
-        for enum in enumerate_blocks:
-            items = re.finditer(r'\\item\s*(.*?)(?=\\item|\\end{enumerate})', enum.group(1), re.DOTALL)
-            for item in items:
-                item_text = self.clean_latex_content(item.group(1).strip())
-                if item_text:
-                    content_items.append(f"- {item_text}")
+        for item in items:
+            item_text = self.clean_latex_content(item.group(1).strip())
+            if item_text:
+                content_items.append(f"- {item_text}")
 
-        # Extract block content (paragraphs outside lists)
+        # If no explicit items found, extract the main content as plain text blocks
         if not content_items:
-            # Split by double newlines and clean each block
-            blocks = re.split(r'\n\s*\n', clean_content)
-            for block in blocks:
-                block = block.strip()
-                if block and not block.startswith('\\') and len(block) > 10:  # Minimum length
-                    cleaned = self.clean_latex_content(block)
-                    if cleaned:
-                        content_items.append(f"- {cleaned}")
+            # Remove all LaTeX environments to get plain text
+            plain_content = re.sub(r'\\begin\{.*?\}.*?\\end\{.*?\}', '', clean_content, flags=re.DOTALL)
+            plain_content = re.sub(r'\\[a-zA-Z]+\{.*?\}', '', plain_content)  # Remove other LaTeX commands
+
+            # Split into paragraphs and clean
+            paragraphs = re.split(r'\n\s*\n', plain_content)
+            for paragraph in paragraphs:
+                paragraph = paragraph.strip()
+                # Clean up the paragraph
+                paragraph = re.sub(r'\s+', ' ', paragraph)  # Normalize whitespace
+                paragraph = self.clean_latex_content(paragraph)
+
+                if paragraph and len(paragraph) > 3:  # Minimum length
+                    content_items.append(paragraph)  # No bullet for plain text
 
         return content_items
 
@@ -2076,26 +2074,29 @@ class BeamerSlideEditor(ctk.CTk):
         return notes
 
     def clean_latex_content(self, text: str) -> str:
-        """Clean LaTeX commands and formatting from text"""
+        """Clean LaTeX commands and formatting from text - minimal processing"""
         import re
 
-        # Remove LaTeX commands but keep their content
+        # Simple pattern replacements - keep it minimal
         patterns = [
-            (r'\\textcolor{[^}]*}{([^}]*)}', r'\1'),  # Keep textcolor content
-            (r'\\textbf{([^}]*)}', r'\1'),            # Remove bf but keep content
-            (r'\\textit{([^}]*)}', r'\1'),            # Remove it but keep content
-            (r'\\emph{([^}]*)}', r'\1'),              # Remove emph but keep content
-            (r'\\[a-zA-Z]+', ''),                     # Remove other commands
-            (r'~', ' '),                              # Replace non-breaking spaces
-            (r'\\&', '&'),                            # Fix ampersands
-            (r'\\%', '%'),                            # Fix percentages
-            (r'\\#', '#'),                            # Fix hashes
-            (r'\\_', '_'),                            # Fix underscores
-            (r'\s+', ' '),                            # Normalize whitespace
+            (r'\\textcolor{[^}]*}{([^}]*)}', r'\1'),
+            (r'\\textbf{([^}]*)}', r'\1'),
+            (r'\\textit{([^}]*)}', r'\1'),
+            (r'\\emph{([^}]*)}', r'\1'),
+            (r'\\underline{([^}]*)}', r'\1'),
+            (r'\\item\s*', ''),  # Remove \item commands
+            (r'~', ' '),
+            (r'\\&', '&'),
+            (r'\\%', '%'),
+            (r'\\#', '#'),
+            (r'\\_', '_'),
         ]
 
         for pattern, replacement in patterns:
             text = re.sub(pattern, replacement, text)
+
+        # Remove any remaining LaTeX commands (but be careful not to remove too much)
+        text = re.sub(r'\\[a-zA-Z]+\s*', '', text)  # Remove simple commands
 
         return text.strip()
 
@@ -2827,10 +2828,10 @@ class BeamerSlideEditor(ctk.CTk):
             # Always close window
             self.destroy()
 
-    def load_file(self, filename):
-        """Load presentation from file with enhanced notes support"""
+    def load_file(self, filename: str) -> None:
+        """Load presentation from file with notes support"""
         try:
-            with open(filename, 'r') as f:
+            with open(filename, 'r', encoding='utf-8') as f:
                 content = f.read()
 
             # Parse content
@@ -2865,6 +2866,14 @@ class BeamerSlideEditor(ctk.CTk):
                 else:
                     content_lines = content_block.split('\n')
 
+                # Process content lines - NO automatic bullets!
+                final_content_lines = []
+                for line in content_lines:
+                    line = line.strip()
+                    if line:
+                        # Don't add bullets automatically - keep content as-is
+                        final_content_lines.append(line)
+
                 # Process notes
                 notes_lines = []
                 if notes_block:
@@ -2873,7 +2882,7 @@ class BeamerSlideEditor(ctk.CTk):
                 self.slides.append({
                     'title': title,
                     'media': media,
-                    'content': [line for line in content_lines if line.strip()],
+                    'content': final_content_lines,  # No automatic bullets
                     'notes': notes_lines
                 })
 
@@ -2974,7 +2983,7 @@ class BeamerSlideEditor(ctk.CTk):
                 self.terminal.write(f"Error: {data.get('message', 'Unknown error')}\n", "red")
 
     def load_slide(self, index):
-        """Enhanced load_slide with proper notes handling and cleanup"""
+        """Enhanced load_slide with proper content handling (no automatic bullets)"""
         if 0 <= index < len(self.slides):
             slide = self.slides[index]
 
@@ -2982,7 +2991,7 @@ class BeamerSlideEditor(ctk.CTk):
             self.title_entry.delete(0, 'end')
             self.media_entry.delete(0, 'end')
             self.content_editor.delete('1.0', 'end')
-            self.notes_editor.delete('1.0', 'end')  # Always clear notes
+            self.notes_editor.delete('1.0', 'end')
 
             # Update title
             self.title_entry.insert(0, slide.get('title', ''))
@@ -2994,17 +3003,16 @@ class BeamerSlideEditor(ctk.CTk):
             else:
                 self.media_entry.insert(0, media)
 
-            # Update content
+            # Update content - preserve original formatting (no automatic bullets)
             for item in slide.get('content', []):
                 if item and item.strip():
-                    #if not item.startswith('-'):
-                     #   item = f"- {item}"
+                    # Don't modify the item - use it as is
                     self.content_editor.insert('end', f"{item}\n")
 
-            # Update notes - only if present and non-empty
+            # Update notes
             if 'notes' in slide and slide['notes']:
                 notes = [note for note in slide['notes'] if note.strip()]
-                if notes:  # Only add notes if there are actual non-empty notes
+                if notes:
                     for note in notes:
                         self.notes_editor.insert('end', f"{note}\n")
                 else:
@@ -3514,17 +3522,17 @@ Created by {self.__author__}
         return info
 
     def extract_slides_from_tex(self, content: str) -> list:
-        """Extract slides from TeX content, with correct titles and media paths"""
+        """Extract slides from TeX content with simplified content extraction"""
         slides = []
         import re
 
         # First isolate the document body
         doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', content, re.DOTALL)
         if not doc_match:
-            print("Could not find document body")
+            self.write("✗ Could not find document body\n", "red")
             return slides
 
-        document_content = doc_match.group(1).strip()
+        document_content = doc_match.group(1)
 
         # Find all frame blocks in the document body
         frame_blocks = re.finditer(
@@ -3550,71 +3558,28 @@ Created by {self.__author__}
             else:
                 title = "Untitled Slide"
 
-            # Skip title frame
-            if "\\titlepage" in frame_content:
+            # Skip title page frames
+            if "\\titlepage" in frame_content or "\\maketitle" in frame_content:
+                self.write(f"Skipping title frame\n", "yellow")
                 continue
-            # Extract note content
-            notes = []
-            note_match = re.search(r'\\note{(.*?)}', frame_content, re.DOTALL)
-            if note_match:
-                note_content = note_match.group(1)
-                # Extract items from note's itemize environment
-                note_items = re.finditer(r'\\item\s*(.*?)(?=\\item|\s*\\end{itemize}|$)',
-                                       note_content,
-                                       re.DOTALL)
-                for item in note_items:
-                    note_text = item.group(1).strip()
-                    if note_text:
-                        notes.append(f"• {note_text}")
-            # Extract content and media
-            content_lines = []
-            media = ""
 
-            # Look for media in columns environment
-            media_match = re.search(r'\\includegraphics\[.*?\]{([^}]*)}', frame_content)
-            if media_match:
-                # Extract filename and ensure it has media_files prefix
-                filename = media_match.group(1)
-                if not filename.startswith('media_files/'):
-                    filename = os.path.basename(filename)  # Remove any existing path
-                    filename = f"media_files/{filename}"  # Add media_files prefix
-                media = f"\\file {filename}"
+            # Extract media
+            media = self.extract_media_from_frame(frame_content)
 
-            # Look for movie elements
-            movie_match = re.search(r'\\movie(?:\[[^\]]*\])?{[^}]*}{([^}]*)}', frame_content)
-            if movie_match:
-                filename = movie_match.group(1)
-                if not filename.startswith('media_files/'):
-                    filename = os.path.basename(filename)
-                    filename = f"media_files/{filename}"
-                media = f"\\play {filename}"
+            # Extract content using simplified approach
+            content_items = self.extract_content_from_frame(frame_content)
 
-            # Extract itemize content
-            itemize_blocks = re.finditer(r'\\begin{itemize}(.*?)\\end{itemize}', frame_content, re.DOTALL)
-            for itemize in itemize_blocks:
-                items = re.finditer(r'\\item\s*(.*?)(?=\\item|\s*\\end{itemize}|$)',
-                                  itemize.group(1),
-                                  re.DOTALL)
-                for item in items:
-                    content_line = item.group(1).strip()
-                    if content_line:
-                        # Clean up the content line
-                        content_line = content_line.replace('\\&', '&')
-                        content_line = re.sub(r'\\textcolor{[^}]*}{([^}]*)}', r'\1', content_line)
-                        content_line = re.sub(r'\\[a-zA-Z]+{([^}]*)}', r'\1', content_line)
-                        #if not content_line.startswith('-'):
-                        #    content_line = f"- {content_line}"
-                        content_lines.append(content_line)
+            # Extract notes
+            notes = self.extract_notes_from_frame(frame_content)
 
             # Only add non-empty slides
-            if content_lines or media:
-                     # Add both content and notes to slide data
-                    slides.append({
-                        'title': title.strip(),
-                        'media': media,
-                        'content': content_lines,
-                        'notes': notes
-                    })
+            if content_items or media:
+                slides.append({
+                    'title': title.strip(),
+                    'media': media,
+                    'content': content_items,
+                    'notes': notes
+                })
 
         return slides
 
@@ -5632,7 +5597,14 @@ Created by {self.__author__}
         try:
             # Get custom preamble with logo
             content = self.get_custom_preamble()
-
+            # Add presentation info commands including logo if present
+            for key in ['title', 'subtitle', 'author', 'institution', 'short_institute', 'date']:
+                if key in self.presentation_info and self.presentation_info[key]:
+                    content += f"\\{key}{{{self.presentation_info[key]}}}\n"
+            # Add logo command separately if it exists
+            if 'logo' in self.presentation_info and self.presentation_info['logo']:
+                content += f"{self.presentation_info['logo']}\n"
+            content += "\n"  # Add separation before slides
             # Add slides in BeamerSlideGenerator's expected format
             for slide in self.slides:
                 content += "\n\n"  # Add two extra line break before new slide
@@ -5642,12 +5614,10 @@ Created by {self.__author__}
                     content += f" {slide['media']}"
                 content += "\n"
 
-                # Format content items
+                # Format content items - NO automatic bullet addition!
                 for item in slide['content']:
                     if item.strip():
-                        # Ensure proper bullet point format
-                       # if not item.startswith('-'):
-                        #    item = f"- {item}"
+                        # Don't add bullets automatically - keep content as-is
                         content += f"{item}\n"
 
                 content += "\\end{Content}\n\n"
@@ -6146,29 +6116,24 @@ Created by {self.__author__}
             self.load_slide(index)
             self.update_slide_list()
 
-
-
     def save_current_slide(self):
-        """Save current slide data with improved initial slide handling"""
+        """Save current slide data without modifying content formatting"""
         if not hasattr(self, 'slides') or not self.slides:
-            # Initialize slides array if it doesn't exist
             self.slides = []
             self.current_slide_index = -1
             return
 
         if self.current_slide_index < 0:
-            # If no current slide, check if we have content to save
             title = self.title_entry.get().strip()
             media = self.media_entry.get().strip()
             content = [line for line in self.content_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
             notes = [line for line in self.notes_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
 
-            # Only create new slide if there's actual content
             if title or media or content or notes:
                 new_slide = {
                     'title': title or 'New Slide',
                     'media': media,
-                    'content': content,
+                    'content': content,  # Keep content as-is
                     'notes': notes
                 }
                 self.slides.append(new_slide)
@@ -6182,12 +6147,12 @@ Created by {self.__author__}
         content = [line for line in self.content_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
         notes = [line for line in self.notes_editor.get('1.0', 'end-1c').split('\n') if line.strip()]
 
-        # Update the slide
+        # Update the slide - preserve content formatting
         if 0 <= self.current_slide_index < len(self.slides):
             self.slides[self.current_slide_index] = {
                 'title': title,
                 'media': media,
-                'content': content,
+                'content': content,  # Keep content as-is (no automatic bullets)
                 'notes': notes
             }
 
@@ -6319,7 +6284,16 @@ Created by {self.__author__}
             self.current_file = filename
             self.slides = []
             self.current_slide_index = -1
-
+            # Reset presentation info
+            self.presentation_info = {
+                'title': '',
+                'subtitle': '',
+                'author': '',
+                'institution': 'Artificial Intelligence Research and Intelligent Systems (airis4D)',
+                'short_institute': 'airis4D',
+                'date': '\\today',
+                'logo': ''
+            }
             # Extract presentation info
             import re
             for key in self.presentation_info:
