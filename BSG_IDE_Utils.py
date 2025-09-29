@@ -5,6 +5,108 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
+from BeamerSlideGenerator import get_beamer_preamble
+
+class BeamerSyntaxHighlighter:
+    """Syntax highlighting for Beamer/LaTeX content"""
+
+    def __init__(self, text_widget: ctk.CTkTextbox):
+        self.ctk_text = text_widget
+        self.text = text_widget._textbox
+        self.active = True
+
+        # Create fonts
+        self.normal_font = tk.font.Font(family="TkFixedFont")
+        self.italic_font = tk.font.Font(family="TkFixedFont", slant="italic")
+
+        # Define syntax highlighting colors
+        self.colors = {
+            'command': '#FF6B6B',     # LaTeX commands
+            'media': '#4ECDC4',       # Media directives
+            'bullet': '#95A5A6',      # Bullet points
+            'url': '#45B7D1',         # URLs
+            'bracket': '#FFB86C',     # Curly brackets
+            'comment': '#6272A4',     # Comments
+            'rgb': '#50FA7B',         # RGB color commands
+            'textcolor': '#BD93F9'    # textcolor commands
+        }
+
+        # Configure tags on the underlying Text widget
+        for tag, color in self.colors.items():
+            self.text.tag_configure(tag, foreground=color, font=self.normal_font)
+
+        # Special formatting for comments with italic font
+        self.text.tag_configure("comment",
+                              foreground=self.colors['comment'],
+                              font=self.italic_font)
+
+        # Define syntax patterns
+        self.patterns = [
+            (r'\\[a-zA-Z]+', 'command'),
+            (r'\\(file|play|None)\s', 'media'),
+            (r'^-\s.*$', 'bullet'),
+            (r'https?://\S+', 'url'),
+            (r'\{.*?\}', 'bracket'),
+            (r'%.*$', 'comment'),
+            (r'\\textcolor\{.*?\}', 'textcolor'),
+            (r'\[RGB\]\{[^\}]*\}', 'rgb')
+        ]
+
+        # Bind events to the CTkTextbox
+        self.ctk_text.bind('<KeyRelease>', self.highlight)
+        self.ctk_text.bind('<Control-v>', lambda e: self.after_paste())
+        # Initialize presentation metadata
+        self.presentation_info = {
+            'title': '',
+            'subtitle': '',
+            'author': '',
+            'institution': 'Artificial Intelligence Research and Intelligent Systems (airis4D)',
+            'short_institute': 'airis4D',
+            'date': '\\today'
+        }
+
+
+    def toggle(self) -> None:
+        """Toggle syntax highlighting on/off"""
+        self.active = not self.active
+        if self.active:
+            self.highlight()
+        else:
+            self.clear_highlighting()
+
+    def clear_highlighting(self) -> None:
+        """Remove all highlighting"""
+        for tag in self.colors.keys():
+            self.text.tag_remove(tag, "1.0", "end")
+
+    def highlight(self, event=None) -> None:
+        """Apply syntax highlighting to the text"""
+        if not self.active:
+            return
+
+        self.clear_highlighting()
+        for pattern, tag in self.patterns:
+            self.highlight_pattern(pattern, tag)
+
+    def highlight_pattern(self, pattern: str, tag: str) -> None:
+        """Apply highlighting for a specific pattern"""
+        content = self.text.get("1.0", "end-1c")
+        lines = content.split('\n')
+
+        for line_num, line in enumerate(lines, start=1):
+            for match in re.finditer(pattern, line):
+                start = match.start()
+                end = match.end()
+                start_index = f"{line_num}.{start}"
+                end_index = f"{line_num}.{end}"
+                self.text.tag_add(tag, start_index, end_index)
+
+    def after_paste(self) -> None:
+        """Handle highlighting after paste operation"""
+        self.text.after(10, self.highlight)
+        # Also trigger spell checking
+        if hasattr(self.ctk_text.master, 'spell_checking_enabled') and self.ctk_text.master.spell_checking_enabled:
+            self.ctk_text.master.check_spelling()
 
 class SessionManager:
     """Manages persistence of session data between IDE launches"""

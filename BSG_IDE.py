@@ -1356,7 +1356,7 @@ class BeamerSlideEditor(ctk.CTk):
         self.after(100, self.setup_grammarly_bindings)
 
         # NEW: Auto-prompt for Grammarly setup on first run (optional)
-        self.after(500, self.auto_prompt_grammarly_setup)
+        #self.after(500, self.auto_prompt_grammarly_setup)
 
         # Initialize enhanced features
         self.enhanced_command_index = None
@@ -2830,7 +2830,7 @@ class BeamerSlideEditor(ctk.CTk):
             self.destroy()
 
     def load_file(self, filename: str) -> None:
-        """Load presentation from file with notes support"""
+        """Load presentation from file with proper logo handling and fallback for old format"""
         try:
             with open(filename, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -2840,15 +2840,66 @@ class BeamerSlideEditor(ctk.CTk):
             self.slides = []
             self.current_slide_index = -1
 
-            # Extract presentation info
+            # Reset presentation info
+            self.presentation_info = {
+                'title': '',
+                'subtitle': '',
+                'author': '',
+                'institute': 'Artificial Intelligence Research and Intelligent Systems (airis4D)',
+                'short_institute': 'airis4D',
+                'date': '\\today',
+                'logo': ''
+            }
+
             import re
-            for key in self.presentation_info:
-                pattern = f"\\\\{key}{{(.*?)}}"
+
+            # Standard presentation info patterns
+            standard_patterns = {
+                'title': r'\\title{([^}]*)}',
+                'subtitle': r'\\subtitle{([^}]*)}',
+                'author': r'\\author{([^}]*)}',
+                'institute': r'\\institute{([^}]*)}',
+                'short_institute': r'\\shortinstitute{([^}]*)}',
+                'date': r'\\date{([^}]*)}'
+            }
+
+            for key, pattern in standard_patterns.items():
                 match = re.search(pattern, content)
                 if match:
-                    self.presentation_info[key] = match.group(1)
+                    self.presentation_info[key] = match.group(1).strip()
 
-            # Extract slides with notes using enhanced pattern
+            # Extract logo - PRIMARY: Look for proper \logo{} command
+            doc_start = content.find("\\begin{document}")
+            if doc_start != -1:
+                preamble = content[:doc_start]
+
+                # PRIMARY: Look for proper \logo{} command
+                logo_cmd_pattern = r'\\logo{([^}]*)}'
+                logo_cmd_match = re.search(logo_cmd_pattern, preamble)
+
+                if logo_cmd_match:
+                    # Found proper \logo{} command
+                    self.presentation_info['logo'] = logo_cmd_match.group(0)  # Get the full command
+                    print(f"✓ Loaded logo (proper format): {self.presentation_info['logo']}")
+                else:
+                    # FALLBACK: Look for standalone \includegraphics command that's likely the logo
+                    logo_pattern = r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}'
+                    logo_matches = list(re.finditer(logo_pattern, preamble))
+
+                    # If we found graphics commands in the preamble, the last one is likely the logo
+                    if logo_matches:
+                        last_logo_match = logo_matches[-1]
+                        logo_path = last_logo_match.group(1).strip()
+                        full_logo_command = last_logo_match.group(0)
+
+                        # Convert to proper \logo{} format
+                        self.presentation_info['logo'] = f"\\logo{{{full_logo_command}}}"
+                        print(f"✓ Loaded logo (converted from old format): {logo_path}")
+                        print("ℹ Logo was converted to proper \\logo{} format. File will be saved in new format.")
+                    else:
+                        print("ℹ No logo found in file")
+
+            # Extract slides with notes
             slide_pattern = r"\\title\s+(.*?)\n\\begin{Content}(.*?)\\end{Content}(?:\s*\\begin{Notes}(.*?)\\end{Notes})?"
             slide_matches = re.finditer(slide_pattern, content, re.DOTALL)
 
@@ -2867,12 +2918,11 @@ class BeamerSlideEditor(ctk.CTk):
                 else:
                     content_lines = content_block.split('\n')
 
-                # Process content lines - NO automatic bullets!
+                # Process content lines
                 final_content_lines = []
                 for line in content_lines:
                     line = line.strip()
                     if line:
-                        # Don't add bullets automatically - keep content as-is
                         final_content_lines.append(line)
 
                 # Process notes
@@ -2883,7 +2933,7 @@ class BeamerSlideEditor(ctk.CTk):
                 self.slides.append({
                     'title': title,
                     'media': media,
-                    'content': final_content_lines,  # No automatic bullets
+                    'content': final_content_lines,
                     'notes': notes_lines
                 })
 
@@ -2893,8 +2943,12 @@ class BeamerSlideEditor(ctk.CTk):
 
             self.update_slide_list()
 
+            print(f"✓ Loaded presentation with {len(self.slides)} slides")
+
         except Exception as e:
             messagebox.showerror("Error", f"Error loading file: {str(e)}")
+            print(f"Detailed error: {traceback.format_exc()}")
+
 
 #--------------------------------------------------------------------------------
     def ide_callback(self, action, data):
@@ -5574,7 +5628,7 @@ Created by {self.__author__}
 
 #-----------------------------------------------------------------------------
     def save_file(self) -> None:
-        """Save presentation preserving custom preamble"""
+        """Save presentation preserving custom preamble and logo in proper LaTeX format"""
         if not self.current_file:
             filename = filedialog.asksaveasfilename(
                 defaultextension=".txt",
@@ -5583,11 +5637,8 @@ Created by {self.__author__}
             if filename:
                 self.current_file = filename
                 global working_folder
-                # Change to tet file directory
-                working_folder= os.path.dirname(filename) or '.'
+                working_folder = os.path.dirname(filename) or '.'
                 os.chdir(working_folder)
-
-                # Update working directory in terminal
                 self.terminal.set_working_directory(working_folder)
             else:
                 return
@@ -5598,17 +5649,26 @@ Created by {self.__author__}
         try:
             # Get custom preamble with logo
             content = self.get_custom_preamble()
-            # Add presentation info commands including logo if present
-            for key in ['title', 'subtitle', 'author', 'institution', 'short_institute', 'date']:
+
+            # Add presentation info commands
+            for key in ['title', 'subtitle', 'author', 'institute', 'short_institute', 'date']:
                 if key in self.presentation_info and self.presentation_info[key]:
                     content += f"\\{key}{{{self.presentation_info[key]}}}\n"
-            # Add logo command separately if it exists
+
+            # Add logo command if it exists (in proper \logo{} format)
             if 'logo' in self.presentation_info and self.presentation_info['logo']:
-                content += f"{self.presentation_info['logo']}\n"
+                # Ensure the logo is in proper \logo{} format
+                logo_cmd = self.presentation_info['logo']
+                if not logo_cmd.startswith('\\logo{'):
+                    # If it's just an \includegraphics, wrap it properly
+                    logo_cmd = f"\\logo{{{logo_cmd}}}"
+                content += f"{logo_cmd}\n"
+
             content += "\n"  # Add separation before slides
+
             # Add slides in BeamerSlideGenerator's expected format
             for slide in self.slides:
-                content += "\n\n"  # Add two extra line break before new slide
+                content += "\n\n"  # Add two extra line breaks before new slide
                 content += f"\\title {slide['title']}\n"
                 content += "\\begin{Content}"
                 if slide['media']:
@@ -5618,7 +5678,6 @@ Created by {self.__author__}
                 # Format content items - NO automatic bullet addition!
                 for item in slide['content']:
                     if item.strip():
-                        # Don't add bullets automatically - keep content as-is
                         content += f"{item}\n"
 
                 content += "\\end{Content}\n\n"
@@ -5636,7 +5695,7 @@ Created by {self.__author__}
             content += "\\end{document}"
 
             # Save to text file
-            with open(self.current_file, 'w') as f:
+            with open(self.current_file, 'w', encoding='utf-8') as f:
                 f.write(content)
 
             self.write("✓ File saved successfully: " + self.current_file + "\n", "green")
@@ -5644,6 +5703,7 @@ Created by {self.__author__}
         except Exception as e:
             self.write(f"✗ Error saving file: {str(e)}\n", "red")
             messagebox.showerror("Error", f"Error saving file:\n{str(e)}")
+
 
     def convert_media_to_latex(self, line: str) -> str:
         """Convert media directives to proper LaTeX commands"""
@@ -5699,68 +5759,28 @@ Created by {self.__author__}
             messagebox.showerror("Error", f"Error converting to TeX:\n{str(e)}")
 
     def get_custom_preamble(self) -> str:
-            """Generate custom preamble with proper logo handling"""
-            try:
-                # If we have a stored custom preamble, use it as base
-                if hasattr(self, 'custom_preamble'):
-                    base_preamble = self.custom_preamble
-                else:
-                    # Get base preamble from BeamerSlideGenerator
-                    from BeamerSlideGenerator import get_beamer_preamble
-                    base_preamble = get_beamer_preamble(
-                        self.presentation_info['title'],
-                        self.presentation_info['subtitle'],
-                        self.presentation_info['author'],
-                        self.presentation_info['institution'],
-                        self.presentation_info['short_institute'],
-                        self.presentation_info['date']
-                    )
+        """Generate custom preamble WITHOUT logo (logo will be added separately)"""
+        try:
+            # Get base preamble from BeamerSlideGenerator
+            from BeamerSlideGenerator import get_beamer_preamble
+            preamble = get_beamer_preamble(
+                self.presentation_info.get('title', ''),
+                self.presentation_info.get('subtitle', ''),
+                self.presentation_info.get('author', ''),
+                self.presentation_info.get('institute', ''),
+                self.presentation_info.get('short_institute', ''),
+                self.presentation_info.get('date', '\\today')
+            )
 
-                # Process logo
-                if 'logo' in self.presentation_info and self.presentation_info['logo']:
-                    # Remove any existing logo commands
-                    preamble = re.sub(
-                        r'\\logo{[^}]*}\s*\n?',
-                        '',
-                        base_preamble
-                    )
+            # Remove any existing logo commands from preamble
+            # (we'll add the logo separately in save_file)
+            preamble = re.sub(r'\\logo{[^}]*}\s*\n?', '', preamble)
 
-                    # Add our logo command just before \begin{document}
-                    doc_pos = preamble.find("\\begin{document}")
-                    if doc_pos != -1:
-                        logo_command = self.presentation_info['logo'] + "\n\n"
-                        preamble = preamble[:doc_pos] + logo_command + preamble[doc_pos:]
-                    else:
-                        # If no \begin{document} found, append logo at end
-                        preamble = base_preamble + "\n" + self.presentation_info['logo'] + "\n"
-                else:
-                    preamble = base_preamble
+            return preamble
 
-                return preamble
-
-            except Exception as e:
-                print(f"Error generating custom preamble: {e}")
-                # Fallback to default preamble without logo
-                try:
-                    from BeamerSlideGenerator import get_beamer_preamble
-                    preamble = get_beamer_preamble(
-                        self.presentation_info['title'],
-                        self.presentation_info['subtitle'],
-                        self.presentation_info['author'],
-                        self.presentation_info['institution'],
-                        self.presentation_info['short_institute'],
-                        self.presentation_info['date']
-                    )
-                    # Remove default logo if any
-                    preamble = re.sub(
-                        r'\\logo{[^}]*}\s*\n?',
-                        '',
-                        preamble
-                    )
-                    return preamble
-                except Exception as e2:
-                    print(f"Error in fallback preamble generation: {e2}")
-                    return ""
+        except Exception as e:
+            print(f"Error generating custom preamble: {e}")
+            return ''""
 #------------------------------------------------------------------------------
 
 
@@ -6276,15 +6296,16 @@ Created by {self.__author__}
         return tex_content
 
     def load_file(self, filename: str) -> None:
-        """Load presentation from file with notes support"""
+        """Load presentation from file with notes support and logo handling"""
         try:
-            with open(filename, 'r') as f:
+            with open(filename, 'r', encoding='utf-8') as f:
                 content = f.read()
 
             # Parse content
             self.current_file = filename
             self.slides = []
             self.current_slide_index = -1
+
             # Reset presentation info
             self.presentation_info = {
                 'title': '',
@@ -6293,15 +6314,58 @@ Created by {self.__author__}
                 'institution': 'Artificial Intelligence Research and Intelligent Systems (airis4D)',
                 'short_institute': 'airis4D',
                 'date': '\\today',
-                'logo': ''
+                'logo': ''  # Make sure logo is initialized
             }
-            # Extract presentation info
+
+            # Extract presentation info including logo
             import re
-            for key in self.presentation_info:
-                pattern = f"\\\\{key}{{(.*?)}}"
+
+            # Standard presentation info patterns
+            standard_patterns = {
+                'title': r'\\title{([^}]*)}',
+                'subtitle': r'\\subtitle{([^}]*)}',
+                'author': r'\\author{([^}]*)}',
+                'institute': r'\\institute{([^}]*)}',  # Note: using institute instead of institution
+                'short_institute': r'\\shortinstitute{([^}]*)}',
+                'date': r'\\date{([^}]*)}'
+            }
+
+            for key, pattern in standard_patterns.items():
                 match = re.search(pattern, content)
                 if match:
-                    self.presentation_info[key] = match.group(1)
+                    self.presentation_info[key] = match.group(1).strip()
+
+            # Extract logo - look for standalone \includegraphics command before \begin{document}
+            # Find the position of \begin{document}
+            doc_start = content.find("\\begin{document}")
+            if doc_start != -1:
+                # Only search for logo in the preamble (before \begin{document})
+                preamble = content[:doc_start]
+
+                # Look for \includegraphics command that's likely the logo
+                # This pattern matches \includegraphics[options]{path} commands
+                logo_pattern = r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}'
+                logo_matches = list(re.finditer(logo_pattern, preamble))
+
+                # If we found any graphics commands in the preamble, the last one is likely the logo
+                if logo_matches:
+                    # Get the last graphics command in the preamble (usually the logo)
+                    last_logo_match = logo_matches[-1]
+                    logo_path = last_logo_match.group(1).strip()
+
+                    # Reconstruct the full logo command
+                    full_logo_command = last_logo_match.group(0)  # This gets the full \includegraphics[...]{...}
+
+                    # Store as a proper logo command
+                    self.presentation_info['logo'] = f"\\logo{{{full_logo_command}}}"
+                    print(f"✓ Found and loaded logo: {logo_path}")
+                else:
+                    # Also check for existing \logo command as fallback
+                    logo_cmd_pattern = r'\\logo{([^}]*)}'
+                    logo_cmd_match = re.search(logo_cmd_pattern, preamble)
+                    if logo_cmd_match:
+                        self.presentation_info['logo'] = logo_cmd_match.group(0)
+                        print(f"✓ Found logo command: {self.presentation_info['logo']}")
 
             # Extract slides with notes using enhanced pattern
             slide_pattern = r"\\title\s+(.*?)\n\\begin{Content}(.*?)\\end{Content}(?:\s*\\begin{Notes}(.*?)\\end{Notes})?"
@@ -6322,6 +6386,14 @@ Created by {self.__author__}
                 else:
                     content_lines = content_block.split('\n')
 
+                # Process content lines - NO automatic bullets!
+                final_content_lines = []
+                for line in content_lines:
+                    line = line.strip()
+                    if line:
+                        # Don't add bullets automatically - keep content as-is
+                        final_content_lines.append(line)
+
                 # Process notes
                 notes_lines = []
                 if notes_block:
@@ -6330,7 +6402,7 @@ Created by {self.__author__}
                 self.slides.append({
                     'title': title,
                     'media': media,
-                    'content': [line for line in content_lines if line.strip()],
+                    'content': final_content_lines,  # No automatic bullets
                     'notes': notes_lines
                 })
 
@@ -6338,16 +6410,18 @@ Created by {self.__author__}
                 self.current_slide_index = 0
                 self.load_slide(0)
 
-                # Display notes if present
-                if self.slides[0].get('notes'):
-                    self.notes_editor.delete('1.0', 'end')
-                    for note in self.slides[0]['notes']:
-                        self.notes_editor.insert('end', f"{note}\n")
-
             self.update_slide_list()
+
+            # Debug output to verify everything was loaded
+            print(f"✓ Loaded presentation with {len(self.slides)} slides")
+            if self.presentation_info.get('logo'):
+                print(f"✓ Logo: {self.presentation_info['logo']}")
+            else:
+                print("ℹ No logo found in file")
 
         except Exception as e:
             messagebox.showerror("Error", f"Error loading file: {str(e)}")
+            print(f"Detailed error: {traceback.format_exc()}")
 
     def show_settings_dialog(self) -> None:
         """Show presentation settings dialog with logo handling"""
