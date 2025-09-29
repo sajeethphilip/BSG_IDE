@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
+from tkinter import messagebox
 
 class GrammarlyIntegration:
     """Grammarly integration for advanced grammar and spelling checking"""
