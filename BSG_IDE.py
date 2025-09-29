@@ -2154,7 +2154,7 @@ class BeamerSlideEditor(ctk.CTk):
 
 #-------------------------------------------------------------------------------------
     def setup_spellchecking(self):
-        """Initialize spell checking components"""
+        """Initialize spell checking components with click-to-anchor functionality"""
         try:
             from spellchecker import SpellChecker
             self.spell_checker = SpellChecker()
@@ -2164,11 +2164,21 @@ class BeamerSlideEditor(ctk.CTk):
             for widget in [self.content_editor._textbox, self.notes_editor._textbox]:
                 widget.tag_configure("misspelled", underline=True, underlinefg="red")
                 widget.tag_configure("misspelled_highlight", background="#2F3542")
+                widget.tag_configure("misspelled_anchor", background="#4A90E2")  # Blue highlight for anchored word
 
-                # Bind right-click event
-                widget.bind("<Button-3>", self.show_spelling_suggestions)
+                # Bind events
+                widget.bind("<Button-1>", self.on_text_click)  # Click to anchor tooltip
+                widget.bind("<Button-3>", self.show_spelling_suggestions)  # Right-click menu
+                widget.bind("<KeyRelease>", self.check_spelling)  # Real-time checking
 
-            print("✓ Spell checking enabled")
+            print("✓ Spell checking enabled (click misspelled words for suggestions)")
+
+            # Create anchored tooltip window (but don't show it yet)
+            self.create_anchored_tooltip()
+
+            # Perform initial spell check
+            self.after(1000, self.perform_initial_spell_check)
+
         except ImportError:
             self.spell_checking_enabled = False
             print("Spell checking disabled: pyspellchecker not installed")
@@ -2178,17 +2188,397 @@ class BeamerSlideEditor(ctk.CTk):
         self.spelling_menu.add_command(label="Add to Dictionary", command=self.add_to_dictionary)
         self.spelling_menu.add_separator()
 
-    def check_spelling(self, event=None):
-        """Check spelling in real-time"""
+    def create_anchored_tooltip(self):
+        """Create a persistent but hidden tooltip window"""
+        self.anchored_tooltip = tk.Toplevel(self)
+        self.anchored_tooltip.wm_overrideredirect(True)
+        self.anchored_tooltip.configure(bg='#ffffe0', relief='solid', borderwidth=2)
+        self.anchored_tooltip.attributes('-topmost', True)
+
+        # Title frame
+        self.title_frame = tk.Frame(self.anchored_tooltip, bg='#ffffe0')
+        self.title_frame.pack(fill='x', padx=8, pady=(8, 4))
+
+        self.title_label = tk.Label(
+            self.title_frame,
+            text="Spelling Suggestions:",
+            bg='#ffffe0',
+            fg='#333333',
+            font=("Arial", 9, "bold"),
+            justify='left'
+        )
+        self.title_label.pack(anchor='w')
+
+        # Suggestions frame
+        self.suggestions_frame = tk.Frame(self.anchored_tooltip, bg='#ffffe0')
+        self.suggestions_frame.pack(fill='x', padx=8, pady=4)
+
+        # Control frame
+        self.control_frame = tk.Frame(self.anchored_tooltip, bg='#ffffe0')
+        self.control_frame.pack(fill='x', padx=8, pady=(4, 8))
+
+        self.control_label = tk.Label(
+            self.control_frame,
+            text="↑↓: Navigate • Enter: Select • Esc: Close",
+            bg='#ffffe0',
+            fg='#666666',
+            font=("Arial", 8),
+            justify='left'
+        )
+        self.control_label.pack(anchor='w')
+
+        # Initially hide the tooltip
+        self.anchored_tooltip.withdraw()
+
+        # Keyboard navigation
+        self.anchored_tooltip.bind("<Escape>", lambda e: self.hide_anchored_tooltip())
+        self.anchored_tooltip.bind("<KeyPress>", self.on_tooltip_keypress)
+
+        # Track selection
+        self.current_suggestions = []
+        self.selected_index = 0
+        self.anchored_word_info = None
+
+    def on_text_click(self, event):
+        """Handle text click to show anchored spelling suggestions"""
         if not self.spell_checking_enabled:
             return
 
-        # Get the widget that triggered the event
-        widget = event.widget if event else self.content_editor._textbox
+        widget = event.widget
+        index = widget.index(f"@{event.x},{event.y}")
 
-        # Skip spell checking in special contexts
-        skip_tags = ['comment', 'command', 'media', 'bullet', 'url',
-                    'bracket', 'rgb', 'textcolor']
+        # Check if we're clicking on a misspelled word
+        if "misspelled" in widget.tag_names(index):
+            # Get the word under cursor
+            word_start = widget.index(f"{index} wordstart")
+            word_end = widget.index(f"{index} wordend")
+            word = widget.get(word_start, word_end)
+
+            # Remove any previous highlighting
+            widget.tag_remove("misspelled_anchor", "1.0", "end")
+
+            # Highlight the clicked word
+            widget.tag_add("misspelled_anchor", word_start, word_end)
+
+            # Show anchored tooltip
+            self.show_anchored_tooltip(widget, word, word_start, word_end, event.x_root, event.y_root)
+        else:
+            # Clicked on normal text, hide tooltip
+            self.hide_anchored_tooltip()
+
+    def show_anchored_tooltip(self, widget, word, word_start, word_end, x_root, y_root):
+        """Show anchored spelling suggestions tooltip"""
+        # Get spelling suggestions
+        try:
+            suggestions = list(self.spell_checker.candidates(word))[:8]  # More suggestions
+            if not suggestions:
+                correction = self.spell_checker.correction(word)
+                if correction and correction != word:
+                    suggestions = [correction]
+        except Exception:
+            suggestions = []
+
+        if not suggestions:
+            return
+
+        # Store current word info
+        self.anchored_word_info = {
+            'widget': widget,
+            'word_start': word_start,
+            'word_end': word_end,
+            'original_word': word
+        }
+        self.current_suggestions = suggestions
+        self.selected_index = 0
+
+        # Update tooltip content
+        self.title_label.configure(text=f"Suggestions for '{word}':")
+
+        # Clear previous suggestions
+        for child in self.suggestions_frame.winfo_children():
+            child.destroy()
+
+        # Create suggestion buttons
+        self.suggestion_labels = []
+        for i, suggestion in enumerate(suggestions):
+            suggestion_label = tk.Label(
+                self.suggestions_frame,
+                text=suggestion,
+                bg='#ffffe0',
+                fg='#0066cc',
+                font=("Arial", 9),
+                cursor="hand2",
+                justify='left',
+                relief='flat',
+                padx=4,
+                pady=2
+            )
+            suggestion_label.pack(fill='x', anchor='w', pady=1)
+
+            # Bind click event
+            suggestion_label.bind("<Button-1>",
+                lambda e, idx=i: self.select_suggestion(idx))
+
+            # Hover effects
+            suggestion_label.bind("<Enter>",
+                lambda e, idx=i: self.highlight_suggestion(idx))
+            suggestion_label.bind("<Leave>",
+                lambda e, idx=i: self.unhighlight_suggestion(idx))
+
+            self.suggestion_labels.append(suggestion_label)
+
+        # Position tooltip (offset from click position)
+        tooltip_x = x_root + 20
+        tooltip_y = y_root + 20
+
+        # Ensure tooltip stays on screen
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+
+        tooltip_width = 200  # Estimated width
+        tooltip_height = 150  # Estimated height
+
+        if tooltip_x + tooltip_width > screen_width:
+            tooltip_x = x_root - tooltip_width - 20
+        if tooltip_y + tooltip_height > screen_height:
+            tooltip_y = y_root - tooltip_height - 20
+
+        self.anchored_tooltip.wm_geometry(f"+{tooltip_x}+{tooltip_y}")
+
+        # Show and focus tooltip
+        self.anchored_tooltip.deiconify()
+        self.anchored_tooltip.focus_set()
+
+        # Highlight first suggestion
+        self.highlight_suggestion(0)
+
+    def hide_anchored_tooltip(self, event=None):
+        """Hide the anchored tooltip"""
+        if hasattr(self, 'anchored_word_info') and self.anchored_word_info:
+            # Remove word highlighting
+            self.anchored_word_info['widget'].tag_remove("misspelled_anchor", "1.0", "end")
+
+        self.anchored_tooltip.withdraw()
+        self.current_suggestions = []
+        self.selected_index = 0
+        self.anchored_word_info = None
+
+        # Return focus to main window
+        self.focus_set()
+
+    def on_tooltip_keypress(self, event):
+        """Handle keyboard navigation in tooltip"""
+        if not self.current_suggestions:
+            return
+
+        if event.keysym == "Escape":
+            self.hide_anchored_tooltip()
+        elif event.keysym == "Up":
+            new_index = max(0, self.selected_index - 1)
+            self.highlight_suggestion(new_index)
+        elif event.keysym == "Down":
+            new_index = min(len(self.current_suggestions) - 1, self.selected_index + 1)
+            self.highlight_suggestion(new_index)
+        elif event.keysym == "Return":
+            self.select_suggestion(self.selected_index)
+
+    def highlight_suggestion(self, index):
+        """Highlight a suggestion"""
+        # Unhighlight previous
+        if hasattr(self, 'suggestion_labels') and self.suggestion_labels:
+            for i, label in enumerate(self.suggestion_labels):
+                if i == self.selected_index:
+                    label.configure(bg='#ffffe0', fg='#0066cc', relief='flat')
+
+        # Highlight new
+        self.selected_index = index
+        if hasattr(self, 'suggestion_labels') and self.suggestion_labels:
+            if 0 <= index < len(self.suggestion_labels):
+                self.suggestion_labels[index].configure(
+                    bg='#4A90E2',
+                    fg='white',
+                    relief='sunken'
+                )
+
+    def unhighlight_suggestion(self, index):
+        """Unhighlight a suggestion (unless it's the currently selected one)"""
+        if index != self.selected_index and hasattr(self, 'suggestion_labels'):
+            if 0 <= index < len(self.suggestion_labels):
+                self.suggestion_labels[index].configure(
+                    bg='#ffffe0',
+                    fg='#0066cc',
+                    relief='flat'
+                )
+
+    def select_suggestion(self, index):
+        """Select and apply a spelling suggestion"""
+        if (not self.anchored_word_info or
+            not self.current_suggestions or
+            index >= len(self.current_suggestions)):
+            return
+
+        suggestion = self.current_suggestions[index]
+        widget = self.anchored_word_info['widget']
+        word_start = self.anchored_word_info['word_start']
+        word_end = self.anchored_word_info['word_end']
+
+        # Replace the word
+        widget.delete(word_start, word_end)
+        widget.insert(word_start, suggestion)
+
+        # Hide tooltip
+        self.hide_anchored_tooltip()
+
+        # Re-check spelling
+        self.check_spelling()
+
+    def add_to_dictionary(self):
+        """Add current word to custom dictionary"""
+        if hasattr(self, 'anchored_word_info') and self.anchored_word_info:
+            original_word = self.anchored_word_info['original_word']
+            self.spell_checker.word_frequency.add(original_word)
+
+            # Remove misspelled tags
+            widget = self.anchored_word_info['widget']
+            word_start = self.anchored_word_info['word_start']
+            word_end = self.anchored_word_info['word_end']
+
+            widget.tag_remove("misspelled", word_start, word_end)
+            widget.tag_remove("misspelled_anchor", word_start, word_end)
+
+            self.hide_anchored_tooltip()
+            self.write(f"✓ Added '{original_word}' to dictionary\n", "green")
+
+    def on_text_hover(self, event):
+        """Show spelling suggestions when hovering over misspelled words"""
+        if not self.spell_checking_enabled:
+            return
+
+        widget = event.widget
+        index = widget.index(f"@{event.x},{event.y}")
+
+        # Check if we're hovering over a misspelled word
+        if "misspelled" in widget.tag_names(index):
+            # Get the word under cursor
+            word_start = widget.index(f"{index} wordstart")
+            word_end = widget.index(f"{index} wordend")
+            word = widget.get(word_start, word_end)
+
+            # Only show tooltip if it's a different word than current
+            if word != self.current_hover_word:
+                self.current_hover_word = word
+                self.show_spelling_tooltip(widget, word, event.x_root, event.y_root)
+        else:
+            self.hide_spelling_tooltip()
+
+    def show_spelling_tooltip(self, widget, word, x, y):
+        """Show spelling suggestions in a tooltip bubble"""
+        # Hide any existing tooltip
+        self.hide_spelling_tooltip()
+
+        # Get spelling suggestions
+        try:
+            suggestions = list(self.spell_checker.candidates(word))[:5]
+            if not suggestions:
+                # Fall back to correction method
+                correction = self.spell_checker.correction(word)
+                if correction and correction != word:
+                    suggestions = [correction]
+        except Exception:
+            suggestions = []
+
+        if not suggestions:
+            return
+
+        # Create tooltip window
+        self.spelling_tooltip = tk.Toplevel(self)
+        self.spelling_tooltip.wm_overrideredirect(True)
+        self.spelling_tooltip.wm_geometry(f"+{x+15}+{y+15}")
+        self.spelling_tooltip.configure(bg='#ffffe0', relief='solid', borderwidth=1)
+
+        # Make tooltip semi-transparent (if supported)
+        try:
+            self.spelling_tooltip.attributes('-alpha', 0.95)
+        except:
+            pass
+
+        # Add title
+        title_label = tk.Label(
+            self.spelling_tooltip,
+            text=f"Suggestions for '{word}':",
+            bg='#ffffe0',
+            fg='#333333',
+            font=("Arial", 9, "bold"),
+            justify='left'
+        )
+        title_label.pack(padx=8, pady=(8, 4), anchor='w')
+
+        # Add suggestions
+        for i, suggestion in enumerate(suggestions):
+            suggestion_frame = tk.Frame(self.spelling_tooltip, bg='#ffffe0')
+            suggestion_frame.pack(fill='x', padx=8, pady=2)
+
+            suggestion_label = tk.Label(
+                suggestion_frame,
+                text=suggestion,
+                bg='#ffffe0',
+                fg='#0066cc',
+                font=("Arial", 9),
+                cursor="hand2",
+                justify='left'
+            )
+            suggestion_label.pack(side='left', anchor='w')
+
+            # Bind click event to replace word
+            suggestion_label.bind("<Button-1>",
+                lambda e, s=suggestion, ws=word_start, we=word_end:
+                self.replace_word_from_tooltip(s, ws, we))
+
+            # Add hover effect
+            suggestion_label.bind("<Enter>",
+                lambda e, lbl=suggestion_label: lbl.configure(bg='#e6f3ff'))
+            suggestion_label.bind("<Leave>",
+                lambda e, lbl=suggestion_label: lbl.configure(bg='#ffffe0'))
+
+        # Add ignore option
+        ignore_frame = tk.Frame(self.spelling_tooltip, bg='#ffffe0')
+        ignore_frame.pack(fill='x', padx=8, pady=(4, 8))
+
+        ignore_label = tk.Label(
+            ignore_frame,
+            text="Ignore",
+            bg='#ffffe0',
+            fg='#666666',
+            font=("Arial", 8, "italic"),
+            cursor="hand2"
+        )
+        ignore_label.pack(side='left', anchor='w')
+        ignore_label.bind("<Button-1>", lambda e: self.hide_spelling_tooltip())
+
+    def hide_spelling_tooltip(self, event=None):
+        """Hide the spelling suggestion tooltip"""
+        if self.spelling_tooltip:
+            try:
+                self.spelling_tooltip.destroy()
+            except:
+                pass
+            self.spelling_tooltip = None
+        self.current_hover_word = None
+
+    def replace_word_from_tooltip(self, suggestion, word_start, word_end):
+        """Replace word from tooltip selection"""
+        focused_widget = self.focus_get()
+        if focused_widget in [self.content_editor._textbox, self.notes_editor._textbox]:
+            focused_widget.delete(word_start, word_end)
+            focused_widget.insert(word_start, suggestion)
+            self.hide_spelling_tooltip()
+            # Re-check spelling after replacement
+            self.check_spelling()
+
+    def check_spelling(self, event=None):
+        """Check spelling in real-time with always-on functionality"""
+        if not self.spell_checking_enabled:
+            return
 
         # Process both editors
         for editor in [self.content_editor._textbox, self.notes_editor._textbox]:
@@ -2197,6 +2587,10 @@ class BeamerSlideEditor(ctk.CTk):
 
             # Get all text
             content = editor.get("1.0", "end")
+
+            # Skip if content is too short
+            if len(content.strip()) < 4:
+                continue
 
             # Find all words longer than 3 characters
             words = re.findall(r'\b\w{4,}\b', content)
@@ -2217,14 +2611,13 @@ class BeamerSlideEditor(ctk.CTk):
             # Check each word
             for word, start, end in word_positions:
                 # Skip words in special syntax
+                skip_tags = ['comment', 'command', 'media', 'bullet', 'url',
+                            'bracket', 'rgb', 'textcolor']
+
                 skip = False
                 for tag in skip_tags:
-                    if editor.tag_names(start):
-                        for t in editor.tag_names(start):
-                            if t in skip_tags:
-                                skip = True
-                                break
-                    if skip:
+                    if tag in editor.tag_names(start):
+                        skip = True
                         break
 
                 if skip:
@@ -2233,6 +2626,12 @@ class BeamerSlideEditor(ctk.CTk):
                 # Check spelling
                 if word.lower() not in self.spell_checker:
                     editor.tag_add("misspelled", start, end)
+    def perform_initial_spell_check(self):
+        """Perform initial spell check after UI is fully loaded"""
+        if self.spell_checking_enabled:
+            self.check_spelling()
+            # Schedule periodic checks (every 30 seconds) to catch any missed words
+            self.after(30000, self.perform_initial_spell_check)
 
     def show_spelling_suggestions(self, event):
         """Show spelling suggestions on right-click"""
@@ -2246,56 +2645,15 @@ class BeamerSlideEditor(ctk.CTk):
         word_end = widget.index(f"{index} wordend")
         word = widget.get(word_start, word_end)
 
-        # Skip if word is too short
-        if len(word) < 4:
+        # Skip if word is too short or not misspelled
+        if len(word) < 4 or word.lower() in self.spell_checker:
             return
 
-        # Check if the word is misspelled
-        if word.lower() in self.spell_checker:
-            return
+        # Highlight the word and show anchored tooltip
+        widget.tag_remove("misspelled_anchor", "1.0", "end")
+        widget.tag_add("misspelled_anchor", word_start, word_end)
 
-        # Highlight the word temporarily
-        widget.tag_add("misspelled_highlight", word_start, word_end)
-
-        # Get spelling suggestions
-        try:
-            suggestions = list(self.spell_checker.candidates(word))[:5]
-            if not suggestions:
-                # Fall back to correction method
-                correction = self.spell_checker.correction(word)
-                if correction:
-                    suggestions = [correction]
-        except Exception:
-            suggestions = []
-
-        # Clear existing suggestions
-        for i in range(self.spelling_menu.index('end'), 1, -1):
-            if i > 2:  # Keep "Add to Dictionary" and separator
-                self.spelling_menu.delete(i)
-
-        # Add suggestions to menu
-        if suggestions:
-            for suggestion in suggestions:
-                self.spelling_menu.add_command(
-                    label=suggestion,
-                    command=lambda s=suggestion, ws=word_start, we=word_end:
-                        self.replace_word(widget, ws, we, s)
-                )
-        else:
-            self.spelling_menu.add_command(label="No suggestions", state="disabled")
-
-        # Store word position for dictionary addition
-        self.current_word = word
-        self.current_word_start = word_start
-        self.current_word_end = word_end
-        self.current_widget = widget
-
-        # Show the menu
-        try:
-            self.spelling_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            # Make sure to release the grab (Tkinter quirk)
-            self.spelling_menu.grab_release()
+        self.show_anchored_tooltip(widget, word, word_start, word_end, event.x_root, event.y_root)
 
     def replace_word(self, widget, start, end, replacement):
         """Replace a word with the selected suggestion"""
@@ -2306,15 +2664,6 @@ class BeamerSlideEditor(ctk.CTk):
         # Re-check spelling after replacement
         self.check_spelling()
 
-    def add_to_dictionary(self):
-        """Add current word to custom dictionary"""
-        if hasattr(self, 'current_word') and self.current_word:
-            self.spell_checker.word_frequency.add(self.current_word)
-            # Remove misspelled tag
-            self.current_widget.tag_remove("misspelled", self.current_word_start, self.current_word_end)
-            # Remove highlight
-            self.current_widget.tag_remove("misspelled_highlight", self.current_word_start, self.current_word_end)
-            self.write(f"✓ Added '{self.current_word}' to dictionary\n", "green")
 
     def hide_spelling_menu(self, event):
         """Hide spelling menu when clicking elsewhere"""
