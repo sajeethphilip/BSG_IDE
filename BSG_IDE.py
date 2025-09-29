@@ -1911,7 +1911,8 @@ class BeamerSlideEditor(ctk.CTk):
                 value = re.sub(r'\\[a-zA-Z]+{([^}]*)}', r'\1', value)
                 self.presentation_info[key] = value.strip()
 
-        # Extract logo if present
+        # Extract logo if present - look for \logo{...} command
+        logo_pattern = r'\\logo{([^}]*)}'
         logo_match = re.search(r'\\logo{([^}]*)}', content)
         if logo_match:
             logo_content = logo_match.group(1)
