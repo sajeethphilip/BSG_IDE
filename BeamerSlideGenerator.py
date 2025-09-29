@@ -1221,29 +1221,24 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
         frame_title = "Media: " + base_name_escaped
 
+    # Generate layout based on directive
+    latex_code = ""
     # Handle no media case first
     if not filename or filename == "\\None":
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
         latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}\n"
+        latex_code += "    " + generate_content_items(content) + "\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
-    # Generate layout based on directive
-    latex_code = ""
-
-    if layout == 'watermark':
+    elif layout == 'watermark':
         latex_code = "\\begin{frame}{" + (frame_title if title else '') + "}\n"
         latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
         latex_code += "        \\node[opacity=0.15] at (current page.center) {%\n"
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
+        latex_code += "    " + generate_content_items(content)
 
     elif layout == 'fullframe':
         latex_code = "\\begin{frame}[plain]\n"
@@ -1253,9 +1248,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "        };\n"
         latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current page.center) {\n"
         latex_code += "            \\Large\\textbf{" + frame_title + "}\\\\[1em]\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content, color='white') + "\n"
-        latex_code += "            \\end{itemize}\n"
+        latex_code += "            " + generate_content_items(content, color='white') + "\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}"
 
@@ -1263,9 +1256,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += "        \\begin{column}{0.7\\textwidth}\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content) + "\n"
-        latex_code += "            \\end{itemize}\n"
+        latex_code += "            " + generate_content_items(content) + "\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.28\\textwidth}\n"
         latex_code += "            \\vspace{1em}\n"
@@ -1280,9 +1271,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\includegraphics[width=\\textwidth,keepaspectratio]{" + filename + "}\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content) + "\n"
-        latex_code += "            \\end{itemize}\n"
+        latex_code += "            " + generate_content_items(content) + "\n"
         latex_code += "        \\end{column}\n"
         latex_code += "    \\end{columns}"
 
@@ -1292,9 +1281,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.6\\textheight,keepaspectratio]{" + filename + "}\n"
         latex_code += "    \\end{center}\n"
         latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
+        latex_code += "    " + generate_content_items(content)
 
     elif layout == 'mosaic':
         images = [img.strip() for img in filename.split(',')]
@@ -1346,9 +1333,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
+        latex_code += "    " + generate_content_items(content)
 
     elif layout == 'topbottom':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
@@ -1357,9 +1342,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.45\\textheight,keepaspectratio]{" + filename + "}\n"
         latex_code += "    \\end{center}\n"
         latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
+        latex_code += "    " + generate_content_items(content)
 
     elif layout == 'overlay':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
@@ -1368,40 +1351,33 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current page.center) {\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content, color='white') + "\n"
-        latex_code += "            \\end{itemize}\n"
+        latex_code += "            " + generate_content_items(content, color='white') + "\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}"
 
     elif layout == 'corner':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}\n"
+        latex_code += "    " + generate_content_items(content) + "\n"
         latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
         latex_code += "        \\node[anchor=south east] at (current page.south east) {%\n"
         latex_code += "            \\includegraphics[width=0.2\\textwidth,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}"
-
     else:
         # Default side-by-side layout
         if playable and first_frame_path:
             latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
             latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{" + first_frame_path + "}\n"
+            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
+            latex_code += "            \\includegraphics[width=\\textwidth,height=\\textheight,keepaspectratio]{" + first_frame_path + "}\n"
             latex_code += "            \\begin{center}\n"
             latex_code += "                \\vspace{0.3em}\n"
             latex_code += "                \\footnotesize{Click to play}\\\\\n"
             latex_code += "                \\movie[externalviewer]{\\textcolor{blue}{\\underline{Play}}}{" + filename + "}\n"
             latex_code += "            \\end{center}\n"
             latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\begin{itemize}\n"
-            latex_code += "                " + generate_content_items(content) + "\n"
-            latex_code += "            \\end{itemize}"
+            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
+            latex_code += "            " + generate_content_items(content)
 
             if source_url:
                 latex_code = latex_code.rstrip() + format_url_footnote(source_url)
@@ -1411,13 +1387,11 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         else:
             latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
             latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{" + filename + "}\n"
+            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
+            latex_code += "            \\includegraphics[width=\\textwidth,height=\\textheight,keepaspectratio]{" + filename + "}\n"
             latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\begin{itemize}\n"
-            latex_code += "                " + generate_content_items(content) + "\n"
-            latex_code += "            \\end{itemize}"
+            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
+            latex_code += "            " + generate_content_items(content)
 
             if source_url:
                 latex_code = latex_code.rstrip() + format_url_footnote(source_url)
@@ -1440,52 +1414,86 @@ def generate_source_citation(source_url):
     \\end{{tikzpicture}}"""
 
 def generate_content_items(content, color=None):
-    """Generate formatted content items with optional color"""
+    """Generate formatted content items with intelligent itemization"""
     if not content:
         return ""
-    cnt=1
+
+    cnt = 1
     items = []
-    pause_set=False
+    pause_set = False
+    in_itemize = False
+    in_other_env = False
+    current_env = None
+
+    # Check if we have pause commands
     for itemx in content:
         if itemx.startswith(('\\pause')):
-            pause_set=True
-    for item in content:
+            pause_set = True
+            break
 
-        if item.strip():
-            item = str(item).strip()
-            if pause_set and not item.startswith(('\\pause','\\begin','\\end','\\item')):
-                item=f'\item<{cnt}| alert@1>'+item
-            elif pause_set and item.startswith(('\\item')):
-                item = re.sub('item',f'item<{cnt}| alert@1>',item)
-            elif pause_set and item.startswith(('\\pause')):
-                cnt=cnt+1
-            if item.startswith(('\\pause','\\item')):
+    for item in content:
+        if not item.strip():
+            continue
+
+        item = item.strip()
+
+        # Handle environment begins/ends
+        if item.startswith('\\begin{'):
+            env_match = re.match(r'\\begin\{([^}]+)\}', item)
+            if env_match:
+                current_env = env_match.group(1)
+                if current_env == 'itemize':
+                    in_itemize = True
+                else:
+                    in_other_env = True
                 items.append(item)
                 continue
-            # Preserve original item format if it starts with special characters
-            if item.startswith(('\\pause', '•')):
-                processed_item = process_latex_content(item)
+
+        elif item.startswith('\\end{'):
+            env_match = re.match(r'\\end\{([^}]+)\}', item)
+            if env_match:
+                ending_env = env_match.group(1)
+                if ending_env == 'itemize':
+                    in_itemize = False
+                elif ending_env == current_env:
+                    in_other_env = False
+                    current_env = None
+                items.append(item)
+                continue
+
+        # Handle explicit items
+        if item.startswith('\\item'):
+            if pause_set:
+                item = re.sub(r'\\item', f'\\\\item<{cnt}| alert@1>', item)
+                cnt += 1
+            items.append(item)
+            continue
+
+        # Handle pause commands
+        if item.startswith('\\pause'):
+            if pause_set:
+                cnt += 1
+            items.append(item)
+            continue
+
+        # Process the content based on context
+        processed_item = process_latex_content(item)
+
+        # Add color if specified
+        if color:
+            processed_item = f"{{\\color{{{color}}}{processed_item}}}"
+
+        # Only add automatic \item if we're explicitly in itemize environment
+        # AND the line doesn't start with special commands
+        if in_itemize and not item.startswith(('\\', '%', '---', '***')):
+            if pause_set:
+                items.append(f'\\item<{cnt}| alert@1> {processed_item}')
+                cnt += 1
             else:
-                # Remove any leading hyphen before processing
-                clean_item = item.lstrip('- ')
-                processed_item = process_latex_content(clean_item)
-            # Handle environment directives
-            if item == '\\begin{enumerate}':
-                in_enumerate = True
-                items.append(item)
-                continue
-            elif item == '\\end{enumerate}':
-                in_enumerate = False
-                items.append(item)
-                continue
-            elif item in ['\\begin{itemize}', '\\end{itemize}']:
-                continue
-            if item.startswith('-'):
-                item = item[1:].strip()
-            processed_item = process_latex_content(item)
-            if color:
-                processed_item = f"{{\\color{{{color}}}{processed_item}}}"
-            items.append(f"\\item {processed_item}")
+                items.append(f'\\item {processed_item}')
+        else:
+            # For all other cases, just add the processed content as-is
+            items.append(processed_item)
 
     return '\n        '.join(items)
 
