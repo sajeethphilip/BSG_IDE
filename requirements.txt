@@ -3,9 +3,10 @@ pyautogui
 customtkinter>=5.2.2
 Pillow>=10.0.0
 tk>=0.1.0
+pyspellchecker
 
 # PDF and Document Processing
-PyMuPDF==1.23.7  # Specific version for stability
+PyMuPDF==1.23.7
 python-poppler>=0.3.0
 
 # Media Processing
@@ -29,5 +30,5 @@ typing-extensions>=4.7.0
 pathlib>=1.0.1
 
 # Optional but Recommended
-python-magic>=0.4.27; platform_system != "Windows"  # File type detection
+python-magic>=0.4.27; platform_system != "Windows"
 python-magic-bin>=0.4.14; platform_system == "Windows"

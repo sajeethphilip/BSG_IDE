@@ -1974,6 +1974,7 @@ class IntelligentAutocomplete:
         self.autocomplete_window = None
         self.suggestions = []
         self.current_suggestion_index = 0
+        self.command_database = {}  # Initialize the missing attribute
 
         # Try to use enhanced LatexHelp module, fallback to basic
         self.setup_autocomplete_system()
@@ -1997,6 +1998,7 @@ class IntelligentAutocomplete:
         return {
             '\\begin': {
                 'completion': '\\begin{$1}\n$2\n\\end{$1}',
+                'description': 'Begin environment block',
                 'pairs': {
                     'itemize': '\\item ',
                     'enumerate': '\\item ',
@@ -2006,25 +2008,255 @@ class IntelligentAutocomplete:
                     'block': '\\blocktitle{}'
                 }
             },
+            '\\end': {
+                'completion': '\\end{$1}',
+                'description': 'End environment block'
+            },
             '\\item': {
                 'completion': '\\item $1',
+                'description': 'List item',
                 'context': ['itemize', 'enumerate']
             },
-            '\\title': {'completion': '\\title{$1}'},
-            '\\author': {'completion': '\\author{$1}'},
-            '\\institute': {'completion': '\\institute{$1}'},
-            '\\frametitle': {'completion': '\\frametitle{$1}'},
-            '\\file': {'completion': '\\file{media_files/$1}'},
-            '\\play': {'completion': '\\play{media_files/$1}'},
-            '\\textcolor': {'completion': '\\textcolor{$1}{$2}'},
-            '\\only': {'completion': '\\only<$1>{$2}'},
-            '\\uncover': {'completion': '\\uncover<$1>{$2}'},
-            '\\pause': {'completion': '\\pause'},
-            '\\note': {'completion': '\\note{$1}'},
-            '\\alert': {'completion': '\\alert{$1}'},
-            '\\textbf': {'completion': '\\textbf{$1}'},
-            '\\textit': {'completion': '\\textit{$1}'},
-            '\\href': {'completion': '\\href{$1}{$2}'}
+            '\\title': {
+                'completion': '\\title{$1}',
+                'description': 'Presentation title'
+            },
+            '\\author': {
+                'completion': '\\author{$1}',
+                'description': 'Author name'
+            },
+            '\\institute': {
+                'completion': '\\institute{$1}',
+                'description': 'Institute name'
+            },
+            '\\frametitle': {
+                'completion': '\\frametitle{$1}',
+                'description': 'Frame title'
+            },
+            '\\file': {
+                'completion': '\\file{media_files/$1}',
+                'description': 'Insert image file'
+            },
+            '\\play': {
+                'completion': '\\play{media_files/$1}',
+                'description': 'Play media file'
+            },
+            '\\textcolor': {
+                'completion': '\\textcolor{$1}{$2}',
+                'description': 'Colored text'
+            },
+            '\\only': {
+                'completion': '\\only<$1>{$2}',
+                'description': 'Content visible only on specific slides'
+            },
+            '\\uncover': {
+                'completion': '\\uncover<$1>{$2}',
+                'description': 'Uncover content on specific slides'
+            },
+            '\\pause': {
+                'completion': '\\pause',
+                'description': 'Pause between slide content'
+            },
+            '\\note': {
+                'completion': '\\note{$1}',
+                'description': 'Speaker notes'
+            },
+            '\\alert': {
+                'completion': '\\alert{$1}',
+                'description': 'Alert highlighted text'
+            },
+            '\\textbf': {
+                'completion': '\\textbf{$1}',
+                'description': 'Bold text'
+            },
+            '\\textit': {
+                'completion': '\\textit{$1}',
+                'description': 'Italic text'
+            },
+            '\\href': {
+                'completion': '\\href{$1}{$2}',
+                'description': 'Hyperlink'
+            },
+            '\\section': {
+                'completion': '\\section{$1}',
+                'description': 'Section heading'
+            },
+            '\\subsection': {
+                'completion': '\\subsection{$1}',
+                'description': 'Subsection heading'
+            },
+            '\\caption': {
+                'completion': '\\caption{$1}',
+                'description': 'Figure or table caption'
+            },
+            '\\label': {
+                'completion': '\\label{$1}',
+                'description': 'Label for cross-referencing'
+            },
+            '\\cite': {
+                'completion': '\\cite{$1}',
+                'description': 'Citation reference'
+            },
+            '\\footnote': {
+                'completion': '\\footnote{$1}',
+                'description': 'Footnote'
+            },
+            '\\emph': {
+                'completion': '\\emph{$1}',
+                'description': 'Emphasized text'
+            },
+            '\\underline': {
+                'completion': '\\underline{$1}',
+                'description': 'Underlined text'
+            },
+            '\\texttt': {
+                'completion': '\\texttt{$1}',
+                'description': 'Typewriter text'
+            },
+            '\\mathbb': {
+                'completion': '\\mathbb{$1}',
+                'description': 'Blackboard bold (math mode)'
+            },
+            '\\mathcal': {
+                'completion': '\\mathcal{$1}',
+                'description': 'Calligraphic font (math mode)'
+            },
+            '\\mathbf': {
+                'completion': '\\mathbf{$1}',
+                'description': 'Bold font (math mode)'
+            },
+            '\\mathrm': {
+                'completion': '\\mathrm{$1}',
+                'description': 'Roman font (math mode)'
+            },
+            '\\frac': {
+                'completion': '\\frac{$1}{$2}',
+                'description': 'Fraction'
+            },
+            '\\sqrt': {
+                'completion': '\\sqrt{$1}',
+                'description': 'Square root'
+            },
+            '\\sum': {
+                'completion': '\\sum_{$1}^{$2}',
+                'description': 'Summation'
+            },
+            '\\int': {
+                'completion': '\\int_{$1}^{$2}',
+                'description': 'Integral'
+            },
+            '\\lim': {
+                'completion': '\\lim_{$1 \\to $2}',
+                'description': 'Limit'
+            },
+            '\\infty': {
+                'completion': '\\infty',
+                'description': 'Infinity symbol'
+            },
+            '\\alpha': {
+                'completion': '\\alpha',
+                'description': 'Greek letter alpha'
+            },
+            '\\beta': {
+                'completion': '\\beta',
+                'description': 'Greek letter beta'
+            },
+            '\\gamma': {
+                'completion': '\\gamma',
+                'description': 'Greek letter gamma'
+            },
+            '\\delta': {
+                'completion': '\\delta',
+                'description': 'Greek letter delta'
+            },
+            '\\epsilon': {
+                'completion': '\\epsilon',
+                'description': 'Greek letter epsilon'
+            },
+            '\\theta': {
+                'completion': '\\theta',
+                'description': 'Greek letter theta'
+            },
+            '\\lambda': {
+                'completion': '\\lambda',
+                'description': 'Greek letter lambda'
+            },
+            '\\pi': {
+                'completion': '\\pi',
+                'description': 'Greek letter pi'
+            },
+            '\\sigma': {
+                'completion': '\\sigma',
+                'description': 'Greek letter sigma'
+            },
+            '\\omega': {
+                'completion': '\\omega',
+                'description': 'Greek letter omega'
+            },
+            '\\cdot': {
+                'completion': '\\cdot',
+                'description': 'Multiplication dot'
+            },
+            '\\times': {
+                'completion': '\\times',
+                'description': 'Multiplication cross'
+            },
+            '\\pm': {
+                'completion': '\\pm',
+                'description': 'Plus-minus symbol'
+            },
+            '\\mp': {
+                'completion': '\\mp',
+                'description': 'Minus-plus symbol'
+            },
+            '\\leq': {
+                'completion': '\\leq',
+                'description': 'Less than or equal to'
+            },
+            '\\geq': {
+                'completion': '\\geq',
+                'description': 'Greater than or equal to'
+            },
+            '\\neq': {
+                'completion': '\\neq',
+                'description': 'Not equal to'
+            },
+            '\\approx': {
+                'completion': '\\approx',
+                'description': 'Approximately equal to'
+            },
+            '\\sim': {
+                'completion': '\\sim',
+                'description': 'Similar to'
+            },
+            '\\propto': {
+                'completion': '\\propto',
+                'description': 'Proportional to'
+            },
+            '\\partial': {
+                'completion': '\\partial',
+                'description': 'Partial derivative'
+            },
+            '\\nabla': {
+                'completion': '\\nabla',
+                'description': 'Nabla operator'
+            },
+            '\\ldots': {
+                'completion': '\\ldots',
+                'description': 'Lower dots'
+            },
+            '\\cdots': {
+                'completion': '\\cdots',
+                'description': 'Center dots'
+            },
+            '\\vdots': {
+                'completion': '\\vdots',
+                'description': 'Vertical dots'
+            },
+            '\\ddots': {
+                'completion': '\\ddots',
+                'description': 'Diagonal dots'
+            }
         }
 
     def setup_autocomplete(self, text_widget):
@@ -2133,6 +2365,11 @@ class IntelligentAutocomplete:
         # Fallback implementation
         # Find matching commands
         self.suggestions = []
+
+        # Ensure command_database exists
+        if not hasattr(self, 'command_database') or not self.command_database:
+            self.command_database = self.build_autocomplete_database()
+
         for command, info in self.command_database.items():
             if command.startswith(partial_command):
                 self.suggestions.append((command, info))
@@ -2182,15 +2419,30 @@ class IntelligentAutocomplete:
 
         # Add suggestions
         for command, info in suggestions:
-            display_text = f"{command:20} {info.get('completion', '')[:30]}..."
+            display_text = f"{command:20} {info.get('description', '')[:40]}..."
             self.suggestion_listbox.insert(tk.END, display_text)
 
         # Bind selection event
         self.suggestion_listbox.bind('<Double-Button-1>', self.on_suggestion_selected)
+        self.suggestion_listbox.bind('<<ListboxSelect>>', self.on_suggestion_highlight)
         self.suggestion_listbox.selection_set(0)
+        self.current_suggestion_index = 0
 
         # Make window transient
         self.autocomplete_window.transient(widget.winfo_toplevel())
+
+    def on_suggestion_highlight(self, event=None):
+        """Handle suggestion highlighting"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_highlight'):
+            return self.enhanced_system.on_suggestion_highlight(event)
+
+        # Fallback implementation
+        if not self.suggestions or not self.autocomplete_window:
+            return
+
+        selection = self.suggestion_listbox.curselection()
+        if selection:
+            self.current_suggestion_index = selection[0]
 
     def on_suggestion_selected(self, event=None):
         """Handle suggestion selection"""
@@ -2213,7 +2465,19 @@ class IntelligentAutocomplete:
             return self.enhanced_system.apply_autocomplete(command, info)
 
         # Fallback implementation
-        widget = self.parent.content_editor._textbox  # Target the content editor
+        # Try to get the focused widget
+        focused_widget = self.parent.focus_get()
+
+        # Determine which editor to use
+        if (hasattr(self.parent, 'content_editor') and
+            focused_widget == self.parent.content_editor._textbox):
+            widget = self.parent.content_editor._textbox
+        elif (hasattr(self.parent, 'notes_editor') and
+              focused_widget == self.parent.notes_editor._textbox):
+            widget = self.parent.notes_editor._textbox
+        else:
+            # Default to content editor
+            widget = self.parent.content_editor._textbox
 
         # Get current cursor position and line
         cursor_pos = widget.index("insert")
@@ -2288,6 +2552,7 @@ class IntelligentAutocomplete:
             self.suggestion_listbox.selection_clear(0, tk.END)
             self.suggestion_listbox.selection_set(next_index)
             self.suggestion_listbox.activate(next_index)
+            self.current_suggestion_index = next_index
             return "break"
 
         elif event.keysym == 'Up':
@@ -2296,6 +2561,7 @@ class IntelligentAutocomplete:
             self.suggestion_listbox.selection_clear(0, tk.END)
             self.suggestion_listbox.selection_set(next_index)
             self.suggestion_listbox.activate(next_index)
+            self.current_suggestion_index = next_index
             return "break"
 
         return None
@@ -2309,15 +2575,80 @@ class IntelligentAutocomplete:
         if self.autocomplete_window:
             self.autocomplete_window.destroy()
             self.autocomplete_window = None
+            self.suggestions = []
+            self.current_suggestion_index = 0
 
     def get_suggestions(self, text: str, cursor_position: int):
         """Get autocomplete suggestions - interface for enhanced system"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'get_suggestions'):
             return self.enhanced_system.get_suggestions(text, cursor_position)
-        return []
+
+        # Fallback implementation
+        suggestions = []
+        if '\\' in text:
+            # Extract partial command
+            lines = text[:cursor_position].split('\n')
+            current_line = lines[-1] if lines else ''
+            last_backslash = current_line.rfind('\\')
+            if last_backslash != -1:
+                partial_command = current_line[last_backslash:]
+                for command, info in self.command_database.items():
+                    if command.startswith(partial_command):
+                        suggestions.append({
+                            'command': command,
+                            'description': info.get('description', ''),
+                            'completion': info.get('completion', command)
+                        })
+        return suggestions
 
     def complete_command(self, text: str, cursor_position: int, suggestion: str):
         """Complete command - interface for enhanced system"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'complete_command'):
             return self.enhanced_system.complete_command(text, cursor_position, suggestion)
+
+        # Fallback implementation
+        lines = text.split('\n')
+        current_line_index = len(text[:cursor_position].split('\n')) - 1
+        current_line = lines[current_line_index]
+
+        # Find the partial command
+        last_backslash = current_line.rfind('\\')
+        if last_backslash != -1:
+            # Replace the partial command
+            new_line = current_line[:last_backslash] + suggestion
+            lines[current_line_index] = new_line
+
+            # Calculate new cursor position
+            new_cursor_position = sum(len(line) + 1 for line in lines[:current_line_index]) + len(new_line)
+
+            return '\n'.join(lines), new_cursor_position
+
         return text, cursor_position
+
+    def update_command_database(self, new_commands: dict):
+        """Update the command database with new commands"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'update_command_database'):
+            return self.enhanced_system.update_command_database(new_commands)
+
+        # Fallback implementation
+        if not hasattr(self, 'command_database'):
+            self.command_database = {}
+        self.command_database.update(new_commands)
+
+    def get_command_info(self, command: str):
+        """Get information about a specific command"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'get_command_info'):
+            return self.enhanced_system.get_command_info(command)
+
+        # Fallback implementation
+        if hasattr(self, 'command_database') and command in self.command_database:
+            return self.command_database[command]
+        return None
+
+    def refresh_database(self):
+        """Refresh the command database"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'refresh_database'):
+            return self.enhanced_system.refresh_database()
+
+        # Fallback implementation
+        self.command_database = self.build_autocomplete_database()

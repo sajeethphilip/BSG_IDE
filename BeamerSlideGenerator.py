@@ -1221,6 +1221,11 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
         frame_title = "Media: " + base_name_escaped
 
+    # Check if this is an animated GIF
+    if filename and filename.lower().endswith('.gif') and is_animated_gif(filename):
+        return generate_animated_gif_frame(filename, content, title)
+
+
     # Generate layout based on directive
     latex_code = ""
     # Handle no media case first
@@ -1246,7 +1251,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "        \\node at (current page.center) {%\n"
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
-        latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current page.center) {\n"
+        latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current_page.center) {\n"
         latex_code += "            \\Large\\textbf{" + frame_title + "}\\\\[1em]\n"
         latex_code += "            " + generate_content_items(content, color='white') + "\n"
         latex_code += "        };\n"
@@ -1285,46 +1290,104 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     elif layout == 'mosaic':
         images = [img.strip() for img in filename.split(',')]
-        grid_size = int(math.ceil(math.sqrt(len(images))))
+        num_images = len(images)
 
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{center}\n"  # Center the entire grid
-        latex_code += "    \\vbox{\\vspace{1em}}\n"  # Add some vertical space at top
+        # Intelligent layout based on number of images
+        if num_images == 1:
+            # Single image - use highlight layout
+            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+            latex_code += "    \\begin{center}\n"
+            latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.7\\textheight,keepaspectratio]{" + images[0] + "}\n"
+            latex_code += "    \\end{center}\n"
+            if content:
+                latex_code += "    \\vspace{0.5em}\n"
+                latex_code += "    " + generate_content_items(content)
 
-        # Start a tabular environment for grid layout
-        latex_code += "    \\begin{tabular}{" + "c" * grid_size + "}\n"
+        elif num_images == 2:
+            # Two images - side by side
+            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+            latex_code += "    \\begin{columns}[T]\n"
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\centering\n"
+            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.6\\textheight,keepaspectratio]{" + images[0] + "}\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\centering\n"
+            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.6\\textheight,keepaspectratio]{" + images[1] + "}\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += "    \\end{columns}\n"
+            if content:
+                latex_code += "    \\vspace{0.5em}\n"
+                latex_code += "    " + generate_content_items(content)
 
-        # Calculate image size - use smaller of width/height constraint
-        img_width = "0.25\\textwidth"  # Adjust these values to control image size
-        img_height = "0.2\\textheight"
+        elif num_images == 3:
+            # Three images - one on top, two below
+            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+            latex_code += "    \\begin{center}\n"
+            latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.35\\textheight,keepaspectratio]{" + images[0] + "}\n"
+            latex_code += "    \\end{center}\n"
+            latex_code += "    \\vspace{0.3em}\n"
+            latex_code += "    \\begin{columns}[T]\n"
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\centering\n"
+            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.35\\textheight,keepaspectratio]{" + images[1] + "}\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\centering\n"
+            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.35\\textheight,keepaspectratio]{" + images[2] + "}\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += "    \\end{columns}\n"
+            if content:
+                latex_code += "    \\vspace{0.5em}\n"
+                latex_code += "    " + generate_content_items(content)
 
-        # Generate grid row by row
-        for i in range(grid_size):
-            row_images = []
-            for j in range(grid_size):
-                idx = i * grid_size + j
-                if idx < len(images):
-                    # Each image in its own box for consistent spacing
-                    cell = "\\includegraphics[width=" + img_width + ",height=" + img_height + ",keepaspectratio]{" + images[idx] + "}"
-                    row_images.append(cell)
-                else:
-                    row_images.append("")  # Empty cell
+        elif num_images == 4:
+            # Four images - 2x2 grid
+            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+            latex_code += "    \\begin{center}\n"
+            latex_code += "    \\begin{tabular}{cc}\n"
+            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[0] + "} &\n"
+            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[1] + "} \\\\\n"
+            latex_code += "        \\vspace{0.2em} \\\\\n"
+            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[2] + "} &\n"
+            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[3] + "}\n"
+            latex_code += "    \\end{tabular}\n"
+            latex_code += "    \\end{center}\n"
+            if content:
+                latex_code += "    \\vspace{0.5em}\n"
+                latex_code += "    " + generate_content_items(content)
 
-            # Join cells with & and end row with \\
-            latex_code += "        " + " & ".join(row_images)
-            if i < grid_size - 1:  # Don't add \\ after last row
-                latex_code += " \\\\\n        \\vspace{0.5em}\\\\\n"  # Add vertical space between rows
+        else:
+            # 5 or more images - dynamic grid layout
+            rows, cols = self.calculate_grid_size(num_images)
+            cell_width = f"{0.9/cols:.2f}\\textwidth"
+            cell_height = f"{0.7/rows:.2f}\\textheight"
 
-        latex_code += "\n    \\end{tabular}\n"
-        latex_code += "    \\end{center}\n"
+            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+            latex_code += "    \\begin{center}\n"
+            latex_code += f"    \\begin{{tabular}}{{{'c' * cols}}}\n"
 
-        if content:
-            latex_code += "    \\vspace{1em}\n"  # Space between grid and content
-            latex_code += "    \\begin{itemize}\n"
-            latex_code += "        " + generate_content_items(content) + "\n"
-            latex_code += "    \\end{itemize}\n"
+            for i in range(rows):
+                row_images = []
+                for j in range(cols):
+                    idx = i * cols + j
+                    if idx < num_images:
+                        cell = f"\\includegraphics[width={cell_width},height={cell_height},keepaspectratio]{{{images[idx]}}}"
+                        row_images.append(cell)
+                    else:
+                        row_images.append("")  # Empty cell
 
-        latex_code += "    \\end{columns}"
+                # Join cells with & and end row with \\
+                latex_code += "        " + " & ".join(row_images)
+                if i < rows - 1:  # Don't add \\ after last row
+                    latex_code += " \\\\\n        \\vspace{0.2em}\\\\\n"
+
+            latex_code += "\n    \\end{tabular}\n"
+            latex_code += "    \\end{center}\n"
+
+            if content:
+                latex_code += "    \\vspace{0.5em}\n"
+                latex_code += "    " + generate_content_items(content)
 
     elif layout == 'background':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
@@ -1401,6 +1464,42 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     latex_code += "\n\\end{frame}\n"
     return latex_code
+
+def calculate_grid_size(self, num_images):
+    """
+    Calculate optimal grid dimensions for mosaic layout.
+    Prioritizes square-like arrangements for visual appeal.
+    """
+    if num_images <= 4:
+        # Small numbers get special treatment
+        if num_images == 1:
+            return 1, 1
+        elif num_images == 2:
+            return 1, 2
+        elif num_images == 3:
+            return 2, 2  # One empty cell
+        elif num_images == 4:
+            return 2, 2
+
+    # For larger numbers, find factors closest to square root
+    sqrt_num = math.sqrt(num_images)
+    rows = math.floor(sqrt_num)
+    cols = math.ceil(num_images / rows)
+
+    # Try to make it more square-like
+    while rows * cols < num_images:
+        if cols - rows > 1:
+            rows += 1
+        else:
+            cols += 1
+
+    # Ensure we have enough cells
+    while rows * cols < num_images:
+        cols += 1
+
+    return rows, cols
+
+
 #----------------------------------------------------------------------
 
 def generate_source_citation(source_url):
@@ -1551,12 +1650,14 @@ def verify_media_file(filepath):
     return None
 
 
+import re  # Add this import at the top
+import os
+import urllib.parse
+
 def process_media(url, content=None, title=None, playable=False, slide_index=None, callback=None):
     """Process media with graceful handling of missing files and URLs"""
 
-
     try:
-
         directive_type, media_source, is_playable, original_directive = parse_media_directive(url)
         playable = playable or is_playable
 
@@ -1567,23 +1668,22 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
         # Create a list to store footnotes
         footnotes = []
 
-
         # First collect any existing footnotes from content
         processed_content = []
         for item in content:
             if '\\anbg' in item:
-                    # Extract image name from \anbg command
-                    match = re.search(r'\\anbg\{(.*?)\}', item)
-                    if match:
-                        image_name = match.group(1)
-                        if image_name:
-                            # Add background command before frame
-                           processed_content.append(f"\\anbg{{{image_name}}}")
-                        else:
-                            # Clear background if empty
-                            processed_content.append("\\anbg{}")
-                    # Remove \anbg line from content
-                    content.pop(i)
+                # Extract image name from \anbg command
+                match = re.search(r'\\anbg\{(.*?)\}', item)
+                if match:
+                    image_name = match.group(1)
+                    if image_name:
+                        # Add background command before frame
+                        processed_content.append(f"\\anbg{{{image_name}}}")
+                    else:
+                        # Clear background if empty
+                        processed_content.append("\\anbg{}")
+                # Don't add the original \anbg line to processed_content
+                continue
             elif '\\footnote{' in item:
                 # Extract footnote text
                 footnote_start = item.index('\\footnote{') + len('\\footnote{')
@@ -1596,7 +1696,6 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
                 processed_content.append(cleaned_item)
             else:
                 processed_content.append(item)
-
 
         # Now add all footnotes to the last content item or create a phantom item
         if processed_content:
@@ -1613,12 +1712,54 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
             combined_footnotes = ''.join([f"\\footnote{{{f}}}" for f in footnotes])
             processed_content.append(f"\\phantom{{.}}{combined_footnotes}")
 
-
         # Handle explicit \None directive
         if url.strip() == "\\None":
-            return generate_latex_code(None, "\\None", None, content, title, False), "\\None"
+            return generate_latex_code(None, "\\None", None, processed_content, title, False), "\\None"
 
-        # Handle URLs in \play directive
+        # Handle GIF animations specifically with ImageMagick player
+        if directive_type in ['file', 'url'] and media_source.lower().endswith('.gif'):
+            # For local files
+            if directive_type == 'file':
+                media_path = media_source
+                if not os.path.exists(media_path):
+                    media_path = os.path.join('media_files', os.path.basename(media_path))
+
+                if os.path.exists(media_path):
+                    if is_animated_gif(media_path):
+                        # Use ImageMagick external player for animated GIFs
+                        return generate_imagemagick_gif_frame(media_path, processed_content, title), original_directive
+                    else:
+                        # Static GIF - treat as regular image
+                        return generate_latex_code(
+                            os.path.splitext(os.path.basename(media_path))[0],
+                            media_path,
+                            media_path,
+                            processed_content,
+                            title,
+                            False
+                        ), original_directive
+
+            # For URLs - download first, then process
+            elif directive_type == 'url' and media_source.startswith(('http://', 'https://')):
+                base_name, filename, first_frame_path = download_media(media_source)
+                if base_name and filename:
+                    gif_path = f"media_files/{filename}"
+                    if os.path.exists(gif_path) and is_animated_gif(gif_path):
+                        # Use ImageMagick external player for animated GIFs
+                        return generate_imagemagick_gif_frame(gif_path, processed_content, title), f"\\file media_files/{filename}"
+                    else:
+                        # Static GIF or download failed
+                        return generate_latex_code(
+                            base_name,
+                            gif_path,
+                            first_frame_path or gif_path,
+                            processed_content,
+                            title,
+                            False,
+                            media_source
+                        ), f"\\file media_files/{filename}"
+
+        # Handle URLs in \play directive (non-GIF videos)
         if directive_type == 'url' and playable:
             if media_source.startswith(('http://', 'https://')):
                 if 'youtube.com' in media_source or 'youtu.be' in media_source:
@@ -1631,58 +1772,63 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
                             base_name,
                             f"media_files/{filename}",
                             first_frame_path,
-                            content,
+                            processed_content,
                             title,
                             True,
                             media_source
                         ), f"\\play \\file media_files/{filename}"
                 else:
-                    # Download other media URLs
+                    # Download other media URLs (skip if it's a GIF since we handled above)
+                    if not media_source.lower().endswith('.gif'):
+                        base_name, filename, first_frame_path = download_media(media_source)
+                        if base_name and filename:
+                            return generate_latex_code(
+                                base_name,
+                                f"media_files/{filename}",
+                                first_frame_path,
+                                processed_content,
+                                title,
+                                True,
+                                media_source
+                            ), f"\\play \\file media_files/{filename}"
+
+        # Handle regular URLs (non-GIF, non-playable)
+        elif directive_type == 'url':
+            if media_source.startswith(('http://', 'https://')):
+                # Skip if it's a GIF since we handled above
+                if not media_source.lower().endswith('.gif'):
                     base_name, filename, first_frame_path = download_media(media_source)
                     if base_name and filename:
                         return generate_latex_code(
                             base_name,
                             f"media_files/{filename}",
                             first_frame_path,
-                            content,
+                            processed_content,
                             title,
-                            True,
+                            False,
                             media_source
-                        ), f"\\play \\file media_files/{filename}"
+                        ), f"\\file media_files/{filename}"
 
-        # Handle regular URLs
-        elif directive_type == 'url' :
-            if media_source.startswith(('http://', 'https://')):
-                base_name, filename, first_frame_path = download_media(media_source)
-                if base_name and filename:
-                    return generate_latex_code(
-                        base_name,
-                        f"media_files/{filename}",
-                        first_frame_path,
-                        content,
-                        title,
-                        False,
-                        media_source
-                    ), f"\\file media_files/{filename}"
-
-        # Handle local files
+        # Handle local files (non-GIF)
         elif directive_type == 'file':
-            media_path = media_source
-            if not os.path.exists(media_path):
-                media_path = os.path.join('media_files', os.path.basename(media_path))
+            # Skip if it's a GIF since we handled above
+            if not media_source.lower().endswith('.gif'):
+                media_path = media_source
+                if not os.path.exists(media_path):
+                    media_path = os.path.join('media_files', os.path.basename(media_path))
 
-            if os.path.exists(media_path):
-                first_frame_path = None
-                if playable:
-                    first_frame_path = generate_preview_frame(media_path)
-                return generate_latex_code(
-                    os.path.splitext(os.path.basename(media_path))[0],
-                    media_path,
-                    first_frame_path,
-                    content,
-                    title,
-                    playable
-                ), original_directive
+                if os.path.exists(media_path):
+                    first_frame_path = None
+                    if playable:
+                        first_frame_path = generate_preview_frame(media_path)
+                    return generate_latex_code(
+                        os.path.splitext(os.path.basename(media_path))[0],
+                        media_path,
+                        first_frame_path,
+                        processed_content,
+                        title,
+                        playable
+                    ), original_directive
 
         # Handle layout directives (watermark, fullframe, etc.)
         elif directive_type in ['watermark', 'fullframe', 'pip', 'split', 'highlight',
@@ -1691,7 +1837,7 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
                 base_name=None,
                 filename=media_source,
                 first_frame_path=None,
-                content=content,
+                content=processed_content,
                 title=title,
                 playable=playable,
                 layout=directive_type
@@ -1700,14 +1846,248 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
         # If we get here, the media wasn't handled
         if callback and slide_index is not None:
             callback(slide_index)
-        return handle_missing_media(url, content, title, playable)
+        return handle_missing_media(url, processed_content, title, playable)
 
     except Exception as e:
         print(f"Error processing media: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return handle_missing_media(url, content, title, playable)
 
 
-import urllib.parse
+def is_animated_gif(filepath):
+    """Check if a GIF file is animated (has multiple frames)"""
+    try:
+        from PIL import Image
+        # Ensure the file exists
+        if not os.path.exists(filepath):
+            print(f"GIF file not found: {filepath}")
+            return False
+
+        with Image.open(filepath) as img:
+            is_animated = getattr(img, 'is_animated', False)
+            frame_count = getattr(img, 'n_frames', 1)
+            print(f"GIF {filepath} is animated: {is_animated}, frames: {frame_count}")
+
+            # Some GIFs might be "animated" but only have 1 frame
+            return is_animated and frame_count > 1
+    except ImportError:
+        print("PIL (Pillow) not available for GIF animation detection")
+        return False
+    except Exception as e:
+        print(f"Error checking GIF animation for {filepath}: {str(e)}")
+        return False
+
+def generate_compact_imagemagick_frame(gif_path, content=None, title=None):
+    """Generate LaTeX code with very compact ImageMagick buttons"""
+    # Process title
+    if title:
+        frame_title = process_latex_content(title)
+    else:
+        base_name = os.path.splitext(os.path.basename(gif_path))[0]
+        base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
+        frame_title = "Animation: " + base_name_escaped
+
+    gif_info = get_gif_info(gif_path)
+
+    latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+    latex_code += "    \\begin{center}\n"
+
+    # Display first frame as preview
+    latex_code += "        \\includegraphics[width=0.7\\textwidth,height=0.5\\textheight,keepaspectratio]{" + gif_path + "}\n"
+    latex_code += "        \\\\[0.2em]\n"
+    latex_code += "        \\textcolor{gray}{\\footnotesize " + gif_info + "}\n"
+    latex_code += "    \\end{center}\n"
+
+    # Very compact inline buttons below the image
+    latex_code += "    \\vspace{0.3em}\n"
+    latex_code += "    \\begin{center}\n"
+    latex_code += "        \\href{run:imagemagick:\\\"display\\\" \\\"" + gif_path + "\\\"}{\n"
+    latex_code += "            \\tikz\\node[fill=green!15, rounded corners=2pt, inner sep=3pt, draw=green!40, thin, font=\\footnotesize] {ImageMagick};\n"
+    latex_code += "        }\n"
+    latex_code += "        \\hspace{0.5em}\n"
+    latex_code += "        \\href{run:" + gif_path + "}{\n"
+    latex_code += "            \\tikz\\node[fill=blue!15, rounded corners=2pt, inner sep=3pt, draw=blue!40, thin, font=\\footnotesize] {Default App};\n"
+    latex_code += "        }\n"
+    latex_code += "        \\hspace{0.5em}\n"
+    latex_code += "        \\href{run:imagemagick:\\\"animate\\\" \\\"-loop\\\" \\\"0\\\" \\\"" + gif_path + "\\\"}{\n"
+    latex_code += "            \\tikz\\node[fill=orange!15, rounded corners=2pt, inner sep=3pt, draw=orange!40, thin, font=\\footnotesize] {Loop};\n"
+    latex_code += "        }\n"
+    latex_code += "        \\\\[0.2em]\n"
+    latex_code += "        \\textcolor{gray}{\\tiny Click any button to play}\n"
+    latex_code += "    \\end{center}\n"
+
+    if content:
+        latex_code += "    \\vspace{0.5em}\n"
+        latex_code += "    " + generate_content_items(content)
+
+    latex_code += "\\end{frame}\n"
+
+    print(f"Generated very compact ImageMagick frame for: {gif_path}")
+    return latex_code
+
+def generate_imagemagick_gif_frame(gif_path, content=None, title=None):
+    """Generate LaTeX code for GIF with compact ImageMagick external player"""
+    # Process title
+    if title:
+        frame_title = process_latex_content(title)
+    else:
+        base_name = os.path.splitext(os.path.basename(gif_path))[0]
+        base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
+        frame_title = "Animation: " + base_name_escaped
+
+    # Get GIF info for better user experience
+    gif_info = get_gif_info(gif_path)
+
+    latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+    latex_code += "    \\begin{center}\n"
+
+    # Display first frame as preview - slightly smaller to make room
+    latex_code += "        \\includegraphics[width=0.65\\textwidth,height=0.45\\textheight,keepaspectratio]{" + gif_path + "}\n"
+    latex_code += "        \\\\[0.3em]\n"
+    latex_code += "        \\textcolor{gray}{\\footnotesize " + gif_info + "}\n"
+    latex_code += "        \\\\[0.8em]\n"
+
+    # Compact player options
+    latex_code += "        \\begin{tabular}{cc}\n"
+
+    # ImageMagick display - compact button
+    latex_code += "            \\href{run:imagemagick:\\\"display\\\" \\\"" + gif_path + "\\\"}{\n"
+    latex_code += "                \\begin{tikzpicture}\n"
+    latex_code += "                    \\node[fill=green!20, rounded corners=3pt, inner sep=4pt, draw=green!50, thick, minimum width=0.5cm, font=\\small] {\n"
+    latex_code += "                        \\textbf{ImageMagick}\n"
+    latex_code += "                    };\n"
+    latex_code += "                \\end{tikzpicture}\n"
+    latex_code += "            } &\n"
+
+    # System default viewer - compact button
+    latex_code += "            \\href{run:" + gif_path + "}{\n"
+    latex_code += "                \\begin{tikzpicture}\n"
+    latex_code += "                    \\node[fill=blue!20, rounded corners=3pt, inner sep=4pt, draw=blue!50, thick, minimum width=1.8cm, font=\\small] {\n"
+    latex_code += "                        \\textbf{Default App}\n"
+    latex_code += "                    };\n"
+    latex_code += "                \\end{tikzpicture}\n"
+    latex_code += "            } \\\\\n"
+
+    # Compact labels
+    latex_code += "            \\scriptsize{Best control} & \\scriptsize{System default} \\\\\n"
+
+    latex_code += "        \\end{tabular}\n"
+    latex_code += "        \\\\[0.3em]\n"
+    latex_code += "        \\textcolor{gray}{\\tiny Click to play animation}\n"
+
+    latex_code += "    \\end{center}\n"
+
+    if content:
+        latex_code += "    \\vspace{0.8em}\n"
+        latex_code += "    " + generate_content_items(content)
+
+    latex_code += "\\end{frame}\n"
+
+    print(f"Generated compact ImageMagick player frame for: {gif_path}")
+    return latex_code
+
+
+def get_gif_info(gif_path):
+    """Get GIF information for display"""
+    try:
+        from PIL import Image
+        with Image.open(gif_path) as img:
+            frames = getattr(img, 'n_frames', 1)
+            width, height = img.size
+            duration = getattr(img, 'info', {}).get('duration', 0)
+
+            info_parts = []
+            if frames > 1:
+                info_parts.append(f"{frames} frames")
+            info_parts.append(f"{width}×{height}")
+            if duration and frames > 1:
+                total_duration = (duration * frames) / 1000.0
+                info_parts.append(f"{total_duration:.1f}s")
+
+            return " • ".join(info_parts) if info_parts else "GIF image"
+
+    except Exception as e:
+        return "Animated GIF"
+
+
+def check_imagemagick_available():
+    """Check if ImageMagick is available on the system"""
+    try:
+        import subprocess
+        result = subprocess.run(['display', '--version'], capture_output=True, text=True)
+        return result.returncode == 0
+    except:
+        return False
+
+
+# Optional: Advanced version with more ImageMagick options
+def generate_advanced_imagemagick_frame(gif_path, content=None, title=None):
+    """Generate LaTeX code with advanced ImageMagick options"""
+    # Process title
+    if title:
+        frame_title = process_latex_content(title)
+    else:
+        base_name = os.path.splitext(os.path.basename(gif_path))[0]
+        base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
+        frame_title = "Animation: " + base_name_escaped
+
+    gif_info = get_gif_info(gif_path)
+
+    latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+    latex_code += "    \\begin{center}\n"
+
+    # Display first frame as preview
+    latex_code += "        \\includegraphics[width=0.6\\textwidth,height=0.4\\textheight,keepaspectratio]{" + gif_path + "}\n"
+    latex_code += "        \\\\[0.5em]\n"
+    latex_code += "        \\textcolor{gray}{\\footnotesize " + gif_info + "}\n"
+    latex_code += "        \\\\[1em]\n"
+
+    # Advanced player options
+    latex_code += "        \\begin{tabular}{ccc}\n"
+
+    # ImageMagick display
+    latex_code += "            \\href{run:imagemagick:\\\"display\\\" \\\"" + gif_path + "\\\"}{\n"
+    latex_code += "                \\begin{tikzpicture}\n"
+    latex_code += "                    \\node[fill=green!20, rounded corners=5pt, inner sep=6pt, draw=green!50, thick, minimum width=2cm] {\n"
+    latex_code += "                        \\scriptsize\\textbf{Display}\n"
+    latex_code += "                    };\n"
+    latex_code += "                \\end{tikzpicture}\n"
+    latex_code += "            } &\n"
+
+    # ImageMagick animate (loop)
+    latex_code += "            \\href{run:imagemagick:\\\"animate\\\" \\\"-loop\\\" \\\"0\\\" \\\"" + gif_path + "\\\"}{\n"
+    latex_code += "                \\begin{tikzpicture}\n"
+    latex_code += "                    \\node[fill=blue!20, rounded corners=5pt, inner sep=6pt, draw=blue!50, thick, minimum width=2cm] {\n"
+    latex_code += "                        \\scriptsize\\textbf{Animate}\n"
+    latex_code += "                    };\n"
+    latex_code += "                \\end{tikzpicture}\n"
+    latex_code += "            } &\n"
+
+    # System default
+    latex_code += "            \\href{run:" + gif_path + "}{\n"
+    latex_code += "                \\begin{tikzpicture}\n"
+    latex_code += "                    \\node[fill=orange!20, rounded corners=5pt, inner sep=6pt, draw=orange!50, thick, minimum width=2cm] {\n"
+    latex_code += "                        \\scriptsize\\textbf{Default}\n"
+    latex_code += "                    };\n"
+    latex_code += "                \\end{tikzpicture}\n"
+    latex_code += "            } \\\\\n"
+
+    # Labels
+    latex_code += "            \\footnotesize{View} & \\footnotesize{Loop} & \\footnotesize{System} \\\\\n"
+
+    latex_code += "        \\end{tabular}\n"
+
+    latex_code += "    \\end{center}\n"
+
+    if content:
+        latex_code += "    \\vspace{0.5em}\n"
+        latex_code += "    " + generate_content_items(content)
+
+    latex_code += "\\end{frame}\n"
+
+    print(f"Generated advanced ImageMagick frame for: {gif_path}")
+    return latex_code
 
 def update_text_file(file_path, line_number, new_directive):
     """Update the text file with new directive"""

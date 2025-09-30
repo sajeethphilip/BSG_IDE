@@ -2,6 +2,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import customtkinter as ctk
 from LatexHelp import LatexHelpLibrary, LatexSymbolsDatabase, LatexCommandHelper
+import threading
+import queue
+import time
 
 class EnhancedCommandIndexDialog(ctk.CTkToplevel):
     """Enhanced LaTeX command index with comprehensive BSG/Beamer command listing and interactive help"""
@@ -30,6 +33,11 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         # Add symbols to the database
         self.integrate_symbols_into_database()
 
+        # Threading for search operations
+        self.search_queue = queue.Queue()
+        self.search_thread = None
+        self.search_running = False
+
         # Display options
         self.display_options = {
             'show_syntax': True,
@@ -53,7 +61,67 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         self.bind('<FocusIn>', lambda e: self.attributes('-topmost', True))
         self.bind('<Configure>', self.on_window_resize_throttled)
 
+        # Start search thread
+        self.start_search_thread()
+
         # Initial display
+        self.refresh_display()
+
+    def start_search_thread(self):
+        """Start the background search thread"""
+        self.search_running = True
+        self.search_thread = threading.Thread(target=self.search_worker, daemon=True)
+        self.search_thread.start()
+
+    def search_worker(self):
+        """Background worker for search operations"""
+        while self.search_running:
+            try:
+                # Get search task from queue with timeout
+                task = self.search_queue.get(timeout=0.1)
+                if task is None:  # Shutdown signal
+                    break
+
+                search_term, content_type = task
+                self.perform_search(search_term, content_type)
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Search error: {e}")
+
+    def perform_search(self, search_term, content_type):
+        """Perform search in background thread"""
+        filtered_commands = {}
+
+        for category, commands in self.commands.items():
+            filtered = []
+            for cmd in commands:
+                # Filter by content type
+                if content_type == "commands_only" and cmd.get('is_symbol', False):
+                    continue
+                if content_type == "symbols_only" and not cmd.get('is_symbol', False):
+                    continue
+
+                # Filter by search text
+                if (not search_term or
+                    search_term in cmd['command'].lower() or
+                    search_term in cmd['description'].lower() or
+                    search_term in cmd.get('usage', '').lower() or
+                    search_term in cmd['syntax'].lower() or
+                    search_term in cmd.get('category', '').lower() or
+                    (cmd.get('is_symbol', False) and search_term in cmd.get('symbol', '').lower())):
+                    filtered.append(cmd)
+
+            if filtered:
+                filtered_commands[category] = filtered
+
+        # Update UI in main thread
+        self.after(0, self.update_search_results, filtered_commands)
+
+    def update_search_results(self, filtered_commands):
+        """Update UI with search results (called in main thread)"""
+        self.filtered_commands = filtered_commands
         self.refresh_display()
 
     def integrate_symbols_into_database(self):
@@ -100,8 +168,9 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         else:
             return f"Use: {command}"
 
+
     def build_enhanced_command_database(self):
-        """Build comprehensive command database with BSG and Beamer specific syntax"""
+        """Build comprehensive command database with BSG and Beamer specific syntax including BeamerSlideGenerator features"""
         return {
             'BSG Document Structure': [
                 {
@@ -173,6 +242,28 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
                     'usage': 'Per slide, after \\begin{frame}',
                     'is_symbol': False
                 },
+                            {
+                'command': '\\animategraphics',
+                'syntax': '\\animategraphics[options]{framerate}{first frame}{last frame}',
+                'description': 'Embeds animated graphics (GIFs, image sequences) - BSG Enhanced',
+                'example': '\\animategraphics[autoplay,loop,width=0.8\\textwidth]{12}{animation}{}{}',
+                'category': 'media',
+                'display_options': ['static'],
+                'auto_complete': '\\animategraphics[$1]{$2}{$3}{$4}',
+                'usage': 'Animated graphics and GIF support',
+                'is_symbol': False
+            },
+            {
+                'command': '\\file',
+                'syntax': '\\file{media_files/filename.gif}',
+                'description': 'Includes an animated GIF - automatically detects and plays animation',
+                'example': '\\file{media_files/animation.gif}',
+                'category': 'media',
+                'display_options': ['static'],
+                'auto_complete': '\\file{media_files/$1}',
+                'usage': 'Animated GIFs are automatically detected and played',
+                'is_symbol': False
+            },
                 {
                     'command': '\\file',
                     'syntax': '\\file{media_files/filename.ext}',
@@ -498,10 +589,240 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
                 }
             ],
 
+            'BSG-IDE Special Commands': [
+                {
+                    'command': '\\shadowtext',
+                    'syntax': '\\shadowtext[shadow_color]{text} or \\shadowtext{text}',
+                    'description': 'Creates text with shadow effect - BSG-IDE Enhanced',
+                    'example': '\\shadowtext[black]{Important Concept}',
+                    'category': 'effects',
+                    'display_options': ['static'],
+                    'auto_complete': '\\shadowtext[$1]{$2}',
+                    'usage': 'Text shadow effects',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\glowtext',
+                    'syntax': '\\glowtext[glow_color]{text} or \\glowtext{text}',
+                    'description': 'Creates text with glow effect - BSG-IDE Enhanced',
+                    'example': '\\glowtext[myblue]{Highlighted Text}',
+                    'category': 'effects',
+                    'display_options': ['static'],
+                    'auto_complete': '\\glowtext[$1]{$2}',
+                    'usage': 'Text glow effects',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\hlkey',
+                    'syntax': '\\hlkey[bg_color]{text} or \\hlkey{text}',
+                    'description': 'Highlights key text with background color',
+                    'example': '\\hlkey[myblue!20]{Key Term}',
+                    'category': 'formatting',
+                    'display_options': ['static'],
+                    'auto_complete': '\\hlkey[$1]{$2}',
+                    'usage': 'Key term highlighting',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\hlnote',
+                    'syntax': '\\hlnote[bg_color]{text} or \\hlnote{text}',
+                    'description': 'Highlights note text with background color',
+                    'example': '\\hlnote[mygreen!20]{Important Note}',
+                    'category': 'formatting',
+                    'display_options': ['static'],
+                    'auto_complete': '\\hlnote[$1]{$2}',
+                    'usage': 'Note highlighting',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\anbg',
+                    'syntax': '\\anbg[opacity]{background_image}',
+                    'description': 'Sets animated background for slide',
+                    'example': '\\anbg[0.2]{background.gif}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\anbg[$1]{$2}',
+                    'usage': 'Slide background with animation',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\spotlight',
+                    'syntax': '\\spotlight{text}',
+                    'description': 'Creates spotlight effect on text',
+                    'example': '\\spotlight{Main Point}',
+                    'category': 'effects',
+                    'display_options': ['static'],
+                    'auto_complete': '\\spotlight{$1}',
+                    'usage': 'Text spotlight effect',
+                    'is_symbol': False
+                }
+            ],
+
+            'BSG-IDE Media Layouts': [
+                {
+                    'command': '\\wm',
+                    'syntax': '\\wm{image_file}',
+                    'description': 'Watermark layout - image as background with low opacity',
+                    'example': '\\wm{media_files/watermark.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\wm{$1}',
+                    'usage': 'Watermark background layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\ff',
+                    'syntax': '\\ff{image_file}',
+                    'description': 'Fullframe layout - image fills entire slide',
+                    'example': '\\ff{media_files/fullscreen.jpg}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\ff{$1}',
+                    'usage': 'Fullscreen image layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\pip',
+                    'syntax': '\\pip{image_file}',
+                    'description': 'Picture-in-Picture layout - small image in corner',
+                    'example': '\\pip{media_files/small_diagram.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\pip{$1}',
+                    'usage': 'Picture-in-picture layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\split',
+                    'syntax': '\\split{image_file}',
+                    'description': 'Split layout - image and content side by side',
+                    'example': '\\split{media_files/diagram.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\split{$1}',
+                    'usage': 'Split screen layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\hl',
+                    'syntax': '\\hl{image_file}',
+                    'description': 'Highlight layout - large centered image',
+                    'example': '\\hl{media_files/main_image.jpg}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\hl{$1}',
+                    'usage': 'Highlight image layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\bg',
+                    'syntax': '\\bg{image_file}',
+                    'description': 'Background layout - image as subtle background',
+                    'example': '\\bg{media_files/background.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\bg{$1}',
+                    'usage': 'Subtle background layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\tb',
+                    'syntax': '\\tb{image_file}',
+                    'description': 'Top-Bottom layout - image on top, content below',
+                    'example': '\\tb{media_files/top_image.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\tb{$1}',
+                    'usage': 'Top-bottom layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\ol',
+                    'syntax': '\\ol{image_file}',
+                    'description': 'Overlay layout - semi-transparent image overlay',
+                    'example': '\\ol{media_files/overlay.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\ol{$1}',
+                    'usage': 'Image overlay layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\corner',
+                    'syntax': '\\corner{image_file}',
+                    'description': 'Corner layout - small image in corner',
+                    'example': '\\corner{media_files/corner_logo.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\corner{$1}',
+                    'usage': 'Corner image layout',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\mosaic',
+                    'syntax': '\\mosaic{image1,image2,image3,...}',
+                    'description': 'Intelligent mosaic layout - automatically adjusts based on number of images',
+                    'example': '\\mosaic{img1.png,img2.png,img3.png,img4.png}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\mosaic{$1}',
+                    'usage': 'Smart image grid layout (1-4: special layouts, 5+: dynamic grid)',
+                    'is_symbol': False
+                }
+            ],
+
+            'BSG-IDE Content Blocks': [
+                {
+                    'command': '\\begin{Content}',
+                    'syntax': '\\begin{Content}{media_directive}...content...\\end{Content}',
+                    'description': 'Main content block for slides with media support',
+                    'example': '\\begin{Content}{\\file{media.png}}\n- Item 1\n- Item 2\n\\end{Content}',
+                    'category': 'structure',
+                    'display_options': ['static'],
+                    'auto_complete': '\\begin{Content}{$1}\n$2\n\\end{Content}',
+                    'usage': 'Slide content container',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\begin{Notes}',
+                    'syntax': '\\begin{Notes}...speaker notes...\\end{Notes}',
+                    'description': 'Speaker notes block for presentation',
+                    'example': '\\begin{Notes}\nExplain this concept slowly\nMention related research\n\\end{Notes}',
+                    'category': 'presentation',
+                    'display_options': ['static'],
+                    'auto_complete': '\\begin{Notes}\n$1\n\\end{Notes}',
+                    'usage': 'Speaker notes container',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\begin{alertbox}',
+                    'syntax': '\\begin{alertbox}[color]{title}...content...\\end{alertbox}',
+                    'description': 'Alert box with colored background',
+                    'example': '\\begin{alertbox}[red]{Warning}\nThis is important!\n\\end{alertbox}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\begin{alertbox}[$1]{$2}\n$3\n\\end{alertbox}',
+                    'usage': 'Alert message box',
+                    'is_symbol': False
+                },
+                {
+                    'command': '\\begin{infobox}',
+                    'syntax': '\\begin{infobox}[color]{title}...content...\\end{infobox}',
+                    'description': 'Information box with colored background',
+                    'example': '\\begin{infobox}[blue]{Information}\nAdditional details here\n\\end{infobox}',
+                    'category': 'layout',
+                    'display_options': ['static'],
+                    'auto_complete': '\\begin{infobox}[$1]{$2}\n$3\n\\end{infobox}',
+                    'usage': 'Information message box',
+                    'is_symbol': False
+                }
+            ],
+
             'Mathematical Symbols': [
                 # This will be populated by integrate_symbols_into_database
             ]
         }
+
 
     def create_enhanced_widgets(self):
         """Create enhanced interface with comprehensive listing and interactive features"""
@@ -536,7 +857,7 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         search_entry = ctk.CTkEntry(search_frame, textvariable=self.search_var, width=300,
                                   placeholder_text="Search BSG commands, symbols, or descriptions...")
         search_entry.pack(side="left", padx=5)
-        search_entry.bind('<KeyRelease>', self.filter_commands)
+        search_entry.bind('<KeyRelease>', self.filter_commands_throttled)
 
         # Content type filter
         content_frame = ctk.CTkFrame(left_controls, fg_color="transparent")
@@ -561,7 +882,8 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         # Create category buttons organized in three rows
         categories = ["All", "BSG Document Structure", "BSG Slide Content & Media", "Beamer Text Formatting",
                      "Beamer Lists & Environments", "Beamer Display Effects & Animations",
-                     "Beamer Item-by-Item Display", "Presentation Features", "Mathematical Symbols"]
+                     "Beamer Item-by-Item Display", "Presentation Features", "Mathematical Symbols",
+                     "BSG-IDE Special Commands", "BSG-IDE Media Layouts", "BSG-IDE Content Blocks"]
         self.category_buttons = {}
 
         # Create three rows for category buttons
@@ -576,9 +898,9 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
 
         # Distribute categories across three rows
         for i, category in enumerate(categories):
-            if i < 3:
+            if i < 4:
                 row_frame = cat_row1
-            elif i < 6:
+            elif i < 8:
                 row_frame = cat_row2
             else:
                 row_frame = cat_row3
@@ -657,6 +979,10 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         self.stats_label = ctk.CTkLabel(info_frame, text="", font=("Arial", 11))
         self.stats_label.pack(side="left", padx=10, pady=5)
 
+        # Search status indicator
+        self.search_status_label = ctk.CTkLabel(info_frame, text="Ready", font=("Arial", 10), text_color="#95A5A6")
+        self.search_status_label.pack(side="left", padx=10, pady=5)
+
         # Add quick tips
         tips_label = ctk.CTkLabel(info_frame,
                                  text="💡 Tip: Click on any command for detailed help | Double-click to insert",
@@ -676,6 +1002,9 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
 
         ctk.CTkButton(button_frame, text="Show Detailed Help",
                      command=self.show_detailed_help, width=140).pack(side="left", padx=5)
+
+        ctk.CTkButton(button_frame, text="Test Command",
+                     command=self.test_command, width=120).pack(side="left", padx=5)
 
         ctk.CTkButton(button_frame, text="Close",
                      command=self.destroy, fg_color="#E74C3C", hover_color="#C0392B").pack(side="right", padx=5)
@@ -699,6 +1028,8 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
             ("BSG Columns Layout", "\\begin{columns}\n\\column{0.4\\textwidth}\n\\begin{bsgblock}{Objective}\nResearch goals\n\\end{bsgblock}\n\\column{0.6\\textwidth}\n\\begin{itemize}\n\\item Point 1\n\\item Point 2\n\\end{itemize}\n\\end{columns}"),
             ("BSG Media Inclusion", "\\file{media_files/diagram.png}\n\\play{media_files/demo.mp4}"),
             ("BSG Hyperlink", "\\href{https://bsg-research.com}{BSG Website}"),
+            ("BSG Special Effects", "\\shadowtext[black]{Shadow Text}\n\\glowtext[myblue]{Glow Text}\n\\hlkey[myblue!20]{Key Term}"),
+            ("BSG Media Layouts", "\\wm{watermark.png} - Watermark\n\\ff{fullscreen.jpg} - Fullframe\n\\pip{small.png} - Picture-in-Picture\n\\split{diagram.png} - Split Layout"),
         ]
 
         for i, (title, code) in enumerate(patterns):
@@ -804,6 +1135,16 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
                 "name": "Greek Letters",
                 "color": "#D35400",
                 "commands": ["\\alpha", "\\beta", "\\gamma", "\\delta", "\\epsilon", "\\pi"]
+            },
+            {
+                "name": "BSG Effects",
+                "color": "#C0392B",
+                "commands": ["\\shadowtext", "\\glowtext", "\\hlkey", "\\hlnote", "\\spotlight"]
+            },
+            {
+                "name": "Media Layouts",
+                "color": "#8E44AD",
+                "commands": ["\\wm", "\\ff", "\\pip", "\\split", "\\hl", "\\mosaic"]
             }
         ]
 
@@ -817,18 +1158,17 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         row3_frame = ctk.CTkFrame(button_groups_frame, fg_color="transparent")
         row3_frame.pack(fill="x", pady=2)
 
-        # Distribute groups between three rows (3 groups per row)
+        # Distribute groups between three rows (4 groups per row)
         for i, group in enumerate(button_groups):
-            if i < 3:
+            if i < 4:
                 parent_frame = row1_frame
-            elif i < 6:
+            elif i < 8:
                 parent_frame = row2_frame
             else:
                 parent_frame = row3_frame
 
             group_frame = self.create_button_group(group, parent_frame)
             group_frame.pack(side="left", fill="x", expand=True, padx=3)
-
 
     def create_button_group(self, group_info, parent):
         """Create a single button group with colored buttons"""
@@ -875,59 +1215,20 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         self.update_live_help()
         self.help_display.see("1.0")
 
-    def on_window_resize_throttled(self, event):
-        """Handle window resize with throttling to prevent performance issues"""
-        if event.widget == self:
-            current_time = self.tk.call('clock', 'milliseconds')
+    def filter_commands_throttled(self, event=None):
+        """Throttled command filtering to prevent UI freeze"""
+        search_term = self.search_var.get().lower()
+        content_type = self.content_var.get()
 
-            if self.resize_timeout_id:
-                self.after_cancel(self.resize_timeout_id)
+        # Update search status
+        self.search_status_label.configure(text="Searching...", text_color="#F39C12")
 
-            if current_time - self.last_resize_time > self.min_resize_interval:
-                self.last_resize_time = current_time
-                # Static layout - no dynamic updates needed
-            else:
-                self.resize_timeout_id = self.after(
-                    self.min_resize_interval,
-                    lambda: setattr(self, 'last_resize_time', self.tk.call('clock', 'milliseconds'))
-                )
-
-    def update_live_help(self, event=None):
-        """Update live help display based on entered command"""
-        command = self.test_var.get().strip()
-        if not command or not command.startswith('\\'):
-            self.help_display.configure(state="normal")
-            self.help_display.delete("1.0", "end")
-            self.help_display.insert("1.0", "Enter a BSG or LaTeX command above to see detailed help information...")
-            self.help_display.configure(state="disabled")
-            return
-
-        help_info = self.command_helper.get_command_help(command)
-
-        self.help_display.configure(state="normal")
-        self.help_display.delete("1.0", "end")
-
-        if help_info:
-            help_text = f"Command: {command}\n\n"
-            help_text += f"Description: {help_info.get('description', 'No description available')}\n\n"
-            help_text += f"Syntax: {help_info.get('syntax', 'No syntax information')}\n\n"
-            help_text += f"Category: {help_info.get('category', 'General')}\n"
-            help_text += f"Package: {help_info.get('package', 'LaTeX')}\n\n"
-
-            if 'example' in help_info:
-                help_text += f"Example:\n{help_info['example']}\n\n"
-
-            if 'symbol' in help_info:
-                help_text += f"Symbol: {help_info['symbol']}\n\n"
-
-            if 'url' in help_info:
-                help_text += f"Documentation: {help_info['url']}"
-        else:
-            help_text = f"No detailed help found for: {command}\n\n"
-            help_text += "Try searching for similar commands or check the spelling."
-
-        self.help_display.insert("1.0", help_text)
-        self.help_display.configure(state="disabled")
+        # Add search task to queue
+        try:
+            self.search_queue.put((search_term, content_type), timeout=0.1)
+        except queue.Full:
+            # Queue is full, skip this search (prevents backlog)
+            pass
 
     def filter_by_category(self, category):
         """Filter commands by category"""
@@ -942,36 +1243,6 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
                 btn.configure(fg_color="#4ECDC4", hover_color="#45B7A8")
             else:
                 btn.configure(fg_color="#34495E", hover_color="#2C3E50")
-
-        self.refresh_display()
-
-    def filter_commands(self, event=None):
-        """Filter commands based on search text and content type"""
-        search_text = self.search_var.get().lower()
-        content_type = self.content_var.get()
-
-        if not search_text:
-            self.filtered_commands = self.commands.copy()
-        else:
-            self.filtered_commands = {}
-            for category, commands in self.commands.items():
-                filtered = []
-                for cmd in commands:
-                    # Filter by content type
-                    if content_type == "commands_only" and cmd.get('is_symbol', False):
-                        continue
-                    if content_type == "symbols_only" and not cmd.get('is_symbol', False):
-                        continue
-
-                    # Filter by search text
-                    if (search_text in cmd['command'].lower() or
-                        search_text in cmd['description'].lower() or
-                        search_text in cmd.get('usage', '').lower() or
-                        search_text in cmd['syntax'].lower() or
-                        search_text in cmd.get('category', '').lower()):
-                        filtered.append(cmd)
-                if filtered:
-                    self.filtered_commands[category] = filtered
 
         self.refresh_display()
 
@@ -999,6 +1270,7 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
 
         total_commands = sum(len(commands) for commands in self.filtered_commands.values())
         self.stats_label.configure(text=f"Showing {total_commands} commands and symbols")
+        self.search_status_label.configure(text="Ready", text_color="#27AE60")
 
         if self.view_var.get() == "categorized":
             self.display_categorized()
@@ -1180,7 +1452,8 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
             'interactive': '#D35400',
             'symbols': '#27AE60',
             'math': '#2980B9',
-            'general': '#7F8C8D'
+            'general': '#7F8C8D',
+            'effects': '#C0392B'
         }
         return color_map.get(category, '#7F8C8D')
 
@@ -1297,6 +1570,70 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         self.test_var.set(self.selected_command['command'])
         self.update_live_help()
 
+    def test_command(self):
+        """Test the selected command"""
+        if not self.selected_command:
+            messagebox.showinfo("No Selection", "Please select a command first.")
+            return
+
+        messagebox.showinfo("Test Command",
+                          f"Testing: {self.selected_command['command']}\n\n"
+                          f"This would show a preview of how the command works in context.")
+
+    def update_live_help(self, event=None):
+        """Update live help display based on entered command"""
+        command = self.test_var.get().strip()
+        if not command or not command.startswith('\\'):
+            self.help_display.configure(state="normal")
+            self.help_display.delete("1.0", "end")
+            self.help_display.insert("1.0", "Enter a BSG or LaTeX command above to see detailed help information...")
+            self.help_display.configure(state="disabled")
+            return
+
+        help_info = self.command_helper.get_command_help(command)
+
+        self.help_display.configure(state="normal")
+        self.help_display.delete("1.0", "end")
+
+        if help_info:
+            help_text = f"Command: {command}\n\n"
+            help_text += f"Description: {help_info.get('description', 'No description available')}\n\n"
+            help_text += f"Syntax: {help_info.get('syntax', 'No syntax information')}\n\n"
+            help_text += f"Category: {help_info.get('category', 'General')}\n"
+            help_text += f"Package: {help_info.get('package', 'LaTeX')}\n\n"
+
+            if 'example' in help_info:
+                help_text += f"Example:\n{help_info['example']}\n\n"
+
+            if 'symbol' in help_info:
+                help_text += f"Symbol: {help_info['symbol']}\n\n"
+
+            if 'url' in help_info:
+                help_text += f"Documentation: {help_info['url']}"
+        else:
+            help_text = f"No detailed help found for: {command}\n\n"
+            help_text += "Try searching for similar commands or check the spelling."
+
+        self.help_display.insert("1.0", help_text)
+        self.help_display.configure(state="disabled")
+
+    def on_window_resize_throttled(self, event):
+        """Handle window resize with throttling to prevent performance issues"""
+        if event.widget == self:
+            current_time = self.tk.call('clock', 'milliseconds')
+
+            if self.resize_timeout_id:
+                self.after_cancel(self.resize_timeout_id)
+
+            if current_time - self.last_resize_time > self.min_resize_interval:
+                self.last_resize_time = current_time
+                # Static layout - no dynamic updates needed
+            else:
+                self.resize_timeout_id = self.after(
+                    self.min_resize_interval,
+                    lambda: setattr(self, 'last_resize_time', self.tk.call('clock', 'milliseconds'))
+                )
+
     def center_dialog(self):
         """Center the dialog on screen"""
         self.update_idletasks()
@@ -1305,3 +1642,12 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         x = (self.winfo_screenwidth() // 2) - (width // 2)
         y = (self.winfo_screenheight() // 2) - (height // 2)
         self.geometry(f'{width}x{height}+{x}+{y}')
+
+    def destroy(self):
+        """Clean up threads when closing"""
+        self.search_running = False
+        try:
+            self.search_queue.put(None, timeout=0.1)  # Signal thread to exit
+        except:
+            pass
+        super().destroy()
