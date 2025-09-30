@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
 from BeamerSlideGenerator import get_beamer_preamble
+from tkinter import messagebox
 
 class BeamerSyntaxHighlighter:
     """Syntax highlighting for Beamer/LaTeX content"""
