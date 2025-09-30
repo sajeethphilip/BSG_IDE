@@ -1965,7 +1965,6 @@ class SimpleRedirector:
         pass
 
 
-
 class IntelligentAutocomplete:
     """Intelligent autocomplete system for LaTeX commands with enhanced module integration"""
 
@@ -1974,7 +1973,12 @@ class IntelligentAutocomplete:
         self.autocomplete_window = None
         self.suggestions = []
         self.current_suggestion_index = 0
-        self.command_database = {}  # Initialize the missing attribute
+        self.command_database = {}
+        self.selected_widget = None
+        self.ignore_next_click = False
+        self.last_key_time = 0
+        self.update_pending = False
+        self.last_command_text = ""  # Track last command to avoid redundant updates
 
         # Try to use enhanced LatexHelp module, fallback to basic
         self.setup_autocomplete_system()
@@ -1982,7 +1986,6 @@ class IntelligentAutocomplete:
     def setup_autocomplete_system(self):
         """Setup the appropriate autocomplete system"""
         try:
-            # Try to import and use the enhanced LatexHelp module
             from LatexHelp import LatexAutocomplete, LatexCommandHelper
             self.enhanced_system = LatexAutocomplete(LatexCommandHelper())
             self.use_enhanced = True
@@ -1999,18 +2002,29 @@ class IntelligentAutocomplete:
             '\\begin': {
                 'completion': '\\begin{$1}\n$2\n\\end{$1}',
                 'description': 'Begin environment block',
+                'type': 'environment_starter',
                 'pairs': {
-                    'itemize': '\\item ',
-                    'enumerate': '\\item ',
-                    'frame': '',
-                    'columns': '\\column{0.5\\textwidth}',
-                    'overprint': '\\onslide<1>',
-                    'block': '\\blocktitle{}'
+                    'itemize': '\\begin{itemize}\n\\item $1\n\\end{itemize}',
+                    'enumerate': '\\begin{enumerate}\n\\item $1\n\\end{enumerate}',
+                    'frame': '\\begin{frame}{$1}\n$2\n\\end{frame}',
+                    'columns': '\\begin{columns}\n\\column{0.5\\textwidth}\n$1\n\\column{0.5\\textwidth}\n$2\n\\end{columns}',
+                    'block': '\\begin{block}{$1}\n$2\n\\end{block}',
+                    'exampleblock': '\\begin{exampleblock}{$1}\n$2\n\\end{exampleblock}',
+                    'alertblock': '\\begin{alertblock}{$1}\n$2\n\\end{alertblock}',
+                    'theorem': '\\begin{theorem}{$1}\n$2\n\\end{theorem}',
+                    'proof': '\\begin{proof}\n$1\n\\end{proof}',
+                    'figure': '\\begin{figure}\n\\centering\n\\includegraphics[width=0.8\\textwidth]{$1}\n\\caption{$2}\n\\label{fig:$3}\n\\end{figure}',
+                    'table': '\\begin{table}\n\\centering\n\\begin{tabular}{$1}\n$2\n\\end{tabular}\n\\caption{$3}\n\\label{tab:$4}\n\\end{table}',
+                    'equation': '\\begin{equation}\n$1\n\\end{equation}',
+                    'align': '\\begin{align}\n$1\n\\end{align}',
+                    'matrix': '\\begin{matrix}\n$1\n\\end{matrix}',
+                    'cases': '\\begin{cases}\n$1\n\\end{cases}'
                 }
             },
             '\\end': {
                 'completion': '\\end{$1}',
-                'description': 'End environment block'
+                'description': 'End environment block',
+                'type': 'environment_ender'
             },
             '\\item': {
                 'completion': '\\item $1',
@@ -2260,152 +2274,223 @@ class IntelligentAutocomplete:
         }
 
     def setup_autocomplete(self, text_widget):
-        """Setup autocomplete for a text widget"""
+        """Setup autocomplete for a text widget - MORE AGGRESSIVE"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'setup_autocomplete'):
-            # Use enhanced system setup
             self.enhanced_system.setup_autocomplete(text_widget)
         else:
-            # Fallback to basic setup
-            text_widget.bind('<KeyRelease>', self.on_key_release)
+            # More aggressive binding - trigger on every key press
+            text_widget.bind('<Key>', self.on_key_pressed, add='+')
+            text_widget.bind('<KeyRelease>', self.on_key_release, add='+')
             text_widget.bind('<Tab>', self.on_tab)
             text_widget.bind('<Return>', self.on_return)
             text_widget.bind('<Escape>', self.hide_autocomplete)
             text_widget.bind('<Up>', self.on_arrow_key)
             text_widget.bind('<Down>', self.on_arrow_key)
+            text_widget.bind('<Button-1>', self.on_editor_click)
+            text_widget.bind('<FocusIn>', self.on_focus_in)
+
+    def on_focus_in(self, event):
+        """Track which widget has focus"""
+        self.selected_widget = event.widget
+        print(f"Focus set to: {self.selected_widget}")  # Debug
+
+    def on_editor_click(self, event):
+        """Handle click in editor - hide autocomplete immediately"""
+        self.hide_autocomplete()
+
+    def on_key_pressed(self, event):
+        """Handle key press - IMMEDIATE response"""
+        # Show autocomplete immediately when backslash is pressed
+        if event.char == '\\':
+            print("Backslash detected - showing autocomplete immediately")  # Debug
+            # Schedule autocomplete to show after a tiny delay to ensure the backslash is inserted
+            self.parent.after(10, self.trigger_autocomplete_immediately)
+
+        # Also handle escape key immediately
+        if event.keysym == 'Escape':
+            self.hide_autocomplete()
+
+    def trigger_autocomplete_immediately(self):
+        """Trigger autocomplete immediately after backslash"""
+        if not self.selected_widget:
+            return
+
+        widget = self.selected_widget
+        cursor_pos = widget.index("insert")
+        line_start = widget.index(f"{cursor_pos} linestart")
+        line_content = widget.get(line_start, cursor_pos)
+
+        # Look for the backslash we just typed
+        if '\\' in line_content:
+            self.show_suggestions(widget, '\\', int(cursor_pos.split('.')[1]))
 
     def on_key_release(self, event):
-        """Handle key release for autocomplete"""
+        """Handle key release for autocomplete - VERY AGGRESSIVE"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'on_key_release'):
             return self.enhanced_system.on_key_release(event)
 
-        # Fallback implementation
-        widget = event.widget
-        current_text = widget.get("1.0", "end-1c")
-        cursor_pos = widget.index("insert")
+        # Skip if we're already processing
+        if self.update_pending:
+            return
 
-        # Get current line and position
-        line_start = widget.index(f"{cursor_pos} linestart")
-        line_end = widget.index(f"{cursor_pos} lineend")
-        line_content = widget.get(line_start, line_end)
-        cursor_in_line = int(cursor_pos.split('.')[1])
+        # VERY PERMISSIVE - only skip pure modifier keys
+        if event.keysym in ['Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R']:
+            return
 
-        # Check for command patterns
-        self.detect_autocomplete_opportunity(widget, line_content, cursor_in_line)
+        # IMMEDIATE processing - no debouncing for backslash and letters
+        if event.char and (event.char == '\\' or event.char.isalpha()):
+            self.update_pending = True
+            self.parent.after(5, self.process_autocomplete_update)  # Very short delay
+        else:
+            # For other keys, use minimal debouncing
+            current_time = time.time() * 1000
+            if current_time - self.last_key_time < 10:  # Only 10ms debounce
+                return
+            self.last_key_time = current_time
+            self.update_pending = True
+            self.parent.after(5, self.process_autocomplete_update)
 
-    def detect_autocomplete_opportunity(self, widget, line_content, cursor_pos):
-        """Detect when to show autocomplete suggestions"""
-        if self.use_enhanced and hasattr(self.enhanced_system, 'detect_autocomplete_opportunity'):
-            return self.enhanced_system.detect_autocomplete_opportunity(widget, line_content, cursor_pos)
-
-        # Fallback implementation
-        # Look for backslash commands
-        if '\\' in line_content:
-            text_before_cursor = line_content[:cursor_pos]
-            last_backslash = text_before_cursor.rfind('\\')
-
-            if last_backslash != -1:
-                command_text = text_before_cursor[last_backslash:]
-                self.show_suggestions(widget, command_text, cursor_pos)
+    def process_autocomplete_update(self):
+        """Process autocomplete update - VERY AGGRESSIVE"""
+        try:
+            if not self.selected_widget:
+                self.update_pending = False
                 return
 
-        # Look for begin/end environments
-        if '\\begin{' in line_content:
-            self.handle_environment_completion(widget, line_content, cursor_pos)
+            widget = self.selected_widget
+            cursor_pos = widget.index("insert")
+            line_start = widget.index(f"{cursor_pos} linestart")
+            line_end = widget.index(f"{cursor_pos} lineend")
+            line_content = widget.get(line_start, line_end)
+            cursor_in_line = int(cursor_pos.split('.')[1])
 
+            print(f"Processing autocomplete: '{line_content}' at position {cursor_in_line}")  # Debug
+
+            # ALWAYS check for commands, even if no obvious pattern
+            self.detect_autocomplete_opportunity_aggressive(widget, line_content, cursor_in_line)
+        except Exception as e:
+            print(f"Autocomplete error: {e}")  # Debug
+        finally:
+            self.update_pending = False
+
+    def detect_autocomplete_opportunity_aggressive(self, widget, line_content, cursor_pos):
+        """VERY AGGRESSIVE command detection - always show if backslash present"""
+        text_before_cursor = line_content[:cursor_pos]
+        last_backslash = text_before_cursor.rfind('\\')
+
+        if last_backslash != -1:
+            command_text = text_before_cursor[last_backslash:]
+            print(f"Found command pattern: '{command_text}'")  # Debug
+
+            # ALWAYS show suggestions if there's a backslash, even for single \
+            if command_text == '\\' or self.is_valid_command_pattern(command_text):
+                if command_text != self.last_command_text:  # Only update if changed
+                    self.last_command_text = command_text
+                    self.show_suggestions(widget, command_text, cursor_pos)
+                return
+            else:
+                print(f"Invalid command pattern, hiding: '{command_text}'")  # Debug
+                self.hide_autocomplete()
+                return
+
+        # No backslash found - hide autocomplete
+        print("No backslash found, hiding autocomplete")  # Debug
         self.hide_autocomplete()
 
-    def handle_environment_completion(self, widget, line_content, cursor_pos):
-        """Handle automatic environment completion"""
-        if self.use_enhanced and hasattr(self.enhanced_system, 'handle_environment_completion'):
-            return self.enhanced_system.handle_environment_completion(widget, line_content, cursor_pos)
+    def is_valid_command_pattern(self, command_text):
+        """VERY PERMISSIVE pattern detection"""
+        if not command_text.startswith('\\'):
+            return False
 
-        # Fallback implementation
-        if '\\begin{' in line_content and '\\end{' not in line_content:
-            # Extract environment name
-            begin_match = re.search(r'\\begin{([^}]*)}', line_content)
-            if begin_match:
-                env_name = begin_match.group(1)
-                self.auto_complete_environment(widget, env_name)
-
-    def auto_complete_environment(self, widget, env_name):
-        """Automatically complete environment with proper formatting"""
-        if self.use_enhanced and hasattr(self.enhanced_system, 'auto_complete_environment'):
-            return self.enhanced_system.auto_complete_environment(widget, env_name)
-
-        # Fallback implementation
-        cursor_pos = widget.index("insert")
-        line_end = widget.index(f"{cursor_pos} lineend")
-
-        # Insert the end tag and proper formatting
-        end_tag = f"\\end{{{env_name}}}"
-
-        # Get indentation
-        line_start = widget.index(f"{cursor_pos} linestart")
-        line_content = widget.get(line_start, cursor_pos)
-        indentation = re.match(r'^(\s*)', line_content).group(1)
-
-        completion_text = f"\n{indentation}    \n{indentation}{end_tag}"
-
-        # Move cursor to the middle line for content
-        widget.insert(cursor_pos, completion_text)
-
-        # Position cursor in the content area
-        content_line = f"{cursor_pos.split('.')[0]}.{int(cursor_pos.split('.')[1]) + len(indentation) + 4}"
-        widget.mark_set("insert", content_line)
-
-        # Add item if it's a list environment
-        if env_name in ['itemize', 'enumerate']:
-            widget.insert("insert", "\\item ")
+        # Show suggestions for ANY backslash command, even incomplete ones
+        return len(command_text) >= 1  # Just having \ is enough!
 
     def show_suggestions(self, widget, partial_command, cursor_pos):
-        """Show autocomplete suggestions"""
+        """Show autocomplete suggestions - ALWAYS when backslash is present"""
+        print(f"Showing suggestions for: '{partial_command}'")  # Debug
+
         if self.use_enhanced and hasattr(self.enhanced_system, 'show_suggestions'):
             return self.enhanced_system.show_suggestions(widget, partial_command, cursor_pos)
 
-        # Fallback implementation
-        # Find matching commands
         self.suggestions = []
 
-        # Ensure command_database exists
         if not hasattr(self, 'command_database') or not self.command_database:
             self.command_database = self.build_autocomplete_database()
 
-        for command, info in self.command_database.items():
-            if command.startswith(partial_command):
-                self.suggestions.append((command, info))
+        # Handle different command types
+        if partial_command.startswith('\\begin{'):
+            # Environment completion
+            begin_info = self.command_database.get('\\begin', {})
+            pairs = begin_info.get('pairs', {})
+
+            if '}' not in partial_command:
+                env_partial = partial_command[7:]  # Remove "\begin{" prefix
+                for env_name, env_template in pairs.items():
+                    if env_name.startswith(env_partial):
+                        self.suggestions.append((
+                            f"\\begin{{{env_name}}}",
+                            {
+                                'completion': env_template,
+                                'description': f'{env_name} environment',
+                                'type': 'environment',
+                                'env_name': env_name
+                            }
+                        ))
+            else:
+                for env_name, env_template in pairs.items():
+                    self.suggestions.append((
+                        f"\\begin{{{env_name}}}",
+                        {
+                            'completion': env_template,
+                            'description': f'{env_name} environment',
+                            'type': 'environment',
+                            'env_name': env_name
+                        }
+                    ))
+        else:
+            # Regular command completion - show ALL commands that start with the partial
+            for command, info in self.command_database.items():
+                if command.startswith(partial_command):
+                    self.suggestions.append((command, info))
+
+            # If we only have a single backslash, show ALL commands
+            if partial_command == '\\' and not self.suggestions:
+                for command, info in self.command_database.items():
+                    self.suggestions.append((command, info))
+
+        print(f"Found {len(self.suggestions)} suggestions")  # Debug
 
         if not self.suggestions:
+            print("No suggestions found, hiding autocomplete")  # Debug
             self.hide_autocomplete()
             return
 
-        # Create suggestion window
-        self.show_autocomplete_window(widget, self.suggestions)
+        # Create or update autocomplete window
+        if self.autocomplete_window and self.autocomplete_window.winfo_exists():
+            self.update_autocomplete_window(widget, self.suggestions)
+        else:
+            self.create_autocomplete_window(widget, self.suggestions)
 
-    def show_autocomplete_window(self, widget, suggestions):
-        """Display autocomplete suggestions window"""
-        if self.use_enhanced and hasattr(self.enhanced_system, 'show_autocomplete_window'):
-            return self.enhanced_system.show_autocomplete_window(widget, suggestions)
+    def create_autocomplete_window(self, widget, suggestions):
+        """Create new autocomplete suggestions window"""
+        print("Creating new autocomplete window")  # Debug
 
-        # Fallback implementation
-        self.hide_autocomplete()
-
-        # Get widget position
         bbox = widget.bbox("insert")
         if not bbox:
+            print("No bbox available")  # Debug
             return
 
         x = widget.winfo_rootx() + bbox[0]
         y = widget.winfo_rooty() + bbox[1] + bbox[3]
 
-        # Create suggestion window
         self.autocomplete_window = tk.Toplevel(widget)
         self.autocomplete_window.wm_overrideredirect(True)
         self.autocomplete_window.wm_geometry(f"+{x}+{y}")
 
-        # Style the window
+        self.autocomplete_window.attributes('-topmost', True)
+
         self.autocomplete_window.configure(background='#2B2B2B', relief='solid', borderwidth=1)
 
-        # Create listbox for suggestions
         self.suggestion_listbox = tk.Listbox(
             self.autocomplete_window,
             background='#2B2B2B',
@@ -2413,30 +2498,78 @@ class IntelligentAutocomplete:
             selectbackground='#4A90E2',
             selectforeground='white',
             font=('Courier', 10),
-            height=min(len(suggestions), 8)
+            height=min(len(suggestions), 8),
+            width=60,
+            exportselection=False
         )
         self.suggestion_listbox.pack()
 
-        # Add suggestions
-        for command, info in suggestions:
-            display_text = f"{command:20} {info.get('description', '')[:40]}..."
-            self.suggestion_listbox.insert(tk.END, display_text)
+        self.populate_suggestion_listbox(suggestions)
 
-        # Bind selection event
         self.suggestion_listbox.bind('<Double-Button-1>', self.on_suggestion_selected)
         self.suggestion_listbox.bind('<<ListboxSelect>>', self.on_suggestion_highlight)
+        self.suggestion_listbox.bind('<Button-1>', self.on_suggestion_click)
+        self.suggestion_listbox.bind('<Escape>', self.hide_autocomplete)
         self.suggestion_listbox.selection_set(0)
         self.current_suggestion_index = 0
 
-        # Make window transient
         self.autocomplete_window.transient(widget.winfo_toplevel())
+        self.autocomplete_window.grab_release()
+
+        print("Autocomplete window created successfully")  # Debug
+
+    def update_autocomplete_window(self, widget, suggestions):
+        """Update existing autocomplete window with new suggestions"""
+        print("Updating existing autocomplete window")  # Debug
+
+        if not self.autocomplete_window or not self.autocomplete_window.winfo_exists():
+            self.create_autocomplete_window(widget, suggestions)
+            return
+
+        self.suggestion_listbox.delete(0, tk.END)
+        self.populate_suggestion_listbox(suggestions)
+
+        if suggestions:
+            self.suggestion_listbox.selection_set(0)
+            self.current_suggestion_index = 0
+        else:
+            self.hide_autocomplete()
+
+        # Update window position to follow cursor
+        bbox = widget.bbox("insert")
+        if bbox:
+            x = widget.winfo_rootx() + bbox[0]
+            y = widget.winfo_rooty() + bbox[1] + bbox[3]
+            self.autocomplete_window.wm_geometry(f"+{x}+{y}")
+
+    def populate_suggestion_listbox(self, suggestions):
+        """Populate the suggestion listbox with formatted items"""
+        for command, info in suggestions:
+            if info.get('type') == 'environment':
+                env_name = info.get('env_name', '')
+                description = info.get('description', '')
+                display_text = f"{command:25} {description}"
+            else:
+                description = info.get('description', '')
+                display_text = f"{command:25} {description}"
+            self.suggestion_listbox.insert(tk.END, display_text)
+
+    def on_suggestion_click(self, event):
+        """Handle single click on suggestion - select immediately"""
+        widget = event.widget
+        index = widget.nearest(event.y)
+        if index >= 0:
+            widget.selection_clear(0, tk.END)
+            widget.selection_set(index)
+            widget.activate(index)
+            self.current_suggestion_index = index
+            self.on_suggestion_selected()
 
     def on_suggestion_highlight(self, event=None):
         """Handle suggestion highlighting"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_highlight'):
             return self.enhanced_system.on_suggestion_highlight(event)
 
-        # Fallback implementation
         if not self.suggestions or not self.autocomplete_window:
             return
 
@@ -2449,7 +2582,6 @@ class IntelligentAutocomplete:
         if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_selected'):
             return self.enhanced_system.on_suggestion_selected(event)
 
-        # Fallback implementation
         if not self.suggestions or not self.autocomplete_window:
             return
 
@@ -2457,63 +2589,65 @@ class IntelligentAutocomplete:
         if selection:
             selected_index = selection[0]
             command, info = self.suggestions[selected_index]
-            self.apply_autocomplete(command, info)
 
-    def apply_autocomplete(self, command, info):
-        """Apply the selected autocomplete"""
-        if self.use_enhanced and hasattr(self.enhanced_system, 'apply_autocomplete'):
-            return self.enhanced_system.apply_autocomplete(command, info)
+            current_widget = self.selected_widget
+            self.hide_autocomplete()
 
-        # Fallback implementation
-        # Try to get the focused widget
-        focused_widget = self.parent.focus_get()
+            if current_widget:
+                self.apply_autocomplete_to_widget(current_widget, command, info)
 
-        # Determine which editor to use
-        if (hasattr(self.parent, 'content_editor') and
-            focused_widget == self.parent.content_editor._textbox):
-            widget = self.parent.content_editor._textbox
-        elif (hasattr(self.parent, 'notes_editor') and
-              focused_widget == self.parent.notes_editor._textbox):
-            widget = self.parent.notes_editor._textbox
-        else:
-            # Default to content editor
-            widget = self.parent.content_editor._textbox
-
-        # Get current cursor position and line
+    def apply_autocomplete_to_widget(self, widget, command, info):
+        """Apply autocomplete to a specific widget"""
         cursor_pos = widget.index("insert")
         line_start = widget.index(f"{cursor_pos} linestart")
         line_content = widget.get(line_start, cursor_pos)
 
-        # Find the partial command and replace it
+        if info.get('type') == 'environment':
+            self.apply_environment_completion(widget, command, info)
+        else:
+            self.apply_regular_completion(widget, command, info, line_content, cursor_pos)
+
+    def apply_environment_completion(self, widget, command, info):
+        """Apply environment completion with proper formatting"""
+        completion = info.get('completion', command)
+
+        cursor_pos = widget.index("insert")
+        widget.insert(cursor_pos, completion)
+        self.position_cursor_at_placeholder(widget, completion)
+        widget.focus_set()
+
+    def apply_regular_completion(self, widget, command, info, line_content, cursor_pos):
+        """Apply regular command completion"""
         last_backslash = line_content.rfind('\\')
         if last_backslash != -1:
-            # Delete the partial command
             delete_start = f"{cursor_pos.split('.')[0]}.{last_backslash}"
             widget.delete(delete_start, cursor_pos)
 
-            # Insert the complete command with placeholders
             completion = info.get('completion', command)
             widget.insert(delete_start, completion)
-
-            # Position cursor at first placeholder
             self.position_cursor_at_placeholder(widget, completion)
 
-        self.hide_autocomplete()
+        widget.focus_set()
 
     def position_cursor_at_placeholder(self, widget, completion):
         """Position cursor at the first placeholder ($1)"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'position_cursor_at_placeholder'):
             return self.enhanced_system.position_cursor_at_placeholder(widget, completion)
 
-        # Fallback implementation
         if '$1' in completion:
-            # Find position of first placeholder
             cursor_pos = widget.index("insert")
             search_start = f"{cursor_pos} - {len(completion)} chars"
             placeholder_pos = widget.search('$1', search_start, cursor_pos)
 
             if placeholder_pos:
-                # Delete placeholder and position cursor
+                widget.delete(placeholder_pos, f"{placeholder_pos}+2 chars")
+                widget.mark_set("insert", placeholder_pos)
+        elif '$2' in completion:
+            cursor_pos = widget.index("insert")
+            search_start = f"{cursor_pos} - {len(completion)} chars"
+            placeholder_pos = widget.search('$1', search_start, cursor_pos)
+
+            if placeholder_pos:
                 widget.delete(placeholder_pos, f"{placeholder_pos}+2 chars")
                 widget.mark_set("insert", placeholder_pos)
 
@@ -2522,27 +2656,26 @@ class IntelligentAutocomplete:
         if self.use_enhanced and hasattr(self.enhanced_system, 'on_tab'):
             return self.enhanced_system.on_tab(event)
 
-        # Fallback implementation
         if self.autocomplete_window and self.suggestions:
             self.on_suggestion_selected()
-            return "break"  # Prevent default tab behavior
+            return "break"
         return None
 
     def on_return(self, event):
-        """Handle return key"""
+        """Handle return key - select current suggestion"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'on_return'):
             return self.enhanced_system.on_return(event)
 
-        # Fallback implementation
-        self.hide_autocomplete()
-        return None  # Allow default return behavior
+        if self.autocomplete_window and self.suggestions:
+            self.on_suggestion_selected()
+            return "break"
+        return None
 
     def on_arrow_key(self, event):
         """Handle arrow key navigation in suggestions"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'on_arrow_key'):
             return self.enhanced_system.on_arrow_key(event)
 
-        # Fallback implementation
         if not self.autocomplete_window:
             return None
 
@@ -2567,26 +2700,28 @@ class IntelligentAutocomplete:
         return None
 
     def hide_autocomplete(self, event=None):
-        """Hide the autocomplete window"""
+        """Hide the autocomplete window immediately and return focus"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'hide_autocomplete'):
             return self.enhanced_system.hide_autocomplete(event)
 
-        # Fallback implementation
         if self.autocomplete_window:
+            if self.selected_widget:
+                self.selected_widget.focus_set()
+
             self.autocomplete_window.destroy()
             self.autocomplete_window = None
             self.suggestions = []
             self.current_suggestion_index = 0
+            self.last_command_text = ""
+
 
     def get_suggestions(self, text: str, cursor_position: int):
-        """Get autocomplete suggestions - interface for enhanced system"""
+        """Get autocomplete suggestions"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'get_suggestions'):
             return self.enhanced_system.get_suggestions(text, cursor_position)
 
-        # Fallback implementation
         suggestions = []
         if '\\' in text:
-            # Extract partial command
             lines = text[:cursor_position].split('\n')
             current_line = lines[-1] if lines else ''
             last_backslash = current_line.rfind('\\')
@@ -2602,25 +2737,19 @@ class IntelligentAutocomplete:
         return suggestions
 
     def complete_command(self, text: str, cursor_position: int, suggestion: str):
-        """Complete command - interface for enhanced system"""
+        """Complete command"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'complete_command'):
             return self.enhanced_system.complete_command(text, cursor_position, suggestion)
 
-        # Fallback implementation
         lines = text.split('\n')
         current_line_index = len(text[:cursor_position].split('\n')) - 1
         current_line = lines[current_line_index]
 
-        # Find the partial command
         last_backslash = current_line.rfind('\\')
         if last_backslash != -1:
-            # Replace the partial command
             new_line = current_line[:last_backslash] + suggestion
             lines[current_line_index] = new_line
-
-            # Calculate new cursor position
             new_cursor_position = sum(len(line) + 1 for line in lines[:current_line_index]) + len(new_line)
-
             return '\n'.join(lines), new_cursor_position
 
         return text, cursor_position
@@ -2630,7 +2759,6 @@ class IntelligentAutocomplete:
         if self.use_enhanced and hasattr(self.enhanced_system, 'update_command_database'):
             return self.enhanced_system.update_command_database(new_commands)
 
-        # Fallback implementation
         if not hasattr(self, 'command_database'):
             self.command_database = {}
         self.command_database.update(new_commands)
@@ -2640,7 +2768,6 @@ class IntelligentAutocomplete:
         if self.use_enhanced and hasattr(self.enhanced_system, 'get_command_info'):
             return self.enhanced_system.get_command_info(command)
 
-        # Fallback implementation
         if hasattr(self, 'command_database') and command in self.command_database:
             return self.command_database[command]
         return None
@@ -2650,5 +2777,26 @@ class IntelligentAutocomplete:
         if self.use_enhanced and hasattr(self.enhanced_system, 'refresh_database'):
             return self.enhanced_system.refresh_database()
 
-        # Fallback implementation
         self.command_database = self.build_autocomplete_database()
+
+    def quick_environment_insert(self, env_name):
+        """Quick method to insert environment templates programmatically"""
+        begin_info = self.command_database.get('\\begin', {})
+        pairs = begin_info.get('pairs', {})
+
+        if env_name in pairs:
+            template = pairs[env_name]
+            focused_widget = self.selected_widget or self.parent.focus_get()
+
+            if (hasattr(self.parent, 'content_editor') and
+                focused_widget == self.parent.content_editor._textbox):
+                widget = self.parent.content_editor._textbox
+            elif (hasattr(self.parent, 'notes_editor') and
+                  focused_widget == self.parent.notes_editor._textbox):
+                widget = self.parent.notes_editor._textbox
+            else:
+                widget = self.parent.content_editor._textbox
+
+            cursor_pos = widget.index("insert")
+            widget.insert(cursor_pos, template)
+            self.position_cursor_at_placeholder(widget, template)
