@@ -17,6 +17,118 @@ from urllib.parse import urlparse, unquote
 from pathlib import Path
 import mimetypes
 output_dir = ""
+#--------------------Cache URL -----------------------------------
+import hashlib
+import json
+import time
+
+def get_url_cache_key(url):
+    """Generate a unique cache key for a URL"""
+    return hashlib.md5(url.encode('utf-8')).hexdigest()
+
+def get_cache_file_path(url, output_folder='media_files'):
+    """Get the path for cache metadata file"""
+    cache_key = get_url_cache_key(url)
+    return os.path.join(output_folder, f"{cache_key}_cache.json")
+
+def is_url_cached(url, output_folder='media_files'):
+    """Check if URL is already cached and valid"""
+    cache_file = get_cache_file_path(url, output_folder)
+
+    if not os.path.exists(cache_file):
+        return False
+
+    try:
+        with open(cache_file, 'r') as f:
+            cache_data = json.load(f)
+
+        # Check if cached file still exists
+        cached_file_path = cache_data.get('local_path')
+        if not cached_file_path or not os.path.exists(cached_file_path):
+            return False
+
+        # Optional: Check if cache is too old (e.g., older than 30 days)
+        cache_age = time.time() - cache_data.get('timestamp', 0)
+        if cache_age > 30 * 24 * 60 * 60:  # 30 days in seconds
+            return False
+
+        return True
+
+    except (json.JSONDecodeError, KeyError, Exception):
+        return False
+
+def get_cached_file_path(url, output_folder='media_files'):
+    """Get the local file path for a cached URL"""
+    if not is_url_cached(url, output_folder):
+        return None
+
+    try:
+        cache_file = get_cache_file_path(url, output_folder)
+        with open(cache_file, 'r') as f:
+            cache_data = json.load(f)
+        return cache_data.get('local_path')
+    except:
+        return None
+
+def save_to_cache(url, local_file_path, output_folder='media_files'):
+    """Save URL to local file mapping in cache"""
+    try:
+        cache_data = {
+            'url': url,
+            'local_path': local_file_path,
+            'filename': os.path.basename(local_file_path),
+            'timestamp': time.time(),
+            'cache_key': get_url_cache_key(url)
+        }
+
+        cache_file = get_cache_file_path(url, output_folder)
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f, indent=2)
+
+        return True
+    except Exception as e:
+        print(f"Warning: Could not save cache for {url}: {str(e)}")
+        return False
+
+def clear_media_cache(output_folder='media_files'):
+    """Clear all cached media files and metadata"""
+    try:
+        cache_files = [f for f in os.listdir(output_folder) if f.endswith('_cache.json')]
+        for cache_file in cache_files:
+            os.remove(os.path.join(output_folder, cache_file))
+        print(f"Cleared {len(cache_files)} cache files")
+        return True
+    except Exception as e:
+        print(f"Error clearing cache: {str(e)}")
+        return False
+
+def show_cache_status(output_folder='media_files'):
+    """Show cache status and statistics"""
+    try:
+        cache_files = [f for f in os.listdir(output_folder) if f.endswith('_cache.json')]
+        total_size = 0
+        valid_entries = 0
+
+        for cache_file in cache_files:
+            cache_path = os.path.join(output_folder, cache_file)
+            try:
+                with open(cache_path, 'r') as f:
+                    cache_data = json.load(f)
+                local_path = cache_data.get('local_path')
+                if local_path and os.path.exists(local_path):
+                    valid_entries += 1
+                    total_size += os.path.getsize(local_path)
+            except:
+                continue
+
+        print(f"Cache Status:")
+        print(f"  Total cache entries: {len(cache_files)}")
+        print(f"  Valid cached files: {valid_entries}")
+        print(f"  Total cache size: {total_size / (1024*1024):.2f} MB")
+        return True
+    except Exception as e:
+        print(f"Error reading cache status: {str(e)}")
+        return False
 #--------------------------------------------------------------------------------------------------------
 def set_terminal_io(term_io):
     """Set the terminal I/O object and verify it's working"""
@@ -711,17 +823,28 @@ class MediaConverter:
 
         # Max dimensions for images
         self.max_dimensions = (1920, 1080)
+        # Cache directory
+        self.cache_dir = 'media_cache'
+        os.makedirs(self.cache_dir, exist_ok=True)
 
     def convert_from_url(self, url: str, output_folder: str = 'media_files') -> tuple:
         """
-        Download and convert media from URL to appropriate format.
+        Download and convert media from URL to appropriate format with caching.
         Returns (success, file_path, media_type)
         """
         try:
             # Create media_files directory if it doesn't exist
             os.makedirs(output_folder, exist_ok=True)
 
+            # CHECK CACHE FIRST - New caching logic
+            cached_file = get_cached_file_path(url, output_folder)
+            if cached_file and os.path.exists(cached_file):
+                print(f"Using cached version for: {url}")
+                media_type = self._detect_media_type(cached_file)
+                return True, cached_file, media_type
+
             # Download content to temporary file
+            print(f"Downloading and converting: {url}")
             response = requests.get(url, stream=True)
             response.raise_for_status()
 
@@ -736,7 +859,14 @@ class MediaConverter:
                 temp_path = temp_file.name
 
             # Convert the downloaded file
-            return self.convert_file(temp_path, output_folder)
+            success, converted_path, media_type = self.convert_file(temp_path, output_folder)
+
+            # SAVE TO CACHE if conversion was successful
+            if success and converted_path:
+                save_to_cache(url, converted_path, output_folder)
+                print(f"Cached successfully: {converted_path}")
+
+            return success, converted_path, media_type
 
         except Exception as e:
             print(f"Error converting from URL: {str(e)}")
@@ -941,7 +1071,7 @@ def convert_media(url_or_path: str, output_folder: str = 'media_files') -> tuple
 
 def download_media(url, output_folder='media_files'):
     """
-    Enhanced version with source tracking and automatic format conversion.
+    Enhanced version with caching to avoid re-downloading.
     Returns (base_name, filename, first_frame_path)
     """
     try:
@@ -966,7 +1096,24 @@ def download_media(url, output_folder='media_files'):
         if 'giphy.com' in url:
             return download_giphy_gif(url, output_folder)
 
-        # Handle regular URLs
+        # CHECK CACHE FIRST - NEW CACHE LOGIC
+        cached_file = get_cached_file_path(url, output_folder)
+        if cached_file and os.path.exists(cached_file):
+            print(f"Using cached file for {url}")
+            base_name = os.path.splitext(os.path.basename(cached_file))[0]
+            filename = os.path.basename(cached_file)
+
+            # Generate preview frame if needed
+            first_frame_path = None
+            media_type = self._detect_media_type(cached_file)  # You might need to make this method static or accessible
+            if media_type in ['video', 'animation']:
+                first_frame_path = generate_preview_frame(cached_file)
+            elif media_type == 'image':
+                first_frame_path = cached_file
+
+            return base_name, filename, first_frame_path
+
+        # Handle regular URLs (download only if not cached)
         try:
             # First download the content
             response = requests.get(url, timeout=10)
@@ -978,6 +1125,9 @@ def download_media(url, output_folder='media_files'):
             if success:
                 base_name = os.path.splitext(os.path.basename(converted_path))[0]
                 filename = os.path.basename(converted_path)
+
+                # SAVE TO CACHE - NEW
+                save_to_cache(url, converted_path, output_folder)
 
                 # Generate preview frame if needed
                 first_frame_path = None
@@ -993,6 +1143,7 @@ def download_media(url, output_folder='media_files'):
                     f.write(f"Original Type: {media_type}\n")
                     f.write(f"Converted Format: {os.path.splitext(filename)[1]}\n")
                     f.write(f"Downloaded: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Cached: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")  # NEW
 
                     # Add media-specific metadata
                     if media_type == 'image':
@@ -1024,7 +1175,6 @@ def download_media(url, output_folder='media_files'):
     except Exception as e:
         print(f"Error processing media from {url}: {str(e)}")
         return None, None, None
-
 
 def download_giphy_gif(url, output_folder='media_files'):
     """
@@ -1235,7 +1385,60 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "    " + generate_content_items(content) + "\n"
         latex_code += "\\end{frame}\n"
         return latex_code
+    # Handle stack layout for multiple images in left column
+    elif layout == 'stack':
+        print(f"DEBUG: Processing stack layout with filename: '{filename}'")
 
+        # Robust splitting - handle different semicolon formats
+        images = []
+        if ';' in filename:
+            # Split by semicolon and clean up
+            images = [img.strip() for img in filename.split(',')]
+        else:
+            # No semicolon, treat as single image
+            images = [filename.strip()]
+
+        print(f"DEBUG: Split images: {images}")
+
+        # Filter out empty strings and verify files exist
+        valid_images = []
+        for img in images:
+            if img:
+                verified_path = verify_media_file(img)
+                if verified_path:
+                    valid_images.append(verified_path)
+                    print(f"DEBUG: Valid image: {verified_path}")
+                else:
+                    print(f"DEBUG: Image not found: {img}")
+
+        if not valid_images:
+            # Fallback to no media
+            print("DEBUG: No valid images found, falling back to no media")
+            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+            latex_code += "    \\vspace{0.5em}\n"
+            latex_code += "    " + generate_content_items(content) + "\n"
+            latex_code += "\\end{frame}\n"
+            return latex_code
+
+        # Generate LaTeX code with valid images
+        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+        latex_code += "    \\begin{columns}[T]\n"
+        latex_code += "        \\begin{column}{0.49\\textwidth}\n"
+
+        for i, image_path in enumerate(valid_images):
+            if i > 0:
+                latex_code += "            \\vspace{0.5em}\n"
+            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}\n"
+
+        latex_code += "        \\end{column}\n"
+        latex_code += "        \\begin{column}{0.49\\textwidth}\n"
+        latex_code += "            " + generate_content_items(content)
+
+        if source_url:
+            latex_code = latex_code.rstrip() + format_url_footnote(source_url)
+
+        latex_code += "\n        \\end{column}\n"
+        latex_code += "    \\end{columns}"
     elif layout == 'watermark':
         latex_code = "\\begin{frame}{" + (frame_title if title else '') + "}\n"
         latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
@@ -1741,6 +1944,25 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
 
             # For URLs - download first, then process
             elif directive_type == 'url' and media_source.startswith(('http://', 'https://')):
+                # Check cache first
+                cached_file = get_cached_file_path(media_source)
+                if cached_file and os.path.exists(cached_file):
+                    print(f"Using cached file for: {media_source}")
+                    # Use cached file instead of downloading
+                    base_name = os.path.splitext(os.path.basename(cached_file))[0]
+                    first_frame_path = None
+                    if playable:
+                        first_frame_path = generate_preview_frame(cached_file)
+
+                    return generate_latex_code(
+                        base_name,
+                        cached_file,
+                        first_frame_path,
+                        processed_content,
+                        title,
+                        playable,
+                        media_source
+                    ), f"\\file {cached_file}"
                 base_name, filename, first_frame_path = download_media(media_source)
                 if base_name and filename:
                     gif_path = f"media_files/{filename}"
@@ -1925,6 +2147,10 @@ def generate_compact_imagemagick_frame(gif_path, content=None, title=None):
 
     print(f"Generated very compact ImageMagick frame for: {gif_path}")
     return latex_code
+
+def generate_animated_gif_frame(filename, content=None, title=None):
+    """Generate LaTeX code for animated GIFs - alias for generate_imagemagick_gif_frame"""
+    return generate_imagemagick_gif_frame(filename, content, title)
 
 def generate_imagemagick_gif_frame(gif_path, content=None, title=None):
     """Generate LaTeX code for GIF with compact ImageMagick external player"""
@@ -2441,21 +2667,26 @@ def parse_media_directive(directive_string):
             '\\tb': 'topbottom',
             '\\ol': 'overlay',
             '\\corner': 'corner',
-            '\\mosaic': 'mosaic'
+            '\\mosaic': 'mosaic',
+            '\\stack': 'stack'  # Stack layout for vertical images
         }
 
-        # Split the string to handle multiple parts
-        parts = directive_string.split()
+        # DEBUG
+        print(f"DEBUG parse_media_directive: parts={directive_string.split()}")
 
         # Check for layout directives first
-        if parts and parts[0] in directives:
-            return directives[parts[0]], ' '.join(parts[1:]), False, original_directive
+        for directive_key, directive_type in directives.items():
+            if directive_string.startswith(directive_key):
+                media_source = directive_string[len(directive_key):].strip()
+                print(f"DEBUG: Found layout directive: {directive_type}, media_source: '{media_source}'")
+                return directive_type, media_source, False, original_directive
 
         # Initialize variables for other directives
         directive_type = 'url'  # default type
         media_source = directive_string  # default to full string
 
         # Process standard directives
+        parts = directive_string.split()
         for i, part in enumerate(parts):
             if part.startswith('\\'):
                 if part == '\\play':
@@ -2506,15 +2737,6 @@ def parse_media_directive(directive_string):
             media_source = media_source.replace('\\', '/')
             if not media_source.startswith('media_files/') and not media_source.startswith('./'):
                 media_source = f"media_files/{media_source}"
-
-        # Special handling for mosaic directive
-        if directive_type == 'mosaic':
-            # Ensure all image paths are properly formatted
-            images = [img.strip() for img in media_source.split(',')]
-            media_source = ','.join(
-                f"media_files/{img}" if not img.startswith(('media_files/', './')) else img
-                for img in images
-            )
 
         return directive_type, media_source, playable, original_directive
 
