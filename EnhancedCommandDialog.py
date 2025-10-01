@@ -6,6 +6,843 @@ import threading
 import queue
 import time
 
+class IntelligentAutocomplete:
+    """Intelligent autocomplete system for LaTeX commands with enhanced module integration"""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.autocomplete_window = None
+        self.suggestions = []
+        self.current_suggestion_index = 0
+        self.command_database = {}
+        self.selected_widget = None
+        self.ignore_next_click = False
+        self.last_key_time = 0
+        self.update_pending = False
+        self.last_command_text = ""  # Track last command to avoid redundant updates
+
+        # Try to use enhanced LatexHelp module, fallback to basic
+        self.setup_autocomplete_system()
+
+    def setup_autocomplete_system(self):
+        """Setup the appropriate autocomplete system"""
+        try:
+            from LatexHelp import LatexAutocomplete, LatexCommandHelper
+            self.enhanced_system = LatexAutocomplete(LatexCommandHelper())
+            self.use_enhanced = True
+            print("✓ Enhanced LaTeX autocomplete system loaded")
+        except ImportError as e:
+            print(f"Using basic autocomplete system: {e}")
+            self.enhanced_system = None
+            self.use_enhanced = False
+            self.command_database = self.build_autocomplete_database()
+
+    def build_autocomplete_database(self):
+        """Build database for autocomplete suggestions (fallback)"""
+        return {
+            '\\begin': {
+                'completion': '\\begin{$1}\n$2\n\\end{$1}',
+                'description': 'Begin environment block',
+                'type': 'environment_starter',
+                'pairs': {
+                    'itemize': '\\begin{itemize}\n\\item $1\n\\end{itemize}',
+                    'enumerate': '\\begin{enumerate}\n\\item $1\n\\end{enumerate}',
+                    'frame': '\\begin{frame}{$1}\n$2\n\\end{frame}',
+                    'columns': '\\begin{columns}\n\\column{0.5\\textwidth}\n$1\n\\column{0.5\\textwidth}\n$2\n\\end{columns}',
+                    'block': '\\begin{block}{$1}\n$2\n\\end{block}',
+                    'exampleblock': '\\begin{exampleblock}{$1}\n$2\n\\end{exampleblock}',
+                    'alertblock': '\\begin{alertblock}{$1}\n$2\n\\end{alertblock}',
+                    'theorem': '\\begin{theorem}{$1}\n$2\n\\end{theorem}',
+                    'proof': '\\begin{proof}\n$1\n\\end{proof}',
+                    'figure': '\\begin{figure}\n\\centering\n\\includegraphics[width=0.8\\textwidth]{$1}\n\\caption{$2}\n\\label{fig:$3}\n\\end{figure}',
+                    'table': '\\begin{table}\n\\centering\n\\begin{tabular}{$1}\n$2\n\\end{tabular}\n\\caption{$3}\n\\label{tab:$4}\n\\end{table}',
+                    'equation': '\\begin{equation}\n$1\n\\end{equation}',
+                    'align': '\\begin{align}\n$1\n\\end{align}',
+                    'matrix': '\\begin{matrix}\n$1\n\\end{matrix}',
+                    'cases': '\\begin{cases}\n$1\n\\end{cases}'
+                }
+            },
+            '\\end': {
+                'completion': '\\end{$1}',
+                'description': 'End environment block',
+                'type': 'environment_ender'
+            },
+            '\\item': {
+                'completion': '\\item $1',
+                'description': 'List item',
+                'context': ['itemize', 'enumerate']
+            },
+            '\\title': {
+                'completion': '\\title{$1}',
+                'description': 'Presentation title'
+            },
+            '\\author': {
+                'completion': '\\author{$1}',
+                'description': 'Author name'
+            },
+            '\\institute': {
+                'completion': '\\institute{$1}',
+                'description': 'Institute name'
+            },
+            '\\frametitle': {
+                'completion': '\\frametitle{$1}',
+                'description': 'Frame title'
+            },
+            '\\file': {
+                'completion': '\\file{media_files/$1}',
+                'description': 'Insert image file'
+            },
+            '\\play': {
+                'completion': '\\play{media_files/$1}',
+                'description': 'Play media file'
+            },
+            '\\textcolor': {
+                'completion': '\\textcolor{$1}{$2}',
+                'description': 'Colored text'
+            },
+            '\\only': {
+                'completion': '\\only<$1>{$2}',
+                'description': 'Content visible only on specific slides'
+            },
+            '\\uncover': {
+                'completion': '\\uncover<$1>{$2}',
+                'description': 'Uncover content on specific slides'
+            },
+            '\\pause': {
+                'completion': '\\pause',
+                'description': 'Pause between slide content'
+            },
+            '\\note': {
+                'completion': '\\note{$1}',
+                'description': 'Speaker notes'
+            },
+            '\\alert': {
+                'completion': '\\alert{$1}',
+                'description': 'Alert highlighted text'
+            },
+            '\\textbf': {
+                'completion': '\\textbf{$1}',
+                'description': 'Bold text'
+            },
+            '\\textit': {
+                'completion': '\\textit{$1}',
+                'description': 'Italic text'
+            },
+            '\\href': {
+                'completion': '\\href{$1}{$2}',
+                'description': 'Hyperlink'
+            },
+            '\\section': {
+                'completion': '\\section{$1}',
+                'description': 'Section heading'
+            },
+            '\\subsection': {
+                'completion': '\\subsection{$1}',
+                'description': 'Subsection heading'
+            },
+            '\\caption': {
+                'completion': '\\caption{$1}',
+                'description': 'Figure or table caption'
+            },
+            '\\label': {
+                'completion': '\\label{$1}',
+                'description': 'Label for cross-referencing'
+            },
+            '\\cite': {
+                'completion': '\\cite{$1}',
+                'description': 'Citation reference'
+            },
+            '\\footnote': {
+                'completion': '\\footnote{$1}',
+                'description': 'Footnote'
+            },
+            '\\emph': {
+                'completion': '\\emph{$1}',
+                'description': 'Emphasized text'
+            },
+            '\\underline': {
+                'completion': '\\underline{$1}',
+                'description': 'Underlined text'
+            },
+            '\\texttt': {
+                'completion': '\\texttt{$1}',
+                'description': 'Typewriter text'
+            },
+            '\\mathbb': {
+                'completion': '\\mathbb{$1}',
+                'description': 'Blackboard bold (math mode)'
+            },
+            '\\mathcal': {
+                'completion': '\\mathcal{$1}',
+                'description': 'Calligraphic font (math mode)'
+            },
+            '\\mathbf': {
+                'completion': '\\mathbf{$1}',
+                'description': 'Bold font (math mode)'
+            },
+            '\\mathrm': {
+                'completion': '\\mathrm{$1}',
+                'description': 'Roman font (math mode)'
+            },
+            '\\frac': {
+                'completion': '\\frac{$1}{$2}',
+                'description': 'Fraction'
+            },
+            '\\sqrt': {
+                'completion': '\\sqrt{$1}',
+                'description': 'Square root'
+            },
+            '\\sum': {
+                'completion': '\\sum_{$1}^{$2}',
+                'description': 'Summation'
+            },
+            '\\int': {
+                'completion': '\\int_{$1}^{$2}',
+                'description': 'Integral'
+            },
+            '\\lim': {
+                'completion': '\\lim_{$1 \\to $2}',
+                'description': 'Limit'
+            },
+            '\\infty': {
+                'completion': '\\infty',
+                'description': 'Infinity symbol'
+            },
+            '\\alpha': {
+                'completion': '\\alpha',
+                'description': 'Greek letter alpha'
+            },
+            '\\beta': {
+                'completion': '\\beta',
+                'description': 'Greek letter beta'
+            },
+            '\\gamma': {
+                'completion': '\\gamma',
+                'description': 'Greek letter gamma'
+            },
+            '\\delta': {
+                'completion': '\\delta',
+                'description': 'Greek letter delta'
+            },
+            '\\epsilon': {
+                'completion': '\\epsilon',
+                'description': 'Greek letter epsilon'
+            },
+            '\\theta': {
+                'completion': '\\theta',
+                'description': 'Greek letter theta'
+            },
+            '\\lambda': {
+                'completion': '\\lambda',
+                'description': 'Greek letter lambda'
+            },
+            '\\pi': {
+                'completion': '\\pi',
+                'description': 'Greek letter pi'
+            },
+            '\\sigma': {
+                'completion': '\\sigma',
+                'description': 'Greek letter sigma'
+            },
+            '\\omega': {
+                'completion': '\\omega',
+                'description': 'Greek letter omega'
+            },
+            '\\cdot': {
+                'completion': '\\cdot',
+                'description': 'Multiplication dot'
+            },
+            '\\times': {
+                'completion': '\\times',
+                'description': 'Multiplication cross'
+            },
+            '\\pm': {
+                'completion': '\\pm',
+                'description': 'Plus-minus symbol'
+            },
+            '\\mp': {
+                'completion': '\\mp',
+                'description': 'Minus-plus symbol'
+            },
+            '\\leq': {
+                'completion': '\\leq',
+                'description': 'Less than or equal to'
+            },
+            '\\geq': {
+                'completion': '\\geq',
+                'description': 'Greater than or equal to'
+            },
+            '\\neq': {
+                'completion': '\\neq',
+                'description': 'Not equal to'
+            },
+            '\\approx': {
+                'completion': '\\approx',
+                'description': 'Approximately equal to'
+            },
+            '\\sim': {
+                'completion': '\\sim',
+                'description': 'Similar to'
+            },
+            '\\propto': {
+                'completion': '\\propto',
+                'description': 'Proportional to'
+            },
+            '\\partial': {
+                'completion': '\\partial',
+                'description': 'Partial derivative'
+            },
+            '\\nabla': {
+                'completion': '\\nabla',
+                'description': 'Nabla operator'
+            },
+            '\\ldots': {
+                'completion': '\\ldots',
+                'description': 'Lower dots'
+            },
+            '\\cdots': {
+                'completion': '\\cdots',
+                'description': 'Center dots'
+            },
+            '\\vdots': {
+                'completion': '\\vdots',
+                'description': 'Vertical dots'
+            },
+            '\\ddots': {
+                'completion': '\\ddots',
+                'description': 'Diagonal dots'
+            }
+        }
+
+    def setup_autocomplete(self, text_widget):
+        """Setup autocomplete for a text widget - MORE AGGRESSIVE"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'setup_autocomplete'):
+            self.enhanced_system.setup_autocomplete(text_widget)
+        else:
+            # More aggressive binding - trigger on every key press
+            text_widget.bind('<Key>', self.on_key_pressed, add='+')
+            text_widget.bind('<KeyRelease>', self.on_key_release, add='+')
+            text_widget.bind('<Tab>', self.on_tab)
+            text_widget.bind('<Return>', self.on_return)
+            text_widget.bind('<Escape>', self.hide_autocomplete)
+            text_widget.bind('<Up>', self.on_arrow_key)
+            text_widget.bind('<Down>', self.on_arrow_key)
+            text_widget.bind('<Button-1>', self.on_editor_click)
+            text_widget.bind('<FocusIn>', self.on_focus_in)
+
+    def on_focus_in(self, event):
+        """Track which widget has focus"""
+        self.selected_widget = event.widget
+        print(f"Focus set to: {self.selected_widget}")  # Debug
+
+    def on_editor_click(self, event):
+        """Handle click in editor - hide autocomplete immediately"""
+        self.hide_autocomplete()
+
+    def on_key_pressed(self, event):
+        """Handle key press - IMMEDIATE response"""
+        # Show autocomplete immediately when backslash is pressed
+        if event.char == '\\':
+            print("Backslash detected - showing autocomplete immediately")  # Debug
+            # Schedule autocomplete to show after a tiny delay to ensure the backslash is inserted
+            self.parent.after(10, self.trigger_autocomplete_immediately)
+
+        # Also handle escape key immediately
+        if event.keysym == 'Escape':
+            self.hide_autocomplete()
+
+    def trigger_autocomplete_immediately(self):
+        """Trigger autocomplete immediately after backslash"""
+        if not self.selected_widget:
+            return
+
+        widget = self.selected_widget
+        cursor_pos = widget.index("insert")
+        line_start = widget.index(f"{cursor_pos} linestart")
+        line_content = widget.get(line_start, cursor_pos)
+
+        # Look for the backslash we just typed
+        if '\\' in line_content:
+            self.show_suggestions(widget, '\\', int(cursor_pos.split('.')[1]))
+
+    def on_key_release(self, event):
+        """Handle key release for autocomplete - VERY AGGRESSIVE"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_key_release'):
+            return self.enhanced_system.on_key_release(event)
+
+        # Skip if we're already processing
+        if self.update_pending:
+            return
+
+        # VERY PERMISSIVE - only skip pure modifier keys
+        if event.keysym in ['Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R']:
+            return
+
+        # IMMEDIATE processing - no debouncing for backslash and letters
+        if event.char and (event.char == '\\' or event.char.isalpha()):
+            self.update_pending = True
+            self.parent.after(5, self.process_autocomplete_update)  # Very short delay
+        else:
+            # For other keys, use minimal debouncing
+            current_time = time.time() * 1000
+            if current_time - self.last_key_time < 10:  # Only 10ms debounce
+                return
+            self.last_key_time = current_time
+            self.update_pending = True
+            self.parent.after(5, self.process_autocomplete_update)
+
+    def process_autocomplete_update(self):
+        """Process autocomplete update - VERY AGGRESSIVE"""
+        try:
+            if not self.selected_widget:
+                self.update_pending = False
+                return
+
+            widget = self.selected_widget
+            cursor_pos = widget.index("insert")
+            line_start = widget.index(f"{cursor_pos} linestart")
+            line_end = widget.index(f"{cursor_pos} lineend")
+            line_content = widget.get(line_start, line_end)
+            cursor_in_line = int(cursor_pos.split('.')[1])
+
+            print(f"Processing autocomplete: '{line_content}' at position {cursor_in_line}")  # Debug
+
+            # ALWAYS check for commands, even if no obvious pattern
+            self.detect_autocomplete_opportunity_aggressive(widget, line_content, cursor_in_line)
+        except Exception as e:
+            print(f"Autocomplete error: {e}")  # Debug
+        finally:
+            self.update_pending = False
+
+    def detect_autocomplete_opportunity_aggressive(self, widget, line_content, cursor_pos):
+        """VERY AGGRESSIVE command detection - always show if backslash present"""
+        text_before_cursor = line_content[:cursor_pos]
+        last_backslash = text_before_cursor.rfind('\\')
+
+        if last_backslash != -1:
+            command_text = text_before_cursor[last_backslash:]
+            print(f"Found command pattern: '{command_text}'")  # Debug
+
+            # ALWAYS show suggestions if there's a backslash, even for single \
+            if command_text == '\\' or self.is_valid_command_pattern(command_text):
+                if command_text != self.last_command_text:  # Only update if changed
+                    self.last_command_text = command_text
+                    self.show_suggestions(widget, command_text, cursor_pos)
+                return
+            else:
+                print(f"Invalid command pattern, hiding: '{command_text}'")  # Debug
+                self.hide_autocomplete()
+                return
+
+        # No backslash found - hide autocomplete
+        print("No backslash found, hiding autocomplete")  # Debug
+        self.hide_autocomplete()
+
+    def is_valid_command_pattern(self, command_text):
+        """VERY PERMISSIVE pattern detection"""
+        if not command_text.startswith('\\'):
+            return False
+
+        # Show suggestions for ANY backslash command, even incomplete ones
+        return len(command_text) >= 1  # Just having \ is enough!
+
+    def show_suggestions(self, widget, partial_command, cursor_pos):
+        """Show autocomplete suggestions - ALWAYS when backslash is present"""
+        print(f"Showing suggestions for: '{partial_command}'")  # Debug
+
+        if self.use_enhanced and hasattr(self.enhanced_system, 'show_suggestions'):
+            return self.enhanced_system.show_suggestions(widget, partial_command, cursor_pos)
+
+        self.suggestions = []
+
+        if not hasattr(self, 'command_database') or not self.command_database:
+            self.command_database = self.build_autocomplete_database()
+
+        # Handle different command types
+        if partial_command.startswith('\\begin{'):
+            # Environment completion
+            begin_info = self.command_database.get('\\begin', {})
+            pairs = begin_info.get('pairs', {})
+
+            if '}' not in partial_command:
+                env_partial = partial_command[7:]  # Remove "\begin{" prefix
+                for env_name, env_template in pairs.items():
+                    if env_name.startswith(env_partial):
+                        self.suggestions.append((
+                            f"\\begin{{{env_name}}}",
+                            {
+                                'completion': env_template,
+                                'description': f'{env_name} environment',
+                                'type': 'environment',
+                                'env_name': env_name
+                            }
+                        ))
+            else:
+                for env_name, env_template in pairs.items():
+                    self.suggestions.append((
+                        f"\\begin{{{env_name}}}",
+                        {
+                            'completion': env_template,
+                            'description': f'{env_name} environment',
+                            'type': 'environment',
+                            'env_name': env_name
+                        }
+                    ))
+        else:
+            # Regular command completion - show ALL commands that start with the partial
+            for command, info in self.command_database.items():
+                if command.startswith(partial_command):
+                    self.suggestions.append((command, info))
+
+            # If we only have a single backslash, show ALL commands
+            if partial_command == '\\' and not self.suggestions:
+                for command, info in self.command_database.items():
+                    self.suggestions.append((command, info))
+
+        print(f"Found {len(self.suggestions)} suggestions")  # Debug
+
+        if not self.suggestions:
+            print("No suggestions found, hiding autocomplete")  # Debug
+            self.hide_autocomplete()
+            return
+
+        # Create or update autocomplete window
+        if self.autocomplete_window and self.autocomplete_window.winfo_exists():
+            self.update_autocomplete_window(widget, self.suggestions)
+        else:
+            self.create_autocomplete_window(widget, self.suggestions)
+
+    def create_autocomplete_window(self, widget, suggestions):
+        """Create new autocomplete suggestions window"""
+        print("Creating new autocomplete window")  # Debug
+
+        bbox = widget.bbox("insert")
+        if not bbox:
+            print("No bbox available")  # Debug
+            return
+
+        x = widget.winfo_rootx() + bbox[0]
+        y = widget.winfo_rooty() + bbox[1] + bbox[3]
+
+        self.autocomplete_window = tk.Toplevel(widget)
+        self.autocomplete_window.wm_overrideredirect(True)
+        self.autocomplete_window.wm_geometry(f"+{x}+{y}")
+
+        self.autocomplete_window.attributes('-topmost', True)
+
+        self.autocomplete_window.configure(background='#2B2B2B', relief='solid', borderwidth=1)
+
+        self.suggestion_listbox = tk.Listbox(
+            self.autocomplete_window,
+            background='#2B2B2B',
+            foreground='white',
+            selectbackground='#4A90E2',
+            selectforeground='white',
+            font=('Courier', 10),
+            height=min(len(suggestions), 8),
+            width=60,
+            exportselection=False
+        )
+        self.suggestion_listbox.pack()
+
+        self.populate_suggestion_listbox(suggestions)
+
+        self.suggestion_listbox.bind('<Double-Button-1>', self.on_suggestion_selected)
+        self.suggestion_listbox.bind('<<ListboxSelect>>', self.on_suggestion_highlight)
+        self.suggestion_listbox.bind('<Button-1>', self.on_suggestion_click)
+        self.suggestion_listbox.bind('<Escape>', self.hide_autocomplete)
+        self.suggestion_listbox.selection_set(0)
+        self.current_suggestion_index = 0
+
+        self.autocomplete_window.transient(widget.winfo_toplevel())
+        self.autocomplete_window.grab_release()
+
+        print("Autocomplete window created successfully")  # Debug
+
+    def update_autocomplete_window(self, widget, suggestions):
+        """Update existing autocomplete window with new suggestions"""
+        print("Updating existing autocomplete window")  # Debug
+
+        if not self.autocomplete_window or not self.autocomplete_window.winfo_exists():
+            self.create_autocomplete_window(widget, suggestions)
+            return
+
+        self.suggestion_listbox.delete(0, tk.END)
+        self.populate_suggestion_listbox(suggestions)
+
+        if suggestions:
+            self.suggestion_listbox.selection_set(0)
+            self.current_suggestion_index = 0
+        else:
+            self.hide_autocomplete()
+
+        # Update window position to follow cursor
+        bbox = widget.bbox("insert")
+        if bbox:
+            x = widget.winfo_rootx() + bbox[0]
+            y = widget.winfo_rooty() + bbox[1] + bbox[3]
+            self.autocomplete_window.wm_geometry(f"+{x}+{y}")
+
+    def populate_suggestion_listbox(self, suggestions):
+        """Populate the suggestion listbox with formatted items"""
+        for command, info in suggestions:
+            if info.get('type') == 'environment':
+                env_name = info.get('env_name', '')
+                description = info.get('description', '')
+                display_text = f"{command:25} {description}"
+            else:
+                description = info.get('description', '')
+                display_text = f"{command:25} {description}"
+            self.suggestion_listbox.insert(tk.END, display_text)
+
+    def on_suggestion_click(self, event):
+        """Handle single click on suggestion - select immediately"""
+        widget = event.widget
+        index = widget.nearest(event.y)
+        if index >= 0:
+            widget.selection_clear(0, tk.END)
+            widget.selection_set(index)
+            widget.activate(index)
+            self.current_suggestion_index = index
+            self.on_suggestion_selected()
+
+    def on_suggestion_highlight(self, event=None):
+        """Handle suggestion highlighting"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_highlight'):
+            return self.enhanced_system.on_suggestion_highlight(event)
+
+        if not self.suggestions or not self.autocomplete_window:
+            return
+
+        selection = self.suggestion_listbox.curselection()
+        if selection:
+            self.current_suggestion_index = selection[0]
+
+    def on_suggestion_selected(self, event=None):
+        """Handle suggestion selection"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_selected'):
+            return self.enhanced_system.on_suggestion_selected(event)
+
+        if not self.suggestions or not self.autocomplete_window:
+            return
+
+        selection = self.suggestion_listbox.curselection()
+        if selection:
+            selected_index = selection[0]
+            command, info = self.suggestions[selected_index]
+
+            current_widget = self.selected_widget
+            self.hide_autocomplete()
+
+            if current_widget:
+                self.apply_autocomplete_to_widget(current_widget, command, info)
+
+    def apply_autocomplete_to_widget(self, widget, command, info):
+        """Apply autocomplete to a specific widget"""
+        cursor_pos = widget.index("insert")
+        line_start = widget.index(f"{cursor_pos} linestart")
+        line_content = widget.get(line_start, cursor_pos)
+
+        if info.get('type') == 'environment':
+            self.apply_environment_completion(widget, command, info)
+        else:
+            self.apply_regular_completion(widget, command, info, line_content, cursor_pos)
+
+    def apply_environment_completion(self, widget, command, info):
+        """Apply environment completion with proper formatting"""
+        completion = info.get('completion', command)
+
+        cursor_pos = widget.index("insert")
+        widget.insert(cursor_pos, completion)
+        self.position_cursor_at_placeholder(widget, completion)
+        widget.focus_set()
+
+    def apply_regular_completion(self, widget, command, info, line_content, cursor_pos):
+        """Apply regular command completion"""
+        last_backslash = line_content.rfind('\\')
+        if last_backslash != -1:
+            delete_start = f"{cursor_pos.split('.')[0]}.{last_backslash}"
+            widget.delete(delete_start, cursor_pos)
+
+            completion = info.get('completion', command)
+            widget.insert(delete_start, completion)
+            self.position_cursor_at_placeholder(widget, completion)
+
+        widget.focus_set()
+
+    def position_cursor_at_placeholder(self, widget, completion):
+        """Position cursor at the first placeholder ($1)"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'position_cursor_at_placeholder'):
+            return self.enhanced_system.position_cursor_at_placeholder(widget, completion)
+
+        if '$1' in completion:
+            cursor_pos = widget.index("insert")
+            search_start = f"{cursor_pos} - {len(completion)} chars"
+            placeholder_pos = widget.search('$1', search_start, cursor_pos)
+
+            if placeholder_pos:
+                widget.delete(placeholder_pos, f"{placeholder_pos}+2 chars")
+                widget.mark_set("insert", placeholder_pos)
+        elif '$2' in completion:
+            cursor_pos = widget.index("insert")
+            search_start = f"{cursor_pos} - {len(completion)} chars"
+            placeholder_pos = widget.search('$1', search_start, cursor_pos)
+
+            if placeholder_pos:
+                widget.delete(placeholder_pos, f"{placeholder_pos}+2 chars")
+                widget.mark_set("insert", placeholder_pos)
+
+    def on_tab(self, event):
+        """Handle tab for autocomplete selection"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_tab'):
+            return self.enhanced_system.on_tab(event)
+
+        if self.autocomplete_window and self.suggestions:
+            self.on_suggestion_selected()
+            return "break"
+        return None
+
+    def on_return(self, event):
+        """Handle return key - select current suggestion"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_return'):
+            return self.enhanced_system.on_return(event)
+
+        if self.autocomplete_window and self.suggestions:
+            self.on_suggestion_selected()
+            return "break"
+        return None
+
+    def on_arrow_key(self, event):
+        """Handle arrow key navigation in suggestions"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'on_arrow_key'):
+            return self.enhanced_system.on_arrow_key(event)
+
+        if not self.autocomplete_window:
+            return None
+
+        if event.keysym == 'Down':
+            current = self.suggestion_listbox.curselection()[0] if self.suggestion_listbox.curselection() else 0
+            next_index = min(current + 1, len(self.suggestions) - 1)
+            self.suggestion_listbox.selection_clear(0, tk.END)
+            self.suggestion_listbox.selection_set(next_index)
+            self.suggestion_listbox.activate(next_index)
+            self.current_suggestion_index = next_index
+            return "break"
+
+        elif event.keysym == 'Up':
+            current = self.suggestion_listbox.curselection()[0] if self.suggestion_listbox.curselection() else 0
+            next_index = max(current - 1, 0)
+            self.suggestion_listbox.selection_clear(0, tk.END)
+            self.suggestion_listbox.selection_set(next_index)
+            self.suggestion_listbox.activate(next_index)
+            self.current_suggestion_index = next_index
+            return "break"
+
+        return None
+
+    def hide_autocomplete(self, event=None):
+        """Hide the autocomplete window immediately and return focus"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'hide_autocomplete'):
+            return self.enhanced_system.hide_autocomplete(event)
+
+        if self.autocomplete_window:
+            if self.selected_widget:
+                self.selected_widget.focus_set()
+
+            self.autocomplete_window.destroy()
+            self.autocomplete_window = None
+            self.suggestions = []
+            self.current_suggestion_index = 0
+            self.last_command_text = ""
+
+
+    def get_suggestions(self, text: str, cursor_position: int):
+        """Get autocomplete suggestions"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'get_suggestions'):
+            return self.enhanced_system.get_suggestions(text, cursor_position)
+
+        suggestions = []
+        if '\\' in text:
+            lines = text[:cursor_position].split('\n')
+            current_line = lines[-1] if lines else ''
+            last_backslash = current_line.rfind('\\')
+            if last_backslash != -1:
+                partial_command = current_line[last_backslash:]
+                for command, info in self.command_database.items():
+                    if command.startswith(partial_command):
+                        suggestions.append({
+                            'command': command,
+                            'description': info.get('description', ''),
+                            'completion': info.get('completion', command)
+                        })
+        return suggestions
+
+    def complete_command(self, text: str, cursor_position: int, suggestion: str):
+        """Complete command"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'complete_command'):
+            return self.enhanced_system.complete_command(text, cursor_position, suggestion)
+
+        lines = text.split('\n')
+        current_line_index = len(text[:cursor_position].split('\n')) - 1
+        current_line = lines[current_line_index]
+
+        last_backslash = current_line.rfind('\\')
+        if last_backslash != -1:
+            new_line = current_line[:last_backslash] + suggestion
+            lines[current_line_index] = new_line
+            new_cursor_position = sum(len(line) + 1 for line in lines[:current_line_index]) + len(new_line)
+            return '\n'.join(lines), new_cursor_position
+
+        return text, cursor_position
+
+    def update_command_database(self, new_commands: dict):
+        """Update the command database with new commands"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'update_command_database'):
+            return self.enhanced_system.update_command_database(new_commands)
+
+        if not hasattr(self, 'command_database'):
+            self.command_database = {}
+        self.command_database.update(new_commands)
+
+    def get_command_info(self, command: str):
+        """Get information about a specific command"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'get_command_info'):
+            return self.enhanced_system.get_command_info(command)
+
+        if hasattr(self, 'command_database') and command in self.command_database:
+            return self.command_database[command]
+        return None
+
+    def refresh_database(self):
+        """Refresh the command database"""
+        if self.use_enhanced and hasattr(self.enhanced_system, 'refresh_database'):
+            return self.enhanced_system.refresh_database()
+
+        self.command_database = self.build_autocomplete_database()
+
+    def quick_environment_insert(self, env_name):
+        """Quick method to insert environment templates programmatically"""
+        begin_info = self.command_database.get('\\begin', {})
+        pairs = begin_info.get('pairs', {})
+
+        if env_name in pairs:
+            template = pairs[env_name]
+            focused_widget = self.selected_widget or self.parent.focus_get()
+
+            if (hasattr(self.parent, 'content_editor') and
+                focused_widget == self.parent.content_editor._textbox):
+                widget = self.parent.content_editor._textbox
+            elif (hasattr(self.parent, 'notes_editor') and
+                  focused_widget == self.parent.notes_editor._textbox):
+                widget = self.parent.notes_editor._textbox
+            else:
+                widget = self.parent.content_editor._textbox
+
+            cursor_pos = widget.index("insert")
+            widget.insert(cursor_pos, template)
+            self.position_cursor_at_placeholder(widget, template)
+
+
 class EnhancedCommandIndexDialog(ctk.CTkToplevel):
     """Enhanced LaTeX command index with comprehensive BSG/Beamer command listing and interactive help"""
 
@@ -60,6 +897,12 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         self.bind('<Escape>', lambda e: self.destroy())
         self.bind('<FocusIn>', lambda e: self.attributes('-topmost', True))
         self.bind('<Configure>', self.on_window_resize_throttled)
+
+        # ENHANCED: Setup autocomplete system
+        self.setup_enhanced_autocomplete()
+        self.enhance_search_with_autocomplete()
+        self.enhance_interactive_help()
+        self.create_autocomplete_quick_access()
 
         # Start search thread
         self.start_search_thread()
@@ -1210,10 +2053,14 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         return f"#{new_rgb[0]:02x}{new_rgb[1]:02x}{new_rgb[2]:02x}"
 
     def on_quick_button_click(self, command):
-        """Handle quick access button clicks"""
+        """Handle quick access button clicks with enhanced autocomplete"""
         self.test_var.set(command)
         self.update_live_help()
         self.help_display.see("1.0")
+
+        # Use enhanced insertion if available
+        if hasattr(self, 'autocomplete_system'):
+            self.quick_command_insert(command)
 
     def filter_commands_throttled(self, event=None):
         """Throttled command filtering to prevent UI freeze"""
@@ -1651,3 +2498,127 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
         except:
             pass
         super().destroy()
+
+#----------------Autocomplete integration-------------------
+def setup_enhanced_autocomplete(self):
+    """Setup enhanced autocomplete system for the dialog"""
+    try:
+        # Initialize the intelligent autocomplete system
+        self.autocomplete_system = IntelligentAutocomplete(self)
+
+        # Setup autocomplete for search field
+        search_widgets = [
+            self.search_var._entry_widget if hasattr(self.search_var, '_entry_widget') else None,
+            self.test_var._entry_widget if hasattr(self.test_var, '_entry_widget') else None
+        ]
+
+        for widget in search_widgets:
+            if widget and hasattr(widget, 'bind'):
+                self.autocomplete_system.setup_autocomplete(widget)
+
+        print("✓ Enhanced autocomplete integrated into command dialog")
+
+    except Exception as e:
+        print(f"Autocomplete integration warning: {e}")
+
+def enhance_search_with_autocomplete(self):
+    """Enhance search functionality with autocomplete suggestions"""
+    # Update the command database with all available commands
+    all_commands = {}
+
+    for category, commands in self.commands.items():
+        for cmd in commands:
+            command_name = cmd['command']
+            all_commands[command_name] = {
+                'completion': cmd.get('auto_complete', command_name),
+                'description': cmd['description'],
+                'type': 'command',
+                'category': category,
+                'example': cmd.get('example', ''),
+                'syntax': cmd.get('syntax', '')
+            }
+
+    # Update autocomplete database
+    if hasattr(self, 'autocomplete_system'):
+        self.autocomplete_system.update_command_database(all_commands)
+
+    print(f"✓ Enhanced search with {len(all_commands)} commands")
+
+def quick_command_insert(self, command_text):
+    """Quick insert command from autocomplete or quick access"""
+    # Find the command in our database
+    target_command = None
+    for category, commands in self.commands.items():
+        for cmd in commands:
+            if cmd['command'] == command_text:
+                target_command = cmd
+                break
+        if target_command:
+            break
+
+    if target_command:
+        self.selected_command = target_command
+        self.insert_selected()
+    else:
+        # Fallback to basic insertion
+        self.test_var.set(command_text)
+        self.update_live_help()
+
+def enhance_interactive_help(self):
+    """Enhance interactive help with autocomplete integration"""
+    # Update the test field to use autocomplete
+    if hasattr(self, 'test_var') and hasattr(self, 'autocomplete_system'):
+        test_entry = None
+        # Find the test entry widget
+        for widget in self.interactive_tab.winfo_children():
+            if hasattr(widget, 'winfo_children'):
+                for child in widget.winfo_children():
+                    if isinstance(child, ctk.CTkEntry) and child._placeholder_text == "Enter command (e.g., \\bsglogo, \\frac, \\alpha)":
+                        test_entry = child
+                        break
+            if test_entry:
+                break
+
+        if test_entry:
+            self.autocomplete_system.setup_autocomplete(test_entry)
+
+            # Override the key release to update help immediately
+            def enhanced_key_release(event):
+                self.update_live_help()
+                # Also allow autocomplete to handle it
+                return self.autocomplete_system.on_key_release(event) if hasattr(self.autocomplete_system, 'on_key_release') else None
+
+            test_entry.bind('<KeyRelease>', enhanced_key_release, add='+')
+
+def create_autocomplete_quick_access(self):
+    """Create quick access panel for autocomplete features"""
+    if not hasattr(self, 'interactive_tab'):
+        return
+
+    # Find the interactive help tab and add autocomplete quick access
+    for widget in self.interactive_tab.winfo_children():
+        if hasattr(widget, 'winfo_children'):
+            for child in widget.winfo_children():
+                if "Quick Access BSG Commands" in str(child.winfo_children()):
+                    # Add autocomplete info frame
+                    autocomplete_frame = ctk.CTkFrame(widget)
+                    autocomplete_frame.pack(fill="x", pady=10)
+
+                    ctk.CTkLabel(autocomplete_frame,
+                                text="💡 Autocomplete Tips",
+                                font=("Arial", 12, "bold")).pack(anchor="w", pady=5)
+
+                    tips_text = """• Type \\ to see all commands instantly
+• Use Tab to quickly select suggestions
+• Arrow keys navigate suggestions
+• Enter inserts selected command
+• Click suggestions for immediate insertion"""
+
+                    tips_label = ctk.CTkLabel(autocomplete_frame,
+                                            text=tips_text,
+                                            font=("Arial", 10),
+                                            justify="left")
+                    tips_label.pack(anchor="w", padx=10, pady=5)
+
+                    break
+#-----------------------------Integration completed ----------------------
