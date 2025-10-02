@@ -214,39 +214,36 @@ def generate_preview_frame(filepath, output_path=None):
         return None
 
 def process_inline_images(content_line):
-    """Process ONLY inline images, leave other content untouched"""
+    """Process inline images in content with text scaling and optional size parameter"""
     if '\\inlineimg' not in content_line:
         return content_line
 
-    print(f"DEBUG: Processing inline image in: {content_line}")
+    print(f"process_inline_images INPUT: {content_line}")  # DEBUG
 
-    # Pattern to match: \inlineimg{filename}
-    pattern = r'\\inlineimg\{([^}]+)\}'
+    # Use the same pattern as process_latex_content for consistency
+    import re
+    pattern = r'\\inlineimg\{([^}]+)\}(?:\{([^}]+)\})?'
 
-    def replace_inline_image(match):
+    def replace_inline(match):
         filename = match.group(1).strip()
-        print(f"DEBUG: Found inline image: {filename}")
+        scale = match.group(2) if match.group(2) else "0.8"  # Default scale
 
         # Try to find the file
+        verified_path = None
         if os.path.exists(filename):
             verified_path = filename
         elif os.path.exists(os.path.join('media_files', filename)):
             verified_path = os.path.join('media_files', filename)
+
+        if verified_path:
+            return f"\\includegraphics[height={scale}\\baselineskip]{{{verified_path}}}"
         else:
-            # File not found - return placeholder but keep the original structure
-            print(f"DEBUG: Image not found: {filename}")
-            return f"\\textcolor{{red}}{{[Image: {filename}]}}"
+            return f"[IMAGE:{filename}]"  # Fallback
 
-        print(f"DEBUG: Using image path: {verified_path}")
+    processed_line = re.sub(pattern, replace_inline, content_line)
 
-        # Generate LaTeX code for inline image
-        return f"\\includegraphics[height=0.8\\baselineskip]{{{verified_path}}}"
-
-    # Replace ONLY the inline image commands, leave everything else intact
-    processed_line = re.sub(pattern, replace_inline_image, content_line)
-    print(f"DEBUG: Processed line: {processed_line}")
+    print(f"process_inline_images OUTPUT: {processed_line}")  # DEBUG
     return processed_line
-
 def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
     """Returns complete Beamer preamble including notes support"""
 
@@ -1357,17 +1354,25 @@ def process_latex_content(content_line: str) -> str:
     if not content_line:
         return content_line
 
-    # Process inline images first (SIMPLIFIED VERSION)
+    # Process inline images first - UPDATED VERSION
     if '\\inlineimg' in content_line:
         import re
-        pattern = r'\\inlineimg\{([^}]+)\}'
+        # Pattern to match \inlineimg{filename}{scale} or \inlineimg{filename}
+        pattern = r'\\inlineimg\{([^}]+)\}(?:\{([^}]+)\})?'
+
         def replace_inline(match):
             filename = match.group(1).strip()
+            scale = match.group(2) if match.group(2) else "0.8"  # Default scale
+
             # Try to find the file
+            verified_path = None
             if os.path.exists(filename):
-                return f"\\includegraphics[height=0.8\\baselineskip]{{{filename}}}"
+                verified_path = filename
             elif os.path.exists(os.path.join('media_files', filename)):
-                return f"\\includegraphics[height=0.8\\baselineskip]{{media_files/{filename}}}"
+                verified_path = os.path.join('media_files', filename)
+
+            if verified_path:
+                return f"\\includegraphics[height={scale}\\baselineskip]{{{verified_path}}}"
             else:
                 return f"[IMAGE:{filename}]"  # Fallback
 
@@ -1415,7 +1420,8 @@ def process_latex_content(content_line: str) -> str:
         i += 1
 
     return ''.join(result)
-    #----------------------------------------------------------------------
+
+      #----------------------------------------------------------------------
 def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
     """Generate LaTeX code with support for all media layouts."""
 
