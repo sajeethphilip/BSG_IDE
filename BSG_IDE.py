@@ -1577,6 +1577,46 @@ class FileThumbnailBrowser(ctk.CTkToplevel):
         self.create_toolbar()
         self.create_content_area()
         self.load_files()
+        # Add destruction handler
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Destroy>", self._on_destroy)
+
+    def _on_close(self):
+        """Handle window closing"""
+        self._cleanup_bindings()
+        self.destroy()
+
+    def _on_destroy(self, event):
+        """Handle widget destruction"""
+        if event.widget == self:
+            self._cleanup_bindings()
+
+    def _cleanup_bindings(self):
+        """Clean up all global bindings"""
+        try:
+            # Unbind all global mouse wheel events
+            self.unbind_all("<MouseWheel>")
+            if sys.platform.startswith('linux'):
+                self.unbind_all("<Button-4>")
+                self.unbind_all("<Button-5>")
+        except:
+            pass  # Ignore errors during cleanup
+
+    def _bind_mousewheel(self, event):
+        """Bind mousewheel when mouse enters canvas - with safety check"""
+        if not self.winfo_exists():  # Check if widget still exists
+            return
+
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        if sys.platform.startswith('linux'):
+            self.canvas.bind_all("<Button-4>", self._on_mousewheel)
+            self.canvas.bind_all("<Button-5>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel and touchpad scrolling with safety check"""
+        if not self.winfo_exists() or not self.canvas.winfo_exists():
+            return  # Don't process if widgets are destroyed
+
 
     def create_thumbnail(self, file_path):
         """Create thumbnail with proper error handling"""

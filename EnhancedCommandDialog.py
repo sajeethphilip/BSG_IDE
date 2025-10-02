@@ -39,6 +39,13 @@ class LatexCommandHelper:
                 'package': 'beamer',
                 'example': '\\title{My Presentation}'
             },
+                '\\inlineimg': {
+                'syntax': '\\inlineimg[options]{image} or \\inlineimg{image}{scale}',
+                'description': 'Inserts inline images within text flow',
+                'category': 'formatting',
+                'package': 'graphicx',
+                'example': 'Cats are amazing \\inlineimg{cat.png} and make great pets.'
+            },
             '\\author': {
                 'syntax': '\\author{author name}',
                 'description': 'Sets the author name',
@@ -1323,6 +1330,11 @@ class IntelligentAutocomplete:
                 'completion': '\\vdots',
                 'description': 'Vertical dots'
             },
+             '\\inlineimg': {
+                'completion': '\\inlineimg[$1]{$2}',
+                'description': 'Inline image within text flow',
+                'type': 'inline_image'
+            },
             '\\ddots': {
                 'completion': '\\ddots',
                 'description': 'Diagonal dots'
@@ -2293,6 +2305,17 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
             ],
 
             'Beamer Text Formatting': [
+                {
+                    'command': '\\inlineimg',
+                    'syntax': '\\inlineimg[options]{image} or \\inlineimg{image}{scale}',
+                    'description': 'Inserts inline images within text flow',
+                    'example': 'Cats are amazing \\inlineimg{cat.png} and make great pets.',
+                    'category': 'formatting',
+                    'display_options': ['static'],
+                    'auto_complete': '\\inlineimg[$1]{$2}',
+                    'usage': 'Inline images within text paragraphs',
+                    'is_symbol': False
+                },
                 {
                     'command': '\\textcolor',
                     'syntax': '\\textcolor{bsg-blue}{text} or \\textcolor[RGB]{0,51,102}{text}',

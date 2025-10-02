@@ -213,6 +213,40 @@ def generate_preview_frame(filepath, output_path=None):
         print(f"Error generating preview frame: {str(e)}")
         return None
 
+def process_inline_images(content_line):
+    """Process ONLY inline images, leave other content untouched"""
+    if '\\inlineimg' not in content_line:
+        return content_line
+
+    print(f"DEBUG: Processing inline image in: {content_line}")
+
+    # Pattern to match: \inlineimg{filename}
+    pattern = r'\\inlineimg\{([^}]+)\}'
+
+    def replace_inline_image(match):
+        filename = match.group(1).strip()
+        print(f"DEBUG: Found inline image: {filename}")
+
+        # Try to find the file
+        if os.path.exists(filename):
+            verified_path = filename
+        elif os.path.exists(os.path.join('media_files', filename)):
+            verified_path = os.path.join('media_files', filename)
+        else:
+            # File not found - return placeholder but keep the original structure
+            print(f"DEBUG: Image not found: {filename}")
+            return f"\\textcolor{{red}}{{[Image: {filename}]}}"
+
+        print(f"DEBUG: Using image path: {verified_path}")
+
+        # Generate LaTeX code for inline image
+        return f"\\includegraphics[height=0.8\\baselineskip]{{{verified_path}}}"
+
+    # Replace ONLY the inline image commands, leave everything else intact
+    processed_line = re.sub(pattern, replace_inline_image, content_line)
+    print(f"DEBUG: Processed line: {processed_line}")
+    return processed_line
+
 def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
     """Returns complete Beamer preamble including notes support"""
 
@@ -230,6 +264,11 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{multimedia}
 \usepackage{xifthen}
 \usepackage{xcolor}
+\usepackage[utf8]{inputenc}
+\usepackage{textcomp}
+\usepackage{graphicx}
+\usepackage{adjustbox}
+\usepackage{amssymb}  % For mathematical symbols
 % Define the style for covered text
 \setbeamercovered{dynamic} % This should enable progressive transparency
 \setbeamerfont{item projected}{size=\small}
@@ -1314,11 +1353,27 @@ def process_special_effects(content_line):
     return content_line
 
 def process_latex_content(content_line: str) -> str:
-    """Enhanced content processing with special effects support"""
+    """Enhanced content processing with special effects and inline images support"""
     if not content_line:
         return content_line
 
-    # First process special effects
+    # Process inline images first (SIMPLIFIED VERSION)
+    if '\\inlineimg' in content_line:
+        import re
+        pattern = r'\\inlineimg\{([^}]+)\}'
+        def replace_inline(match):
+            filename = match.group(1).strip()
+            # Try to find the file
+            if os.path.exists(filename):
+                return f"\\includegraphics[height=0.8\\baselineskip]{{{filename}}}"
+            elif os.path.exists(os.path.join('media_files', filename)):
+                return f"\\includegraphics[height=0.8\\baselineskip]{{media_files/{filename}}}"
+            else:
+                return f"[IMAGE:{filename}]"  # Fallback
+
+        content_line = re.sub(pattern, replace_inline, content_line)
+
+    # Then process special effects
     content_line = process_special_effects(content_line)
 
     # Then process standard LaTeX content
@@ -1360,7 +1415,7 @@ def process_latex_content(content_line: str) -> str:
         i += 1
 
     return ''.join(result)
-#----------------------------------------------------------------------
+    #----------------------------------------------------------------------
 def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
     """Generate LaTeX code with support for all media layouts."""
 
@@ -1391,12 +1446,11 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
         # Robust splitting - handle different semicolon formats
         images = []
-        if ';' in filename:
-            # Split by semicolon and clean up
-            images = [img.strip() for img in filename.split(',')]
-        else:
-            # No semicolon, treat as single image
-            images = [filename.strip()]
+        import re
+        images = re.split(r'\s*;\s*', filename)
+        print(f"DEBUG: Split {filename} intoimages: {images}")
+        # Remove empty strings
+        images = [img.strip() for img in images if img.strip()]
 
         print(f"DEBUG: Split images: {images}")
 
@@ -1738,6 +1792,7 @@ def generate_content_items(content, color=None):
             continue
 
         item = item.strip()
+        print(f"PROCESSING CONTENT ITEM: {item}")  # DEBUG
 
         # Handle environment begins/ends
         if item.startswith('\\begin{'):
@@ -1778,8 +1833,9 @@ def generate_content_items(content, color=None):
             items.append(item)
             continue
 
-        # Process the content based on context
+        # PROCESS ALL CONTENT THROUGH process_latex_content - This is key
         processed_item = process_latex_content(item)
+        print(f"AFTER process_latex_content: {processed_item}")  # DEBUG
 
         # Add color if specified
         if color:
@@ -1797,7 +1853,9 @@ def generate_content_items(content, color=None):
             # For all other cases, just add the processed content as-is
             items.append(processed_item)
 
-    return '\n        '.join(items)
+    result = '\n        '.join(items)
+    print(f"FINAL generate_content_items RESULT: {result}")  # DEBUG
+    return result
 
 def format_source_citation(url):
     """
@@ -1831,19 +1889,21 @@ def format_source_citation(url):
 def verify_media_file(filepath):
     """
     Verifies that a media file exists and returns its proper path.
+    Enhanced for inline images.
     """
+    # Direct path check
     if os.path.exists(filepath):
         return filepath
 
+    # Check in media_files directory
     base_filepath = os.path.join('media_files', os.path.basename(filepath))
     if os.path.exists(base_filepath):
         return base_filepath
 
     # Try to find the file with any extension
-    global output_dir
     base_name = os.path.splitext(os.path.basename(filepath))[0]
-    output_dir = os.path.dirname(os.path.abspath(file_path))  # Get the directory of the input file
-    base_path = os.path.join(output_dir,'media_files', base_name)
+    base_path = os.path.join('media_files', base_name)
+
     import glob
     possible_files = glob.glob(base_path + '.*')
     if possible_files:
@@ -2804,6 +2864,9 @@ def format_url_note(url):
 #------------------------------------------------------
 def process_input_file(file_path, output_filename='movie.tex', ide_callback=None):
     """Process input file to convert to TeX format with proper slide navigation"""
+    # Debug first
+    debug_content_processing()
+
     processed = 0
     failed = 0
     errors = []
@@ -2907,6 +2970,46 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
             ide_callback("error", {'message': error_msg})
         return processed, failed, errors
 
+def ensure_inline_images_in_content(content):
+    """Ensure inline images are processed in content before frame generation"""
+    if not content:
+        return content
+
+    processed_content = []
+    for item in content:
+        if item and '\\inlineimg' in item:
+            print(f"PROCESSING INLINE IMAGE IN CONTENT: {item}")
+            # Process through the full latex content processor
+            processed_item = process_latex_content(item)
+            print(f"PROCESSED RESULT: {processed_item}")
+            processed_content.append(processed_item)
+        else:
+            processed_content.append(item)
+
+    return processed_content
+def debug_content_processing():
+    """Debug the entire content processing pipeline"""
+    print("\n=== DEBUG CONTENT PROCESSING ===")
+
+    # Test the exact content from your slide
+    test_content = [
+        "It is good to have an idea about the likelihood, but most of the time \\textcolor{pink}{we are interested in a given object } and not in the whole population.",
+        "To know the class of an individual object, we can use the same logic we apply to differentiate a \\inlineimg{catdog.png} cat from a dog .",
+        "Identify \\textcolor{red}{distiguishable features} of the object and base our judgement on the combined likelihood of the pieces.",
+        "We may have a \\textcolor{red}{subjective belief} (prior) and an \\textcolor{red}{objective likelihood} for each feature in a class."
+    ]
+
+    print("Input content:")
+    for i, line in enumerate(test_content):
+        print(f"  {i}: {line}")
+
+    # Test generate_content_items
+    result = generate_content_items(test_content)
+    print(f"\nOutput from generate_content_items:")
+    print(result)
+    print("=== END DEBUG ===\n")
+
+
 def should_process_frame(title, content, media, notes):
     """
     Determine if a frame should be processed based on its components.
@@ -2919,6 +3022,11 @@ def should_process_frame(title, content, media, notes):
 
 def process_frame(outfile, title, content, notes, media):
     """Process a single frame and write it to the output file"""
+    # Ensure inline images are processed in content BEFORE generating the frame
+    if content:
+        content = ensure_inline_images_in_content(content)
+        print(f"CONTENT AFTER INLINE IMAGE PROCESSING: {content}")
+
     # Generate frame content
     latex_code, directive = process_media(
         media if media else "\\None",
