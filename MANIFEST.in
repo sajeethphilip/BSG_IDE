@@ -1,0 +1,9 @@
+include *.py
+include *.png
+include *.txt
+include *.md
+include requirements.txt
+include LICENSE
+recursive-include icons *
+recursive-include resources *
+recursive-include examples *
