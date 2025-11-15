@@ -3084,7 +3084,7 @@ class BeamerSlideEditor(ctk.CTk):
       / /\\ \\
      /_/  \\_\\ LABS
     """
-        self.__version__ = "4.0"
+        self.__version__ = "4.6.1"
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
@@ -3707,62 +3707,6 @@ class BeamerSlideEditor(ctk.CTk):
         pass
 
 #---------------------------------------Grammarly Ends--------------------------------
-    def load_tex_file(self) -> None:
-        """Load and convert a Beamer .tex file to IDE format"""
-        tex_file = filedialog.askopenfilename(
-            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
-            title="Select Beamer TeX File to Load"
-        )
-
-        if not tex_file:
-            return
-
-        try:
-            # Clear current presentation
-            self.new_file()
-
-            with open(tex_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # Extract presentation information
-            self.extract_presentation_info_from_tex(content)
-
-            # Extract slides
-            slides = self.extract_slides_from_tex(content)
-
-            if not slides:
-                messagebox.showwarning("Warning", "No slides found in the TeX file!")
-                return
-
-            # Populate slides in IDE
-            self.slides = slides
-            self.current_slide_index = 0 if slides else -1
-
-            # Update UI
-            self.update_slide_list()
-            if self.slides:
-                self.load_slide(0)
-
-            # Set current file to corresponding .txt file
-            base_name = os.path.splitext(tex_file)[0]
-            self.current_file = base_name + '_converted.txt'
-
-            # Auto-save the converted text file
-            self.save_file()
-
-            self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
-            self.write(f"Converted file saved as: {self.current_file}\n", "green")
-
-            # Ask if user wants to generate PDF immediately
-            if messagebox.askyesno("Success",
-                                 "TeX file loaded successfully!\n\n"
-                                 "Would you like to generate PDF now?"):
-                self.generate_pdf()
-
-        except Exception as e:
-            error_msg = f"Error loading TeX file:\n{str(e)}"
-            self.write(f"✗ {error_msg}\n", "red")
-            messagebox.showerror("Error", error_msg)
 
     def extract_presentation_info_from_tex(self, content: str) -> None:
         """Extract presentation metadata from TeX content"""
@@ -3796,7 +3740,7 @@ class BeamerSlideEditor(ctk.CTk):
                 self.presentation_info['logo'] = img_match.group(1)
 
     def enhanced_extract_slides_from_tex(self, content: str) -> list:
-        """Enhanced slide extraction with simplified content parsing"""
+        """Enhanced slide extraction with comprehensive LaTeX feature support"""
         slides = []
         import re
 
@@ -3808,7 +3752,10 @@ class BeamerSlideEditor(ctk.CTk):
 
         document_content = doc_match.group(1)
 
-        # More robust frame detection
+        # Extract preamble information
+        preamble_info = self.extract_preamble_info(content)
+
+        # Enhanced frame detection with multiple patterns
         frame_patterns = [
             r'\\begin{frame}(?:\[[^\]]*\])?(?:{([^}]*)})?(.*?)\\end{frame}',
             r'\\frame(?:\[[^\]]*\])?(?:{([^}]*)})?{(.*?)}'
@@ -3830,9 +3777,13 @@ class BeamerSlideEditor(ctk.CTk):
                 title = frame_match.group(1) if frame_match.group(1) else ""
                 frame_content = frame_match.group(2) if frame_match.group(2) else ""
 
-                # Skip title page frames
+                # Skip title page frames but preserve their content
                 if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
-                    self.write(f"Skipping title frame {i+1}\n", "yellow")
+                    self.write(f"Processing title frame {i+1}\n", "yellow")
+                    # Extract title page content
+                    title_slide = self.process_title_frame(frame_content, preamble_info)
+                    if title_slide:
+                        slides.append(title_slide)
                     continue
 
                 # Extract frametitle if no title in frame declaration
@@ -3841,26 +3792,36 @@ class BeamerSlideEditor(ctk.CTk):
                     if ft_match:
                         title = ft_match.group(1)
 
-                # Clean title
+                # Extract framesubtitle
+                subtitle = ""
+                subtitle_match = re.search(r'\\framesubtitle{([^}]*)}', frame_content)
+                if subtitle_match:
+                    subtitle = subtitle_match.group(1)
+
+                # Clean title and subtitle
                 if title:
                     title = self.clean_latex_content(title)
                 else:
                     title = f"Slide {i+1}"
 
-                # Extract media
-                media = self.extract_media_from_frame(frame_content)
+                if subtitle:
+                    title += f" - {self.clean_latex_content(subtitle)}"
 
-                # Extract content using simplified approach
-                content_items = self.extract_content_from_frame(frame_content)
+                # Extract media including TikZ diagrams
+                media = self.extract_enhanced_media_from_frame(frame_content)
 
-                # Extract notes
-                notes = self.extract_notes_from_frame(frame_content)
+                # Extract content with enhanced LaTeX support
+                content_items = self.extract_enhanced_content_from_frame(frame_content)
+
+                # Extract notes with proper formatting
+                notes = self.extract_enhanced_notes_from_frame(frame_content)
 
                 slide_data = {
                     'title': title,
                     'media': media,
                     'content': content_items,
-                    'notes': notes
+                    'notes': notes,
+                    'preamble_info': preamble_info
                 }
 
                 slides.append(slide_data)
@@ -3871,6 +3832,356 @@ class BeamerSlideEditor(ctk.CTk):
                 continue
 
         return slides
+
+    def extract_preamble_info(self, content: str) -> dict:
+        """Extract preamble information including themes and packages"""
+        preamble_info = {
+            'theme': '',
+            'packages': [],
+            'title': '',
+            'author': '',
+            'date': '',
+            'institute': ''
+        }
+
+        import re
+
+        # Extract theme
+        theme_match = re.search(r'\\usetheme{([^}]*)}', content)
+        if theme_match:
+            preamble_info['theme'] = theme_match.group(1)
+
+        # Extract packages
+        package_matches = re.findall(r'\\usepackage(?:\[[^\]]*\])?{([^}]*)}', content)
+        preamble_info['packages'] = package_matches
+
+        # Extract document info
+        title_match = re.search(r'\\title{([^}]*)}', content)
+        if title_match:
+            preamble_info['title'] = self.clean_latex_content(title_match.group(1))
+
+        author_match = re.search(r'\\author{([^}]*)}', content)
+        if author_match:
+            preamble_info['author'] = self.clean_latex_content(author_match.group(1))
+
+        date_match = re.search(r'\\date{([^}]*)}', content)
+        if date_match:
+            preamble_info['date'] = self.clean_latex_content(date_match.group(1))
+
+        institute_match = re.search(r'\\institute{([^}]*)}', content)
+        if institute_match:
+            preamble_info['institute'] = self.clean_latex_content(institute_match.group(1))
+
+        return preamble_info
+
+    def process_title_frame(self, frame_content: str, preamble_info: dict) -> dict:
+        """Process title page frames"""
+        title_slide = {
+            'title': 'Title Page',
+            'media': '',
+            'content': [],
+            'notes': []
+        }
+
+        # Add title information to content
+        if preamble_info['title']:
+            title_slide['content'].append(f"\\title{{{preamble_info['title']}}}")
+
+        if preamble_info['author']:
+            title_slide['content'].append(f"\\author{{{preamble_info['author']}}}")
+
+        if preamble_info['date']:
+            title_slide['content'].append(f"\\date{{{preamble_info['date']}}}")
+
+        if preamble_info['institute']:
+            title_slide['content'].append(f"\\institute{{{preamble_info['institute']}}}")
+
+        # Add title page command
+        title_slide['content'].append("\\titlepage")
+
+        return title_slide
+
+    def extract_enhanced_media_from_frame(self, frame_content: str) -> str:
+        """Extract media including TikZ diagrams and graphics"""
+        import re
+
+        media_components = []
+
+        # Check for graphics
+        graphics_matches = re.finditer(r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}', frame_content)
+        for match in graphics_matches:
+            media_path = match.group(1)
+            media_components.append(f"\\file {media_path}")
+
+        # Check for TikZ environments
+        tikz_matches = re.finditer(r'\\begin{tikzpicture}(.*?)\\end{tikzpicture}', frame_content, re.DOTALL)
+        for i, match in enumerate(tikz_matches):
+            tikz_content = match.group(0).strip()
+            # Save TikZ code as a separate file or include it directly
+            filename = f"tikz_diagram_{i+1}.tex"
+            media_components.append(f"% TikZ Diagram {i+1}:\n{tikz_content}")
+
+        # Check for movies/videos
+        movie_match = re.search(r'\\movie(?:\[[^\]]*\])?{[^}]*}{([^}]*)}', frame_content)
+        if movie_match:
+            media_path = movie_match.group(1)
+            media_components.append(f"\\play {media_path}")
+
+        return "\n".join(media_components) if media_components else ""
+
+    def extract_enhanced_content_from_frame(self, frame_content: str) -> list:
+        """Extract content with enhanced LaTeX feature support"""
+        import re
+
+        content_items = []
+
+        # Remove notes and media commands to isolate main content
+        clean_content = re.sub(r'\\note{.*?}', '', frame_content, flags=re.DOTALL)
+        clean_content = re.sub(r'\\includegraphics[^}]*}|\\movie[^}]*}|\\begin{tikzpicture}.*?\\end{tikzpicture}', '', clean_content, flags=re.DOTALL)
+
+        # Extract blocks (block, example, alertblock)
+        block_patterns = [
+            (r'\\begin{block}{([^}]*)}(.*?)\\end{block}', 'block'),
+            (r'\\begin{example}{([^}]*)}(.*?)\\end{example}', 'example'),
+            (r'\\begin{alertblock}{([^}]*)}(.*?)\\end{alertblock}', 'alertblock'),
+            (r'\\begin{columns}(.*?)\\end{columns}', 'columns')
+        ]
+
+        for pattern, block_type in block_patterns:
+            blocks = re.finditer(pattern, clean_content, re.DOTALL)
+            for block in blocks:
+                if block_type == 'columns':
+                    # Process columns environment
+                    columns_content = self.process_columns_environment(block.group(1))
+                    content_items.extend(columns_content)
+                else:
+                    title = self.clean_latex_content(block.group(1))
+                    content = self.clean_latex_content(block.group(2))
+                    content_items.append(f"\\begin{{{block_type}}}{{{title}}}")
+                    content_items.extend(self.process_block_content(content))
+                    content_items.append(f"\\end{{{block_type}}}")
+
+        # Extract items from itemize and enumerate environments
+        list_environments = ['itemize', 'enumerate']
+        for env in list_environments:
+            env_matches = re.finditer(r'\\begin{' + env + '}(.*?)\\end{' + env + '}', clean_content, re.DOTALL)
+            for match in env_matches:
+                env_content = match.group(1)
+                items = re.finditer(r'\\item\s*(.*?)(?=\\item|\\end{' + env + '}|$)', env_content, re.DOTALL)
+                for item in items:
+                    item_text = self.clean_latex_content(item.group(1).strip())
+                    if item_text:
+                        content_items.append(f"- {item_text}")
+
+        # Extract standalone equations
+        equation_matches = re.finditer(r'\\\[(.*?)\\\]', clean_content, re.DOTALL)
+        for match in equation_matches:
+            equation = match.group(1).strip()
+            content_items.append(f"\\[{equation}\\]")
+
+        # Extract inline math and other content
+        paragraphs = re.split(r'\n\s*\n', clean_content)
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if paragraph and not any(env in paragraph for env in ['block', 'example', 'alertblock', 'columns', 'itemize', 'enumerate']):
+                # Clean up the paragraph but preserve LaTeX commands
+                paragraph = self.preserve_latex_commands(paragraph)
+                if paragraph and len(paragraph) > 3:
+                    content_items.append(paragraph)
+
+        return content_items
+
+    def extract_enhanced_notes_from_frame(self, frame_content: str) -> list:
+        """Extract speaker notes with proper formatting"""
+        import re
+
+        notes = []
+
+        # Extract note commands with [item] support
+        note_matches = re.finditer(r'\\note(?:\[([^\]]*)\])?{(.*?)}', frame_content, re.DOTALL)
+        for match in note_matches:
+            note_type = match.group(1)  # [item] or None
+            note_content = match.group(2).strip()
+
+            if note_type == 'item':
+                # Process itemized notes
+                items = re.finditer(r'\\item\s*(.*?)(?=\\item|$)', note_content, re.DOTALL)
+                for item in items:
+                    item_text = self.clean_latex_content(item.group(1).strip())
+                    if item_text:
+                        notes.append(f"• {item_text}")
+            else:
+                # Regular note content
+                lines = note_content.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if line:
+                        notes.append(f"• {self.clean_latex_content(line)}")
+
+        return notes
+
+    def process_columns_environment(self, columns_content: str) -> list:
+        """Process columns environment content"""
+        import re
+
+        content_items = []
+
+        # Extract individual columns
+        column_matches = re.finditer(r'\\begin{column}{([^}]*)}(.*?)\\end{column}', columns_content, re.DOTALL)
+
+        content_items.append("\\begin{columns}")
+        for i, match in enumerate(column_matches):
+            width = match.group(1)
+            column_content = match.group(2).strip()
+
+            content_items.append(f"\\begin{{column}}{{{width}}}")
+            # Process content within the column
+            column_items = self.extract_enhanced_content_from_frame(column_content)
+            content_items.extend(column_items)
+            content_items.append("\\end{column}")
+
+        content_items.append("\\end{columns}")
+
+        return content_items
+
+    def process_block_content(self, content: str) -> list:
+        """Process content within blocks"""
+        import re
+
+        lines = []
+
+        # Extract items from block content
+        items = re.finditer(r'\\item\s*(.*?)(?=\\item|$)', content, re.DOTALL)
+        for item in items:
+            item_text = self.clean_latex_content(item.group(1).strip())
+            if item_text:
+                lines.append(f"- {item_text}")
+
+        # If no items found, treat as regular content
+        if not lines:
+            paragraphs = content.split('\n')
+            for paragraph in paragraphs:
+                paragraph = paragraph.strip()
+                if paragraph:
+                    lines.append(self.preserve_latex_commands(paragraph))
+
+        return lines
+
+    def preserve_latex_commands(self, text: str) -> str:
+        """Clean text while preserving important LaTeX commands"""
+        import re
+
+        # Preserve math environments
+        text = re.sub(r'\\\[(.*?)\\\]', r'\\[\1\\]', text)
+        text = re.sub(r'\\\((.*?)\\\)', r'\\(\1\\)', text)
+
+        # Preserve text formatting commands
+        text = re.sub(r'\\textbf{([^}]*)}', r'\\textbf{\1}', text)
+        text = re.sub(r'\\textit{([^}]*)}', r'\\textit{\1}', text)
+        text = re.sub(r'\\emph{([^}]*)}', r'\\emph{\1}', text)
+
+        # Preserve other common commands
+        text = re.sub(r'\\mathbb{([^}]*)}', r'\\mathbb{\1}', text)
+        text = re.sub(r'\\mathcal{([^}]*)}', r'\\mathcal{\1}', text)
+        text = re.sub(r'\\bm{([^}]*)}', r'\\bm{\1}', text)
+
+        # Clean up extra whitespace but preserve command structure
+        text = re.sub(r'\s+', ' ', text)
+
+        return text.strip()
+
+    def clean_latex_content(self, text: str) -> str:
+        """Clean LaTeX content while preserving structure"""
+        import re
+
+        if not text:
+            return ""
+
+        # Remove comments
+        text = re.sub(r'%.*$', '', text, flags=re.MULTILINE)
+
+        # Replace common LaTeX commands with plain text equivalents
+        replacements = [
+            (r'\\textcolor{[^}]*}{([^}]*)}', r'\1'),
+            (r'~', ' '),
+            (r'\\&', '&'),
+            (r'\\%', '%'),
+            (r'\\#', '#'),
+            (r'\\_', '_'),
+            (r'\\ldots', '...'),
+            (r'\\quad', '    '),
+            (r'\\qquad', '        '),
+        ]
+
+        for pattern, replacement in replacements:
+            text = re.sub(pattern, replacement, text)
+
+        # Clean up whitespace
+        text = re.sub(r'\s+', ' ', text)
+
+        return text.strip()
+
+    def load_tex_file(self) -> None:
+        """Load and convert a Beamer .tex file to IDE format with enhanced features"""
+        tex_file = filedialog.askopenfilename(
+            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
+            title="Select Beamer TeX File to Load"
+        )
+
+        if not tex_file:
+            return
+
+        try:
+            # Clear current presentation
+            self.new_file()
+
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Extract presentation information with enhanced preamble support
+            preamble_info = self.extract_preamble_info(content)
+            self.presentation_info.update(preamble_info)
+
+            # Extract slides with enhanced feature support
+            slides = self.enhanced_extract_slides_from_tex(content)
+
+            if not slides:
+                messagebox.showwarning("Warning", "No slides found in the TeX file!")
+                return
+
+            # Populate slides in IDE
+            self.slides = slides
+            self.current_slide_index = 0 if slides else -1
+
+            # Update UI
+            self.update_slide_list()
+            if self.slides:
+                self.load_slide(0)
+
+            # Set current file to corresponding .txt file
+            base_name = os.path.splitext(tex_file)[0]
+            self.current_file = base_name + '_enhanced.txt'
+
+            # Auto-save the converted text file
+            self.save_file()
+
+            self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
+            self.write(f"Enhanced file saved as: {self.current_file}\n", "green")
+            self.write(f"✓ Detected theme: {preamble_info.get('theme', 'default')}\n", "green")
+            self.write(f"✓ Detected packages: {', '.join(preamble_info.get('packages', []))}\n", "green")
+
+            # Ask if user wants to generate PDF immediately
+            if messagebox.askyesno("Success",
+                                 "TeX file loaded successfully with enhanced features!\n\n"
+                                 "Would you like to generate PDF now?"):
+                self.generate_pdf()
+
+        except Exception as e:
+            error_msg = f"Error loading TeX file:\n{str(e)}"
+            self.write(f"✗ {error_msg}\n", "red")
+            messagebox.showerror("Error", error_msg)
+            import traceback
+            traceback.print_exc()
 
     def extract_media_from_frame(self, frame_content: str) -> str:
         """Extract media references from frame content"""
@@ -3947,33 +4258,6 @@ class BeamerSlideEditor(ctk.CTk):
                     notes.append(f"• {note_text}")
 
         return notes
-
-    def clean_latex_content(self, text: str) -> str:
-        """Clean LaTeX commands and formatting from text - minimal processing"""
-        import re
-
-        # Simple pattern replacements - keep it minimal
-        patterns = [
-            (r'\\textcolor{[^}]*}{([^}]*)}', r'\1'),
-            (r'\\textbf{([^}]*)}', r'\1'),
-            (r'\\textit{([^}]*)}', r'\1'),
-            (r'\\emph{([^}]*)}', r'\1'),
-            (r'\\underline{([^}]*)}', r'\1'),
-            (r'\\item\s*', ''),  # Remove \item commands
-            (r'~', ' '),
-            (r'\\&', '&'),
-            (r'\\%', '%'),
-            (r'\\#', '#'),
-            (r'\\_', '_'),
-        ]
-
-        for pattern, replacement in patterns:
-            text = re.sub(pattern, replacement, text)
-
-        # Remove any remaining LaTeX commands (but be careful not to remove too much)
-        text = re.sub(r'\\[a-zA-Z]+\s*', '', text)  # Remove simple commands
-
-        return text.strip()
 
     def overwrite_tex_and_generate_pdf(self) -> None:
         """Convert current presentation back to TeX and generate PDF"""

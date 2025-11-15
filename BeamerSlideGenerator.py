@@ -265,6 +265,18 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{textcomp}
 \usepackage{graphicx}
 \usepackage{adjustbox}
+\usetheme{Madrid}
+\usepackage{tikz-3dplot}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{bm}
+\usetheme{Madrid}
+\usecolortheme{seahorse}
+\usepackage{tikz}
+\usetikzlibrary{arrows, shapes, positioning, calc, patterns, decorations.pathreplacing, 3d}
+\usepackage{amsmath, amssymb, bm}
+\graphicspath{ {./images/} }                                            #----------------------Graphics path set to images
 \usepackage{amssymb}  % For mathematical symbols
 % Define the style for covered text
 \setbeamercovered{dynamic} % This should enable progressive transparency
@@ -329,7 +341,153 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         shadow={2mm}{-1mm}{0mm}{black!50}
     }
 }{}
+% Coloured block begins
+% Card-style block definitions with borders and shadows
+\setbeamercolor{block title}{fg=white,bg=myblue!80!black}
+\setbeamercolor{block body}{fg=white,bg=black!95}
 
+\setbeamercolor{block title example}{fg=white,bg=mygreen!80!black}
+\setbeamercolor{block body example}{fg=white,bg=black!95}
+
+\setbeamercolor{block title alerted}{fg=white,bg=myred!80!black}
+\setbeamercolor{block body alerted}{fg=white,bg=black!95}
+
+% Card-style block template with border and shadow
+\setbeamertemplate{block begin}{
+  \vskip1.5ex
+  \begin{beamercolorbox}[
+      rounded=4pt,                    % More rounded corners for card look
+      leftskip=1.2ex,
+      colsep*=1ex,
+      shadow={0mm}{-2mm}{6mm}{black!70},  % Main shadow
+      shadow={1mm}{-1mm}{3mm}{black!40},  % Secondary shadow
+      line width=1.5pt,               % Border width
+      draw=myblue!60!white,           % Border color
+      fill=myblue!80!black            % Background color
+    ]{block title}
+    \usebeamerfont*{block title}\insertblocktitle
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-1pt}        % Remove gap between title and body
+  \begin{beamercolorbox}[
+      rounded=4pt,
+      leftskip=1.2ex,
+      rightskip=1.2ex,
+      colsep*=1ex,
+      shadow={0mm}{-2mm}{8mm}{black!60},
+      shadow={1mm}{-1mm}{4mm}{black!30},
+      line width=1.5pt,
+      draw=black!40,                  % Subtle border for body
+      fill=black!95                   % Slightly off-black background
+    ]{block body}
+    \vskip1ex
+    \usebeamerfont{block body}
+}
+
+\setbeamertemplate{block end}{
+  \vskip1ex
+  \end{beamercolorbox}
+  \vskip2ex
+}
+
+% Custom colored card block
+\newenvironment<>{coloredblock}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!80!black}
+    \setbeamercolor{block body}{fg=white,bg=black!95}
+  }%
+  \usebeamertemplate{block begin}}
+  {\par\usebeamertemplate{block end}\end{actionenv}}
+
+% Premium card block with enhanced styling
+\newenvironment<>{cardblock}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!90!black}
+    \setbeamercolor{block body}{fg=white,bg=black!92}
+  }%
+  % Title with enhanced border
+  \begin{beamercolorbox}[
+      rounded=5pt,
+      leftskip=1.5ex,
+      colsep*=1.2ex,
+      shadow={0mm}{-3mm}{8mm}{#1!50},
+      shadow={2mm}{-2mm}{5mm}{#1!30},
+      line width=2pt,
+      draw=#1!40!white,
+      fill=#1!90!black
+    ]{block title}
+    \usebeamerfont*{block title}\textbf{\large\insertblocktitle}
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-1.5pt}
+  % Body with matching border
+  \begin{beamercolorbox}[
+      rounded=5pt,
+      leftskip=1.5ex,
+      rightskip=1.5ex,
+      colsep*=1.2ex,
+      shadow={0mm}{-3mm}{10mm}{black!50},
+      shadow={2mm}{-2mm}{6mm}{black!25},
+      line width=2pt,
+      draw=#1!20!white,
+      fill=black!92
+    ]{block body}
+    \vskip1.2ex
+    \usebeamerfont{block body}}
+  {\vskip1.2ex\end{beamercolorbox}\end{actionenv}}
+
+% Minimal card block for subtle emphasis
+\newenvironment<>{minimalcard}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!70!black}
+    \setbeamercolor{block body}{fg=white,bg=black!97}
+  }%
+  \begin{beamercolorbox}[
+      rounded=3pt,
+      leftskip=1ex,
+      colsep*=0.8ex,
+      shadow={0mm}{-1mm}{4mm}{black!40},
+      line width=1pt,
+      draw=#1!30!white,
+      fill=#1!70!black
+    ]{block title}
+    \usebeamerfont*{block title}\insertblocktitle
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-0.8pt}
+  \begin{beamercolorbox}[
+      rounded=3pt,
+      leftskip=1ex,
+      rightskip=1ex,
+      colsep*=0.8ex,
+      shadow={0mm}{-1mm}{5mm}{black!30},
+      line width=1pt,
+      draw=black!30,
+      fill=black!97
+    ]{block body}
+    \vskip0.8ex
+    \usebeamerfont{block body}}
+  {\vskip0.8ex\end{beamercolorbox}\end{actionenv}}
+"""
+
+    # Combine all parts including the card_blocks
+    return "\n".join([
+       core_preamble,
+       card_blocks,  # Add this card-style block section
+       frame_setup,
+       inst_setup,
+       footline_template,
+       additional_settings,
+       title_setup,
+       title_page
+   ])
+% Coloured block ends
 
 % Define colors
 
