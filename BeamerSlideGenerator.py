@@ -474,19 +474,8 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     \vskip0.8ex
     \usebeamerfont{block body}}
   {\vskip0.8ex\end{beamercolorbox}\end{actionenv}}
-"""
 
-    # Combine all parts including the card_blocks
-    return "\n".join([
-       core_preamble,
-       card_blocks,  # Add this card-style block section
-       frame_setup,
-       inst_setup,
-       footline_template,
-       additional_settings,
-       title_setup,
-       title_page
-   ])
+
 % Coloured block ends
 
 % Define colors
