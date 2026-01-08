@@ -3084,7 +3084,7 @@ class BeamerSlideEditor(ctk.CTk):
       / /\\ \\
      /_/  \\_\\ LABS
     """
-        self.__version__ = "4.6.1"
+        self.__version__ = "4.6.4"
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
@@ -4122,7 +4122,7 @@ class BeamerSlideEditor(ctk.CTk):
         return text.strip()
 
     def load_tex_file(self) -> None:
-        """Load and convert a Beamer .tex file to IDE format with enhanced features"""
+        """Load and convert a Beamer .tex file to IDE format with enhanced features and better error handling"""
         tex_file = filedialog.askopenfilename(
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
             title="Select Beamer TeX File to Load"
@@ -4138,12 +4138,19 @@ class BeamerSlideEditor(ctk.CTk):
             with open(tex_file, 'r', encoding='utf-8') as f:
                 content = f.read()
 
+            # Check if it's a Beamer file
+            if '\\documentclass{beamer}' not in content and '\\documentclass[beamer]' not in content:
+                if not messagebox.askyesno("Warning",
+                                          "This doesn't appear to be a Beamer presentation.\n"
+                                          "Do you want to try to load it anyway?"):
+                    return
+
             # Extract presentation information with enhanced preamble support
-            preamble_info = self.extract_preamble_info(content)
+            preamble_info = self.extract_preamble_info_safe(content)
             self.presentation_info.update(preamble_info)
 
-            # Extract slides with enhanced feature support
-            slides = self.enhanced_extract_slides_from_tex(content)
+            # Extract slides with enhanced feature support and error handling
+            slides = self.enhanced_extract_slides_from_tex_safe(content)
 
             if not slides:
                 messagebox.showwarning("Warning", "No slides found in the TeX file!")
@@ -4182,6 +4189,365 @@ class BeamerSlideEditor(ctk.CTk):
             messagebox.showerror("Error", error_msg)
             import traceback
             traceback.print_exc()
+
+    def extract_preamble_info_safe(self, content: str) -> dict:
+        """Extract preamble information with safer regex patterns"""
+        import re
+
+        preamble_info = {
+            'theme': '',
+            'packages': [],
+            'title': '',
+            'author': '',
+            'date': '',
+            'institute': ''
+        }
+
+        try:
+            # Extract theme with safer pattern
+            theme_match = re.search(r'\\usetheme\s*\{([^}]+)\}', content)
+            if theme_match:
+                preamble_info['theme'] = theme_match.group(1).strip()
+
+            # Extract packages with safer pattern
+            package_matches = re.findall(r'\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}', content)
+            if package_matches:
+                preamble_info['packages'] = [pkg.strip() for pkg in package_matches]
+
+            # Extract document info with safer patterns
+            title_match = re.search(r'\\title\s*\{((?:[^{}]|\{[^{}]*\})*)\}', content, re.DOTALL)
+            if title_match:
+                preamble_info['title'] = self.clean_latex_content_safe(title_match.group(1))
+
+            author_match = re.search(r'\\author\s*\{((?:[^{}]|\{[^{}]*\})*)\}', content, re.DOTALL)
+            if author_match:
+                preamble_info['author'] = self.clean_latex_content_safe(author_match.group(1))
+
+            date_match = re.search(r'\\date\s*\{((?:[^{}]|\{[^{}]*\})*)\}', content, re.DOTALL)
+            if date_match:
+                preamble_info['date'] = self.clean_latex_content_safe(date_match.group(1))
+
+            institute_match = re.search(r'\\institute\s*\{((?:[^{}]|\{[^{}]*\})*)\}', content, re.DOTALL)
+            if institute_match:
+                preamble_info['institute'] = self.clean_latex_content_safe(institute_match.group(1))
+
+        except Exception as e:
+            self.write(f"Warning: Error extracting preamble info: {str(e)}\n", "yellow")
+
+        return preamble_info
+
+    def enhanced_extract_slides_from_tex_safe(self, content: str) -> list:
+        """Enhanced slide extraction with comprehensive LaTeX feature support and better error handling"""
+        slides = []
+        import re
+
+        try:
+            # First isolate the document body
+            doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', content, re.DOTALL)
+            if not doc_match:
+                self.write("✗ Could not find document body\n", "red")
+                return slides
+
+            document_content = doc_match.group(1)
+
+            # Extract preamble information
+            preamble_info = self.extract_preamble_info_safe(content)
+
+            # Enhanced frame detection with multiple patterns and better handling
+            # Pattern 1: \begin{frame}...\end{frame}
+            frame_pattern = r'\\begin\{frame\}(.*?)\\end\{frame\}'
+
+            all_frames = []
+            try:
+                frames = re.finditer(frame_pattern, document_content, re.DOTALL)
+                all_frames = list(frames)
+            except Exception as e:
+                self.write(f"Warning: Error finding frames with pattern 1: {str(e)}\n", "yellow")
+                # Try alternative pattern
+                try:
+                    # Pattern 2: \frame{...}
+                    frame_pattern2 = r'\\frame\{((?:[^{}]|\{[^{}]*\})*)\}'
+                    frames = re.finditer(frame_pattern2, document_content, re.DOTALL)
+                    all_frames = list(frames)
+                except Exception as e2:
+                    self.write(f"Warning: Error finding frames with pattern 2: {str(e2)}\n", "yellow")
+
+            if not all_frames:
+                self.write("✗ No frames found in document\n", "red")
+                return slides
+
+            self.write(f"Found {len(all_frames)} frames in document\n", "green")
+
+            for i, frame_match in enumerate(all_frames):
+                try:
+                    frame_content = frame_match.group(1) if frame_match.groups() else frame_match.group(0)
+
+                    # Skip title page frames but preserve their content
+                    if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
+                        self.write(f"Processing title frame {i+1}\n", "yellow")
+                        # Extract title page content
+                        title_slide = self.process_title_frame_safe(frame_content, preamble_info)
+                        if title_slide:
+                            slides.append(title_slide)
+                        continue
+
+                    # Extract title
+                    title = ""
+                    # Try frametitle first
+                    ft_match = re.search(r'\\frametitle\s*\{((?:[^{}]|\{[^{}]*\})*)\}', frame_content, re.DOTALL)
+                    if ft_match:
+                        title = self.clean_latex_content_safe(ft_match.group(1))
+
+                    # If no frametitle, check for frame title in options
+                    if not title:
+                        # Check for frame with title option: \begin{frame}{Title}
+                        title_match = re.match(r'^\s*\{((?:[^{}]|\{[^{}]*\})*)\}', frame_content.strip())
+                        if title_match:
+                            title = self.clean_latex_content_safe(title_match.group(1))
+
+                    if not title:
+                        title = f"Slide {i+1}"
+
+                    # Extract framesubtitle
+                    subtitle = ""
+                    subtitle_match = re.search(r'\\framesubtitle\s*\{((?:[^{}]|\{[^{}]*\})*)\}', frame_content, re.DOTALL)
+                    if subtitle_match:
+                        subtitle = self.clean_latex_content_safe(subtitle_match.group(1))
+                        title += f" - {subtitle}"
+
+                    # Extract media including TikZ diagrams
+                    media = self.extract_enhanced_media_from_frame_safe(frame_content)
+
+                    # Extract content with enhanced LaTeX support
+                    content_items = self.extract_enhanced_content_from_frame_safe(frame_content)
+
+                    # Extract notes with proper formatting
+                    notes = self.extract_enhanced_notes_from_frame_safe(frame_content)
+
+                    slide_data = {
+                        'title': title,
+                        'media': media,
+                        'content': content_items,
+                        'notes': notes,
+                        'preamble_info': preamble_info
+                    }
+
+                    slides.append(slide_data)
+                    self.write(f"✓ Processed slide: {title}\n", "green")
+
+                except Exception as e:
+                    self.write(f"✗ Error processing frame {i+1}: {str(e)}\n", "red")
+                    # Add a placeholder slide to maintain slide count
+                    slides.append({
+                        'title': f"Slide {i+1} (Error)",
+                        'media': '',
+                        'content': [f"% Error processing this slide: {str(e)}"],
+                        'notes': [],
+                        'preamble_info': preamble_info
+                    })
+                    continue
+
+            return slides
+
+        except Exception as e:
+            self.write(f"✗ Error in slide extraction: {str(e)}\n", "red")
+            return []
+
+    def clean_latex_content_safe(self, text: str) -> str:
+        """Clean LaTeX content while preserving structure with safer regex handling"""
+        import re
+
+        if not text:
+            return ""
+
+        try:
+            # Remove comments first
+            text = re.sub(r'%.*$', '', text, flags=re.MULTILINE)
+
+            # Replace common LaTeX commands with plain text equivalents
+            # Use raw strings and be careful with backslashes
+            replacements = [
+                (r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1'),  # Remove textcolor
+                (r'~', ' '),  # Replace non-breaking space
+                (r'\\&', '&'),
+                (r'\\%', '%'),
+                (r'\\#', '#'),
+                (r'\\_', '_'),
+                (r'\\ldots', '...'),
+                (r'\\quad', '    '),
+                (r'\\qquad', '        '),
+            ]
+
+            for pattern, replacement in replacements:
+                try:
+                    text = re.sub(pattern, replacement, text)
+                except:
+                    pass  # Skip if pattern causes issues
+
+            # Clean up whitespace
+            text = re.sub(r'\s+', ' ', text)
+            text = text.strip()
+
+            return text
+
+        except Exception as e:
+            self.write(f"Warning: Error cleaning LaTeX content: {str(e)}\n", "yellow")
+            # Return the original text if cleaning fails
+            return text
+
+    def extract_enhanced_media_from_frame_safe(self, frame_content: str) -> str:
+        """Extract media including TikZ diagrams and graphics with safer patterns"""
+        import re
+
+        media_components = []
+
+        try:
+            # Check for graphics with safer pattern
+            graphics_pattern = r'\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}'
+            graphics_matches = re.finditer(graphics_pattern, frame_content)
+            for match in graphics_matches:
+                media_path = match.group(1).strip()
+                media_components.append(f"\\file {media_path}")
+
+            # Check for TikZ environments with safer pattern
+            tikz_pattern = r'\\begin\{tikzpicture\}(.*?)\\end\{tikzpicture\}'
+            tikz_matches = re.finditer(tikz_pattern, frame_content, re.DOTALL)
+            for i, match in enumerate(tikz_matches):
+                tikz_content = match.group(0).strip()
+                # Save TikZ code as a separate file or include it directly
+                filename = f"tikz_diagram_{i+1}.tex"
+                media_components.append(f"% TikZ Diagram {i+1}:\n{tikz_content}")
+
+            # Check for movies/videos
+            movie_pattern = r'\\movie\s*(?:\[[^\]]*\])?\s*\{[^}]*\}\s*\{([^}]+)\}'
+            movie_match = re.search(movie_pattern, frame_content)
+            if movie_match:
+                media_path = movie_match.group(1).strip()
+                media_components.append(f"\\play {media_path}")
+
+            return "\n".join(media_components) if media_components else ""
+
+        except Exception as e:
+            self.write(f"Warning: Error extracting media: {str(e)}\n", "yellow")
+            return ""
+
+    def extract_enhanced_content_from_frame_safe(self, frame_content: str) -> list:
+        """Extract content with enhanced LaTeX feature support and safer patterns"""
+        import re
+
+        content_items = []
+
+        try:
+            # Remove notes and media commands to isolate main content
+            # Use safer patterns that don't cause regex issues
+            clean_content = frame_content
+
+            # Remove note commands
+            clean_content = re.sub(r'\\note\s*\{[^}]*\}', '', clean_content, flags=re.DOTALL)
+
+            # Remove graphics commands
+            clean_content = re.sub(r'\\includegraphics[^}]*\}', '', clean_content)
+
+            # Remove movie commands
+            clean_content = re.sub(r'\\movie[^}]*\}', '', clean_content)
+
+            # Remove TikZ environments
+            clean_content = re.sub(r'\\begin\{tikzpicture\}.*?\\end\{tikzpicture\}', '', clean_content, flags=re.DOTALL)
+
+            # Extract blocks with safer patterns
+            block_patterns = [
+                (r'\\begin\{block\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}(.*?)\\end\{block\}', 'block'),
+                (r'\\begin\{example\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}(.*?)\\end\{example\}', 'example'),
+                (r'\\begin\{alertblock\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}(.*?)\\end\{alertblock\}', 'alertblock'),
+                (r'\\begin\{columns\}(.*?)\\end\{columns\}', 'columns')
+            ]
+
+            for pattern, block_type in block_patterns:
+                try:
+                    blocks = re.finditer(pattern, clean_content, re.DOTALL)
+                    for block in blocks:
+                        if block_type == 'columns':
+                            # Process columns environment
+                            columns_content = self.process_columns_environment_safe(block.group(1))
+                            content_items.extend(columns_content)
+                        else:
+                            title = self.clean_latex_content_safe(block.group(1))
+                            content = self.clean_latex_content_safe(block.group(2))
+                            content_items.append(f"\\begin{{{block_type}}}{{{title}}}")
+                            content_items.extend(self.process_block_content_safe(content))
+                            content_items.append(f"\\end{{{block_type}}}")
+                except:
+                    continue  # Skip if pattern causes issues
+
+            # Extract items from itemize and enumerate environments with safer patterns
+            list_environments = ['itemize', 'enumerate']
+            for env in list_environments:
+                try:
+                    env_pattern = f'\\\\begin\\{{{env}\\}}(.*?)\\\\end\\{{{env}\\}}'
+                    env_matches = re.finditer(env_pattern, clean_content, re.DOTALL)
+                    for match in env_matches:
+                        env_content = match.group(1)
+                        item_pattern = r'\\item\s*(.*?)(?=\\item|\\end\{' + env + r'\}|$)'
+                        items = re.finditer(item_pattern, env_content, re.DOTALL)
+                        for item in items:
+                            item_text = self.clean_latex_content_safe(item.group(1).strip())
+                            if item_text:
+                                content_items.append(f"- {item_text}")
+                except:
+                    continue
+
+            # Extract standalone equations with safer pattern
+            try:
+                equation_pattern = r'\\\[(.*?)\\\]'
+                equation_matches = re.finditer(equation_pattern, clean_content, re.DOTALL)
+                for match in equation_matches:
+                    equation = match.group(1).strip()
+                    content_items.append(f"\\[{equation}\\]")
+            except:
+                pass
+
+            # Extract inline math and other content
+            paragraphs = re.split(r'\n\s*\n', clean_content)
+            for paragraph in paragraphs:
+                paragraph = paragraph.strip()
+                if paragraph and not any(env in paragraph for env in ['block', 'example', 'alertblock', 'columns', 'itemize', 'enumerate']):
+                    # Clean up the paragraph but preserve LaTeX commands
+                    paragraph = self.preserve_latex_commands_safe(paragraph)
+                    if paragraph and len(paragraph) > 3:
+                        content_items.append(paragraph)
+
+            return content_items
+
+        except Exception as e:
+            self.write(f"Warning: Error extracting content: {str(e)}\n", "yellow")
+            return ["% Error extracting content from this slide"]
+
+    def preserve_latex_commands_safe(self, text: str) -> str:
+        """Clean text while preserving important LaTeX commands with safer patterns"""
+        import re
+
+        try:
+            # Preserve math environments with safer patterns
+            text = re.sub(r'\\\[(.*?)\\\]', r'\\[\1\\]', text, flags=re.DOTALL)
+            text = re.sub(r'\\\((.*?)\\\)', r'\\(\1\\)', text, flags=re.DOTALL)
+
+            # Preserve text formatting commands with safer patterns
+            commands_to_preserve = ['textbf', 'textit', 'emph', 'mathbb', 'mathcal', 'bm']
+            for cmd in commands_to_preserve:
+                pattern = f'\\\\{cmd}\\{{((?:[^{{}}]|\\{{[^{{}}]*\\}})*)\\}}'
+                try:
+                    text = re.sub(pattern, f'\\\\{cmd}{{\\1}}', text, flags=re.DOTALL)
+                except:
+                    pass  # Skip if pattern causes issues
+
+            # Clean up extra whitespace but preserve command structure
+            text = re.sub(r'\s+', ' ', text)
+
+            return text.strip()
+
+        except Exception as e:
+            self.write(f"Warning: Error preserving LaTeX commands: {str(e)}\n", "yellow")
+            return text
 
     def extract_media_from_frame(self, frame_content: str) -> str:
         """Extract media references from frame content"""

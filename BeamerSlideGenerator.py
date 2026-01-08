@@ -3123,6 +3123,173 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
             ide_callback("error", {'message': error_msg})
         return processed, failed, errors
 
+#----------------------------------------------------------------------
+# NEW FUNCTIONS FOR LATEX-TO-NATIVE CONVERSION
+#----------------------------------------------------------------------
+
+def clean_latex_for_extraction(latex_line):
+    """Extract readable text from LaTeX commands"""
+    if not latex_line:
+        return ""
+
+    # Remove LaTeX commands but keep their arguments
+    import re
+
+    # Replace common formatting commands
+    cleaned = latex_line
+
+    # Remove \textbf{}, \textit{}, etc. but keep content
+    commands_to_remove = [
+        r'\\textbf\{(.*?)\}',
+        r'\\textit\{(.*?)\}',
+        r'\\emph\{(.*?)\}',
+        r'\\texttt\{(.*?)\}',
+        r'\\url\{(.*?)\}',
+        r'\\href\{.*?\}\{(.*?)\}',
+        r'\\footnote\{.*?\}',
+        r'\\cite\{.*?\}',
+        r'\\label\{.*?\}',
+        r'\\ref\{.*?\}',
+    ]
+
+    for pattern in commands_to_remove:
+        cleaned = re.sub(pattern, r'\1', cleaned)
+
+    # Remove remaining LaTeX commands (single backslash)
+    cleaned = re.sub(r'\\[a-zA-Z]+\*?(?:\[.*?\])?(?:\{.*?\})*', '', cleaned)
+
+    # Clean up math mode markers
+    cleaned = cleaned.replace('$', '')
+
+    # Remove extra spaces
+    cleaned = ' '.join(cleaned.split())
+
+    return cleaned.strip()
+
+
+def extract_slides_from_tex(tex_content):
+    """Extract slides from standard LaTeX Beamer file"""
+    slides = []
+    lines = tex_content.split('\n')
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Look for frame beginnings
+        if line.startswith(r'\begin{frame'):
+            slide = {
+                'title': '',
+                'content': [],
+                'images': [],
+                'raw_latex': []
+            }
+
+            # Extract frame options if any
+            frame_start = i
+
+            # Look for frametitle
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith(r'\end{frame}'):
+                frame_line = lines[j].strip()
+
+                # Capture frametitle
+                if frame_line.startswith(r'\frametitle{'):
+                    title_start = frame_line.find('{') + 1
+                    title_end = frame_line.rfind('}')
+                    slide['title'] = frame_line[title_start:title_end]
+                # Capture images
+                elif r'\includegraphics' in frame_line:
+                    # Extract image path
+                    import re
+                    img_match = re.search(r'\\includegraphics(?:\[.*?\])?\{(.*?)\}', frame_line)
+                    if img_match:
+                        slide['images'].append(img_match.group(1))
+                # Capture content (excluding commands)
+                elif frame_line and not frame_line.startswith('%'):
+                    # Clean up LaTeX commands for text extraction
+                    cleaned = clean_latex_for_extraction(frame_line)
+                    if cleaned:
+                        slide['content'].append(cleaned)
+
+                slide['raw_latex'].append(frame_line)
+                j += 1
+
+            # Store the slide
+            if slide['title'] or slide['content']:
+                slides.append(slide)
+
+            i = j + 1  # Skip past \end{frame}
+        else:
+            i += 1
+
+    return slides
+
+
+def convert_slides_to_native_format(slides, output_file):
+    """Convert extracted slides to native format"""
+    with open(output_file, 'w') as f:
+        # Write header for native format
+        f.write("# Extracted from LaTeX Beamer file\n")
+        f.write("# Converted to native format\n\n")
+
+        for i, slide in enumerate(slides, 1):
+            f.write(f"\\title {slide['title'] or f'Slide {i}'}\n")
+
+            # Handle images - convert to native format
+            if slide['images']:
+                # For multiple images, use mosaic or stack layout
+                if len(slide['images']) > 1:
+                    images_str = '; '.join(slide['images'])
+                    f.write(f"\\begin{{Content}} \\mosaic {images_str}\n")
+                else:
+                    f.write(f"\\begin{{Content}} \\file {slide['images'][0]}\n")
+            else:
+                f.write("\\begin{Content} \\None\n")
+
+            # Write content items
+            for item in slide['content']:
+                if item:  # Skip empty lines
+                    f.write(f"- {item}\n")
+
+            f.write("\\end{Content}\n\n")
+
+
+def convert_tex_to_native(input_tex_file, output_native_file):
+    """Main conversion function from LaTeX to native format"""
+    print(f"Converting {input_tex_file} to native format...")
+
+    try:
+        # Read the LaTeX file
+        with open(input_tex_file, 'r', encoding='utf-8') as f:
+            tex_content = f.read()
+
+        # Extract slides
+        slides = extract_slides_from_tex(tex_content)
+
+        if not slides:
+            print("No slides found in the LaTeX file.")
+            return False
+
+        print(f"Found {len(slides)} slides")
+
+        # Convert to native format
+        convert_slides_to_native_format(slides, output_native_file)
+
+        print(f"Successfully converted to {output_native_file}")
+        print("\nNext steps:")
+        print("1. Review the converted file")
+        print("2. Add any missing media (images might need to be in media_files folder)")
+        print("3. Run the normal processing on the native file")
+
+        return True
+
+    except Exception as e:
+        print(f"Error during conversion: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def ensure_inline_images_in_content(content):
     """Ensure inline images are processed in content before frame generation"""
     if not content:
@@ -3207,7 +3374,8 @@ def main():
     print("Choose an option:")
     print("1. Process a single media URL (appends to movie.tex)")
     print("2. Process multiple media files from an input file (creates new .tex file)")
-    choice = input("Enter your choice (1 or 2): ")
+    print("3. Convert existing LaTeX Beamer file to native format")
+    choice = input("Enter your choice (1, 2, or 3): ")
 
     if choice == '1':
         url = input("Enter the media URL or local file (local:filename): ").strip()
@@ -3251,8 +3419,23 @@ def main():
         output_file = os.path.splitext(os.path.basename(file_path))[0] + '.tex'
         process_input_file(file_path, output_file)
         print(f"All slides have been written to '{output_file}'.")
+
+    elif choice == '3':
+        input_file = input("Enter path to LaTeX Beamer file: ").strip()
+        if not os.path.exists(input_file):
+            print(f"File {input_file} not found!")
+            return
+
+        # Generate output filename
+        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        output_file = f"{base_name}_converted.txt"
+
+        if convert_tex_to_native(input_file, output_file):
+            print(f"\nConversion complete!")
+            print(f"You can now edit {output_file} and process it with option 2")
+
     else:
-        print("Invalid choice. Please run the script again and choose 1 or 2.")
+        print("Invalid choice. Please run the script again and choose 1, 2, or 3.")
 
 
 if __name__ == "__main__":
