@@ -276,12 +276,11 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{tikz}
 \usetikzlibrary{arrows, shapes, positioning, calc, patterns, decorations.pathreplacing, 3d}
 \usepackage{amsmath, amssymb, bm}
-\graphicspath{ {./images/} }                                            #----------------------Graphics path set to images
+\graphicspath{ {./images/} }
 \usepackage{amssymb}  % For mathematical symbols
 % Define the style for covered text
 \setbeamercovered{dynamic} % This should enable progressive transparency
 \setbeamerfont{item projected}{size=\small}
-%------------------Chenge these options as required for fg text colour in \pause directives--------------------
 %\setbeamercolor{alerted text}{fg=blue}        % Standard blue
 %\setbeamercolor{alerted text}{fg=darkblue}    % Darker blue
 %\setbeamercolor{alerted text}{fg=violet}      % Violet
@@ -289,7 +288,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 %\setbeamercolor{alerted text}{fg=olive}       % Olive green
 %\setbeamercolor{alerted text}{fg=teal}        % Teal
 \setbeamercolor{alerted text}{fg=white}        % white
-#----------------------------------
 % Extended packages with fallbacks
 \IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
 \IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
