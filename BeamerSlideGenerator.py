@@ -244,413 +244,6 @@ def process_inline_images(content_line):
 
     print(f"process_inline_images OUTPUT: {processed_line}")  # DEBUG
     return processed_line
-def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
-    """Returns complete Beamer preamble including notes support"""
-
-    core_preamble = r"""
-\documentclass[aspectratio=169]{beamer}
-
-% Essential packages (core)
-\usepackage{hyperref}
-\usepackage{graphicx}
-\usepackage{amsmath}
-\usepackage{tikz}
-\usepackage{pgfplots}
-\usepackage{xstring}
-\usepackage{animate}
-\usepackage{multimedia}
-\usepackage{xifthen}
-\usepackage{xcolor}
-\usepackage[utf8]{inputenc}
-\usepackage{textcomp}
-\usepackage{graphicx}
-\usepackage{adjustbox}
-\usetheme{Madrid}
-\usepackage{tikz-3dplot}
-\usepackage{amsmath}
-\usepackage{amssymb}
-\usepackage{graphicx}
-\usepackage{bm}
-\usetheme{Madrid}
-\usecolortheme{seahorse}
-\usepackage{tikz}
-\usetikzlibrary{arrows, shapes, positioning, calc, patterns, decorations.pathreplacing, 3d}
-\usepackage{amsmath, amssymb, bm}
-\graphicspath{ {./images/} }
-\usepackage{amssymb}  % For mathematical symbols
-% Define the style for covered text
-\setbeamercovered{dynamic} % This should enable progressive transparency
-\setbeamerfont{item projected}{size=\small}
-%\setbeamercolor{alerted text}{fg=blue}        % Standard blue
-%\setbeamercolor{alerted text}{fg=darkblue}    % Darker blue
-%\setbeamercolor{alerted text}{fg=violet}      % Violet
-%\setbeamercolor{alerted text}{fg=purple}      % Purple
-%\setbeamercolor{alerted text}{fg=olive}       % Olive green
-%\setbeamercolor{alerted text}{fg=teal}        % Teal
-\setbeamercolor{alerted text}{fg=white}        % white
-% Extended packages with fallbacks
-\IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
-\IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
-\IfFileExists{pifont.sty}{\usepackage{pifont}}{}
-\IfFileExists{soul.sty}{\usepackage{soul}}{}
-
-% Package configurations
-\pgfplotsset{compat=1.18}
-\usetikzlibrary{shadows.blur, shapes.geometric, positioning, arrows.meta, backgrounds, fit}
-
-% Original text effects
-\newcommand{\shadowtext}[2][2pt]{%
-   \begin{tikzpicture}[baseline]
-       \node[blur shadow={shadow blur steps=5,shadow xshift=0pt,shadow yshift=-#1,
-             shadow opacity=0.75}, text=white] {#2};
-   \end{tikzpicture}%
-}
-
-\newcommand{\glowtext}[2][myblue]{%
-   \begin{tikzpicture}[baseline]
-       \node[circle, inner sep=1pt,
-             blur shadow={shadow blur steps=10,shadow xshift=0pt,
-             shadow yshift=0pt,shadow blur radius=5pt,
-             shadow opacity=0.5,shadow color=#1},
-             text=white] {#2};
-   \end{tikzpicture}%
-}
-
-% Conditional definitions based on package availability
-\IfFileExists{tcolorbox.sty}{%
-    \newtcolorbox{alertbox}[1][red]{%
-        colback=#1!5!white,
-        colframe=#1!75!black,
-        fonttitle=\bfseries,
-        boxrule=0.5pt,
-        rounded corners,
-        shadow={2mm}{-1mm}{0mm}{black!50}
-    }
-
-    \newtcolorbox{infobox}[1][blue]{%
-        enhanced,
-        colback=#1!5!white,
-        colframe=#1!75!black,
-        arc=4mm,
-        boxrule=0.5pt,
-        fonttitle=\bfseries,
-        attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
-        boxed title style={size=small,colback=#1!75!black},
-        shadow={2mm}{-1mm}{0mm}{black!50}
-    }
-}{}
-% Coloured block begins
-% Card-style block definitions with borders and shadows
-\setbeamercolor{block title}{fg=white,bg=myblue!80!black}
-\setbeamercolor{block body}{fg=white,bg=black!95}
-
-\setbeamercolor{block title example}{fg=white,bg=mygreen!80!black}
-\setbeamercolor{block body example}{fg=white,bg=black!95}
-
-\setbeamercolor{block title alerted}{fg=white,bg=myred!80!black}
-\setbeamercolor{block body alerted}{fg=white,bg=black!95}
-
-% Card-style block template with border and shadow
-\setbeamertemplate{block begin}{
-  \vskip1.5ex
-  \begin{beamercolorbox}[
-      rounded=4pt,                    % More rounded corners for card look
-      leftskip=1.2ex,
-      colsep*=1ex,
-      shadow={0mm}{-2mm}{6mm}{black!70},  % Main shadow
-      shadow={1mm}{-1mm}{3mm}{black!40},  % Secondary shadow
-      line width=1.5pt,               % Border width
-      draw=myblue!60!white,           % Border color
-      fill=myblue!80!black            % Background color
-    ]{block title}
-    \usebeamerfont*{block title}\insertblocktitle
-  \end{beamercolorbox}
-  {\nointerlineskip\vskip-1pt}        % Remove gap between title and body
-  \begin{beamercolorbox}[
-      rounded=4pt,
-      leftskip=1.2ex,
-      rightskip=1.2ex,
-      colsep*=1ex,
-      shadow={0mm}{-2mm}{8mm}{black!60},
-      shadow={1mm}{-1mm}{4mm}{black!30},
-      line width=1.5pt,
-      draw=black!40,                  % Subtle border for body
-      fill=black!95                   % Slightly off-black background
-    ]{block body}
-    \vskip1ex
-    \usebeamerfont{block body}
-}
-
-\setbeamertemplate{block end}{
-  \vskip1ex
-  \end{beamercolorbox}
-  \vskip2ex
-}
-
-% Custom colored card block
-\newenvironment<>{coloredblock}[2][myblue]{%
-  \begin{actionenv}#3%
-  \def\insertblocktitle{#2}%
-  \par%
-  \mode<presentation>{%
-    \setbeamercolor{block title}{fg=white,bg=#1!80!black}
-    \setbeamercolor{block body}{fg=white,bg=black!95}
-  }%
-  \usebeamertemplate{block begin}}
-  {\par\usebeamertemplate{block end}\end{actionenv}}
-
-% Premium card block with enhanced styling
-\newenvironment<>{cardblock}[2][myblue]{%
-  \begin{actionenv}#3%
-  \def\insertblocktitle{#2}%
-  \par%
-  \mode<presentation>{%
-    \setbeamercolor{block title}{fg=white,bg=#1!90!black}
-    \setbeamercolor{block body}{fg=white,bg=black!92}
-  }%
-  % Title with enhanced border
-  \begin{beamercolorbox}[
-      rounded=5pt,
-      leftskip=1.5ex,
-      colsep*=1.2ex,
-      shadow={0mm}{-3mm}{8mm}{#1!50},
-      shadow={2mm}{-2mm}{5mm}{#1!30},
-      line width=2pt,
-      draw=#1!40!white,
-      fill=#1!90!black
-    ]{block title}
-    \usebeamerfont*{block title}\textbf{\large\insertblocktitle}
-  \end{beamercolorbox}
-  {\nointerlineskip\vskip-1.5pt}
-  % Body with matching border
-  \begin{beamercolorbox}[
-      rounded=5pt,
-      leftskip=1.5ex,
-      rightskip=1.5ex,
-      colsep*=1.2ex,
-      shadow={0mm}{-3mm}{10mm}{black!50},
-      shadow={2mm}{-2mm}{6mm}{black!25},
-      line width=2pt,
-      draw=#1!20!white,
-      fill=black!92
-    ]{block body}
-    \vskip1.2ex
-    \usebeamerfont{block body}}
-  {\vskip1.2ex\end{beamercolorbox}\end{actionenv}}
-
-% Minimal card block for subtle emphasis
-\newenvironment<>{minimalcard}[2][myblue]{%
-  \begin{actionenv}#3%
-  \def\insertblocktitle{#2}%
-  \par%
-  \mode<presentation>{%
-    \setbeamercolor{block title}{fg=white,bg=#1!70!black}
-    \setbeamercolor{block body}{fg=white,bg=black!97}
-  }%
-  \begin{beamercolorbox}[
-      rounded=3pt,
-      leftskip=1ex,
-      colsep*=0.8ex,
-      shadow={0mm}{-1mm}{4mm}{black!40},
-      line width=1pt,
-      draw=#1!30!white,
-      fill=#1!70!black
-    ]{block title}
-    \usebeamerfont*{block title}\insertblocktitle
-  \end{beamercolorbox}
-  {\nointerlineskip\vskip-0.8pt}
-  \begin{beamercolorbox}[
-      rounded=3pt,
-      leftskip=1ex,
-      rightskip=1ex,
-      colsep*=0.8ex,
-      shadow={0mm}{-1mm}{5mm}{black!30},
-      line width=1pt,
-      draw=black!30,
-      fill=black!97
-    ]{block body}
-    \vskip0.8ex
-    \usebeamerfont{block body}}
-  {\vskip0.8ex\end{beamercolorbox}\end{actionenv}}
-
-
-% Coloured block ends
-
-% Define colors
-
-\definecolor{myred}{RGB}{255,50,50}
-\definecolor{myblue}{RGB}{0,130,255}
-\definecolor{mygreen}{RGB}{0,200,100}
-\definecolor{myyellow}{RGB}{255,210,0}
-\definecolor{myorange}{RGB}{255,130,0}
-\definecolor{mypurple}{RGB}{147,112,219}
-\definecolor{mypink}{RGB}{255,105,180}
-\definecolor{myteal}{RGB}{0,128,128}
-
-% Glow colors
-\definecolor{glowblue}{RGB}{0,150,255}
-\definecolor{glowyellow}{RGB}{255,223,0}
-\definecolor{glowgreen}{RGB}{0,255,128}
-\definecolor{glowpink}{RGB}{255,182,193}
-
-% Special effect support
-\usetikzlibrary{shadows.blur}
-\usetikzlibrary{decorations.text}
-\usetikzlibrary{fadings}
-
-% Basic highlighting commands
-\newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
-\newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
-\newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
-\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textcolor{white}{\textbf{#1}}}}
-\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textcolor{white}{\textbf{#1}}}}
-
-% Basic theme setup
-\usetheme{Madrid}
-\usecolortheme{owl}
-
-% Color settings
-\setbeamercolor{normal text}{fg=white}
-\setbeamercolor{structure}{fg=myyellow}
-\setbeamercolor{alerted text}{fg=myorange}
-\setbeamercolor{example text}{fg=mygreen}
-\setbeamercolor{background canvas}{bg=black}
-\setbeamercolor{frametitle}{fg=white,bg=black}
-
-% Notes support
-\usepackage{pgfpages}
-\setbeameroption{show notes on second screen=right}
-\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
-
-
-% Animated background support
-\newcommand{\anbg}[2][0.2]{%
-    \ifx\@empty#2\@empty
-        % Clear background if empty argument
-        \setbeamertemplate{background}{}
-    \else
-        % Set animated background
-        \setbeamertemplate{background}{%
-            \begin{tikzpicture}[remember picture,overlay]
-                \node[opacity=#1] at (current page.center) {%
-                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
-                };
-            \end{tikzpicture}%
-        }
-    \fi
-}
-"""
-   # Progress bar template
-    frame_setup = r"""
-% Progress bar setup
-\makeatletter
-\def\progressbar@progressbar{}
-\newcount\progressbar@tmpcounta
-\newcount\progressbar@tmpcountb
-\newdimen\progressbar@pbht
-\newdimen\progressbar@pbwd
-\newdimen\progressbar@tmpdim
-
-\progressbar@pbwd=\paperwidth
-\progressbar@pbht=1pt
-
-\def\progressbar@progressbar{%
-   \begin{tikzpicture}[very thin]
-       \shade[top color=myblue!50,bottom color=myblue]
-           (0pt, 0pt) rectangle (\insertframenumber\progressbar@pbwd/\inserttotalframenumber, \progressbar@pbht);
-   \end{tikzpicture}%
-}
-
-% Modified frame title template
-\setbeamertemplate{frametitle}{
-   \nointerlineskip
-   \vskip1ex
-   \begin{beamercolorbox}[wd=\paperwidth,ht=4ex,dp=2ex]{frametitle}
-       \begin{minipage}[t]{\dimexpr\paperwidth-4em}
-           \centering
-           \vspace{2pt}
-           \insertframetitle
-           \vspace{2pt}
-       \end{minipage}
-   \end{beamercolorbox}
-   \vskip.5ex
-   \progressbar@progressbar
-}
-\makeatother"""
-
-   # Institution setup
-    inst_setup = rf"\makeatletter{chr(10)}\def\insertshortinstitute{{{short_institute if short_institute else institution}}}{chr(10)}\makeatother"
-
-   # Footline template
-    footline_template = r"""
-% Footline template
-\setbeamertemplate{footline}{%
- \leavevmode%
- \hbox{%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
-     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
-   \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
-     \usebeamerfont{title in head/foot}\insertshorttitle%
-   \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
-     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
-     \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
-   \end{beamercolorbox}}%
- \vskip0pt%
-}"""
-
-   # Additional settings
-    additional_settings = r"""
-% Additional settings
-\setbeamersize{text margin left=5pt,text margin right=5pt}
-\setbeamertemplate{navigation symbols}{}
-\setbeamertemplate{blocks}[rounded][shadow=true]"""
-
-    title_setup = (
-       "% Title setup\n"
-       "\\title{" + title + "}\n"
-       + ("\\subtitle{" + subtitle + "}\n" if subtitle else "") +
-       "\\author{" + author + "}\n"
-       "\\institute{\\textcolor{mygreen}{" + institution + "}}\n"
-       "\\date{" + date + "}\n"
-       "\\begin{document}\n"
-       "\\maketitle\n"
-    )
-
-    # Title page template
-    title_page = (
-       "% Title page\n"
-       "\\begin{frame}[plain]\n"
-       "   \\begin{tikzpicture}[overlay,remember picture]\n"
-       "       % Background gradient\n"
-       "       \\fill[top color=black!90,bottom color=black!70,middle color=myblue!30]\n"
-       "       (current page.south west) rectangle (current page.north east);\n"
-       "       % Title with glow effect\n"
-       "       \\node[align=center] at (current page.center) {\n"
-       "           \\glowtext[glowblue]{\\Huge\\textbf{" + title + "}}\n"
-       + ("           \\\\[1em]\\glowtext[glowyellow]{\\large " + subtitle + "}\n" if subtitle else "") +
-       "           \\\\[2em]\n"
-       "           \\glowtext[glowgreen]{\\large " + author + "}\n"
-       "           \\\\[0.5em]\n"
-       "           \\textcolor{white}{\\small " + institution + "}\n"
-       "           \\\\[1em]\n"
-       "           \\textcolor{white}{\\small " + date + "}\n"
-       "       };\n"
-       "   \\end{tikzpicture}\n"
-       "\\end{frame}"
-    )
-
-   # Combine all parts
-    return "\n".join([
-       core_preamble,
-       frame_setup,
-       inst_setup,
-       footline_template,
-       additional_settings,
-       title_setup,
-       title_page
-   ])
 
 def get_footline_template():
     """
@@ -826,64 +419,6 @@ def create_new_input_file(file_path):
         print("\nNo slides created.")
         return False
 
-def detect_preamble(lines):
-    """
-    Detects if the input file has a complete preamble by checking for key commands.
-    Now also checks for short institution name.
-    """
-    has_author = False
-    has_institute = False
-    has_title = False
-    has_begin_document = False
-    has_titlepage = False
-    has_maketitle = False
-    has_short_institute = False
-    preamble_end_idx = -1
-
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if '\\author{' in line:
-            has_author = True
-        if '\\institute{' in line:
-            has_institute = True
-        if '\\instituteShort{' in line or '\\def\\insertshortinstitute{' in line:
-            has_short_institute = True
-        if '\\title{' in line and not line.startswith('\\title '):
-            has_title = True
-        if '\\begin{document}' in line:
-            has_begin_document = True
-            preamble_end_idx = i
-            break
-
-    # If we have a long institution name but no short version, suggest adding one
-    if has_institute and not has_short_institute:
-        # Find the institution line to check its length
-        for line in lines[:preamble_end_idx] if preamble_end_idx >= 0 else lines:
-            if '\\institute{' in line:
-                inst_text = line[line.find('{')+1:line.rfind('}')]
-                if len(inst_text) > 50:  # threshold for suggesting short name
-                    print("\nWarning: Long institution name detected.")
-                    print("Consider adding a short version using \\instituteShort{} or modifying the footline template.")
-                break
-
-    # Check for titlepage and maketitle after \begin{document}
-    if preamble_end_idx >= 0:
-        for i in range(preamble_end_idx + 1, min(preamble_end_idx + 10, len(lines))):
-            if '\\titlepage' in lines[i]:
-                has_titlepage = True
-            if '\\maketitle' in lines[i]:
-                has_maketitle = True
-
-    has_preamble = has_author and has_institute and has_title and has_begin_document
-
-    if has_preamble:
-        preamble_lines = lines[:preamble_end_idx + 1]
-        content_lines = lines[preamble_end_idx + 1:]
-    else:
-        preamble_lines = []
-        content_lines = lines
-
-    return has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle
 #---------------------------------------------------------------------------------------------------------
 
 def sanitize_filename(filename, max_length=50):
@@ -2855,106 +2390,6 @@ def update_input_file(file_path, url_updates, is_tex_file=False):
         print(f"Error updating file: {str(e)}")
         return False
 
-def parse_media_directive(directive_string):
-    """Parse media directive string into components.
-    Returns: (directive_type, media_source, playable, original_directive)"""
-    try:
-        directive_string = directive_string.strip()
-        playable = False
-        original_directive = directive_string
-
-        # Handle empty or None cases
-        if not directive_string or directive_string == '\\None':
-            return 'none', None, False, original_directive
-
-        # Define directive mappings
-        directives = {
-            '\\wm': 'watermark',
-            '\\ff': 'fullframe',
-            '\\pip': 'pip',
-            '\\split': 'split',
-            '\\hl': 'highlight',
-            '\\bg': 'background',
-            '\\tb': 'topbottom',
-            '\\ol': 'overlay',
-            '\\corner': 'corner',
-            '\\mosaic': 'mosaic',
-            '\\stack': 'stack'  # Stack layout for vertical images
-        }
-
-        # DEBUG
-        print(f"DEBUG parse_media_directive: parts={directive_string.split()}")
-
-        # Check for layout directives first
-        for directive_key, directive_type in directives.items():
-            if directive_string.startswith(directive_key):
-                media_source = directive_string[len(directive_key):].strip()
-                print(f"DEBUG: Found layout directive: {directive_type}, media_source: '{media_source}'")
-                return directive_type, media_source, False, original_directive
-
-        # Initialize variables for other directives
-        directive_type = 'url'  # default type
-        media_source = directive_string  # default to full string
-
-        # Process standard directives
-        parts = directive_string.split()
-        for i, part in enumerate(parts):
-            if part.startswith('\\'):
-                if part == '\\play':
-                    playable = True
-                    if i < len(parts) - 1:
-                        remaining_parts = parts[i + 1:]
-                        if remaining_parts[0] == '\\file':
-                            directive_type = 'file'
-                            media_source = ' '.join(remaining_parts[1:])
-                        elif remaining_parts[0] == '\\url':
-                            directive_type = 'url'
-                            media_source = ' '.join(remaining_parts[1:])
-                        else:
-                            media_source = ' '.join(remaining_parts)
-                    break
-                elif part == '\\file':
-                    directive_type = 'file'
-                    if i < len(parts) - 1:
-                        media_source = ' '.join(parts[i + 1:])
-                    break
-                elif part == '\\None':
-                    return 'none', None, False, original_directive
-                elif part == '\\url':
-                    directive_type = 'url'
-                    if i < len(parts) - 1:
-                        media_source = ' '.join(parts[i + 1:])
-                    break
-
-        # Clean up media source
-        if media_source and media_source.startswith('\\'):
-            # Remove any leading \ and command name
-            parts = media_source.split(maxsplit=1)
-            if len(parts) > 1:
-                media_source = parts[1]
-
-        # Handle special URLs
-        if directive_type == 'url' and media_source.startswith(('http://', 'https://')):
-            # Special handling for known video platforms
-            if any(domain in media_source.lower() for domain in ['youtube.com', 'youtu.be', 'vimeo.com']):
-                playable = True
-
-        # Handle local file paths
-        if directive_type == 'file':
-            # Check if it's a video file
-            if media_source.lower().endswith(('.mp4', '.avi', '.mov', '.webm', '.mkv')):
-                playable = True
-            # Ensure proper path format
-            media_source = media_source.replace('\\', '/')
-            if not media_source.startswith('media_files/') and not media_source.startswith('./'):
-                media_source = f"media_files/{media_source}"
-
-        return directive_type, media_source, playable, original_directive
-
-    except Exception as e:
-        print(f"Error parsing media directive: {str(e)}")
-        return 'none', None, False, directive_string
-
 def generate_special_commands():
     """Generate special effect commands for LaTeX"""
     return r"""
@@ -3013,38 +2448,636 @@ def format_url_note(url):
 
 
 #------------------------------------------------------
+def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
+    """Returns complete Beamer preamble including notes support"""
+
+    core_preamble = r"""
+\documentclass[aspectratio=169]{beamer}
+
+% Essential packages (core)
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{xstring}
+\usepackage{animate}
+\usepackage{multimedia}
+\usepackage{xifthen}
+\usepackage{xcolor}
+\usepackage[utf8]{inputenc}
+\usepackage{textcomp}
+\usepackage{adjustbox}
+\usepackage{tikz-3dplot}
+\usepackage{amssymb}
+\usepackage{bm}
+\usetheme{Madrid}
+\usecolortheme{seahorse}
+\usetikzlibrary{arrows, shapes, positioning, calc, patterns, decorations.pathreplacing, 3d}
+\graphicspath{ {./images/} {./media_files/} }
+% Define the style for covered text
+\setbeamercovered{dynamic} % This should enable progressive transparency
+\setbeamerfont{item projected}{size=\small}
+\setbeamercolor{alerted text}{fg=white}        % white
+
+% Extended packages with fallbacks
+\IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
+\IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
+\IfFileExists{pifont.sty}{\usepackage{pifont}}{}
+\IfFileExists{soul.sty}{\usepackage{soul}}{}
+
+% Package configurations
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{shadows.blur, shapes.geometric, positioning, arrows.meta, backgrounds, fit}
+
+% FIXED: Original text effects with correct TikZ syntax
+\newcommand{\shadowtext}[2][2pt]{%
+   \begin{tikzpicture}[baseline]
+       \node[blur shadow={shadow blur steps=5, shadow xshift=0pt, shadow yshift=-#1,
+             shadow opacity=0.75}, fill=black!80, text=white, inner sep=2pt, rounded corners=2pt] {#2};
+   \end{tikzpicture}%
+}
+
+\newcommand{\glowtext}[2][myblue]{%
+   \begin{tikzpicture}[baseline]
+       \node[circle, inner sep=1pt, fill=#1!80,
+             blur shadow={shadow blur steps=10, shadow xshift=0pt,
+             shadow yshift=0pt, shadow blur radius=5pt,
+             shadow opacity=0.5}, text=white] {#2};
+   \end{tikzpicture}%
+}
+
+% Conditional definitions based on package availability
+\IfFileExists{tcolorbox.sty}{%
+    \newtcolorbox{alertbox}[1][red]{%
+        colback=#1!5!white,
+        colframe=#1!75!black,
+        fonttitle=\bfseries,
+        boxrule=0.5pt,
+        rounded corners,
+        shadow={2mm}{-1mm}{0mm}{black!50}
+    }
+
+    \newtcolorbox{infobox}[1][blue]{%
+        enhanced,
+        colback=#1!5!white,
+        colframe=#1!75!black,
+        arc=4mm,
+        boxrule=0.5pt,
+        fonttitle=\bfseries,
+        attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
+        boxed title style={size=small,colback=#1!75!black},
+        shadow={2mm}{-1mm}{0mm}{black!50}
+    }
+}{}
+
+% Coloured block begins
+% Card-style block definitions with borders and shadows
+\definecolor{myred}{RGB}{255,50,50}
+\definecolor{myblue}{RGB}{0,130,255}
+\definecolor{mygreen}{RGB}{0,200,100}
+\definecolor{myyellow}{RGB}{255,210,0}
+\definecolor{myorange}{RGB}{255,130,0}
+\definecolor{mypurple}{RGB}{147,112,219}
+\definecolor{mypink}{RGB}{255,105,180}
+\definecolor{myteal}{RGB}{0,128,128}
+
+% Glow colors
+\definecolor{glowblue}{RGB}{0,150,255}
+\definecolor{glowyellow}{RGB}{255,223,0}
+\definecolor{glowgreen}{RGB}{0,255,128}
+\definecolor{glowpink}{RGB}{255,182,193}
+
+\setbeamercolor{block title}{fg=white,bg=myblue!80!black}
+\setbeamercolor{block body}{fg=white,bg=black!95}
+
+\setbeamercolor{block title example}{fg=white,bg=mygreen!80!black}
+\setbeamercolor{block body example}{fg=white,bg=black!95}
+
+\setbeamercolor{block title alerted}{fg=white,bg=myred!80!black}
+\setbeamercolor{block body alerted}{fg=white,bg=black!95}
+
+% Card-style block template with border and shadow
+\setbeamertemplate{block begin}{
+  \vskip1.5ex
+  \begin{beamercolorbox}[
+      rounded=4pt,                    % More rounded corners for card look
+      leftskip=1.2ex,
+      colsep*=1ex,
+      shadow={0mm}{-2mm}{6mm}{black!70},  % Main shadow
+      shadow={1mm}{-1mm}{3mm}{black!40},  % Secondary shadow
+      line width=1.5pt,               % Border width
+      draw=myblue!60!white,           % Border color
+      fill=myblue!80!black            % Background color
+    ]{block title}
+    \usebeamerfont*{block title}\insertblocktitle
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-1pt}        % Remove gap between title and body
+  \begin{beamercolorbox}[
+      rounded=4pt,
+      leftskip=1.2ex,
+      rightskip=1.2ex,
+      colsep*=1ex,
+      shadow={0mm}{-2mm}{8mm}{black!60},
+      shadow={1mm}{-1mm}{4mm}{black!30},
+      line width=1.5pt,
+      draw=black!40,                  % Subtle border for body
+      fill=black!95                   % Slightly off-black background
+    ]{block body}
+    \vskip1ex
+    \usebeamerfont{block body}
+}
+
+\setbeamertemplate{block end}{
+  \vskip1ex
+  \end{beamercolorbox}
+  \vskip2ex
+}
+
+% Custom colored card block
+\newenvironment<>{coloredblock}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!80!black}
+    \setbeamercolor{block body}{fg=white,bg=black!95}
+  }%
+  \usebeamertemplate{block begin}}
+  {\par\usebeamertemplate{block end}\end{actionenv}}
+
+% Premium card block with enhanced styling
+\newenvironment<>{cardblock}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!90!black}
+    \setbeamercolor{block body}{fg=white,bg=black!92}
+  }%
+  % Title with enhanced border
+  \begin{beamercolorbox}[
+      rounded=5pt,
+      leftskip=1.5ex,
+      colsep*=1.2ex,
+      shadow={0mm}{-3mm}{8mm}{#1!50},
+      shadow={2mm}{-2mm}{5mm}{#1!30},
+      line width=2pt,
+      draw=#1!40!white,
+      fill=#1!90!black
+    ]{block title}
+    \usebeamerfont*{block title}\textbf{\large\insertblocktitle}
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-1.5pt}
+  % Body with matching border
+  \begin{beamercolorbox}[
+      rounded=5pt,
+      leftskip=1.5ex,
+      rightskip=1.5ex,
+      colsep*=1.2ex,
+      shadow={0mm}{-3mm}{10mm}{black!50},
+      shadow={2mm}{-2mm}{6mm}{black!25},
+      line width=2pt,
+      draw=#1!20!white,
+      fill=black!92
+    ]{block body}
+    \vskip1.2ex
+    \usebeamerfont{block body}}
+  {\vskip1.2ex\end{beamercolorbox}\end{actionenv}}
+
+% Minimal card block for subtle emphasis
+\newenvironment<>{minimalcard}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!70!black}
+    \setbeamercolor{block body}{fg=white,bg=black!97}
+  }%
+  \begin{beamercolorbox}[
+      rounded=3pt,
+      leftskip=1ex,
+      colsep*=0.8ex,
+      shadow={0mm}{-1mm}{4mm}{black!40},
+      line width=1pt,
+      draw=#1!30!white,
+      fill=#1!70!black
+    ]{block title}
+    \usebeamerfont*{block title}\insertblocktitle
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-0.8pt}
+  \begin{beamercolorbox}[
+      rounded=3pt,
+      leftskip=1ex,
+      rightskip=1ex,
+      colsep*=0.8ex,
+      shadow={0mm}{-1mm}{5mm}{black!30},
+      line width=1pt,
+      draw=black!30,
+      fill=black!97
+    ]{block body}
+    \vskip0.8ex
+    \usebeamerfont{block body}}
+  {\vskip0.8ex\end{beamercolorbox}\end{actionenv}}
+
+% Coloured block ends
+
+% Special effect support
+\usetikzlibrary{shadows.blur}
+\usetikzlibrary{decorations.text}
+\usetikzlibrary{fadings}
+
+% Basic highlighting commands
+\newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
+\newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
+\newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
+\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textcolor{white}{\textbf{#1}}}}
+\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textcolor{white}{\textbf{#1}}}}
+
+% Basic theme setup
+\usecolortheme{owl}
+
+% Color settings
+\setbeamercolor{normal text}{fg=white}
+\setbeamercolor{structure}{fg=myyellow}
+\setbeamercolor{alerted text}{fg=myorange}
+\setbeamercolor{example text}{fg=mygreen}
+\setbeamercolor{background canvas}{bg=black}
+\setbeamercolor{frametitle}{fg=white,bg=black}
+
+% Notes support
+\usepackage{pgfpages}
+\setbeameroption{show notes on second screen=right}
+\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
+
+% Animated background support
+\newcommand{\anbg}[2][0.2]{%
+    \ifx\@empty#2\@empty
+        % Clear background if empty argument
+        \setbeamertemplate{background}{}
+    \else
+        % Set animated background
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=#1] at (current page.center) {%
+                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
+                };
+            \end{tikzpicture}%
+        }
+    \fi
+}
+"""
+
+    # Progress bar template
+    frame_setup = r"""
+% Progress bar setup
+\makeatletter
+\def\progressbar@progressbar{}
+\newcount\progressbar@tmpcounta
+\newcount\progressbar@tmpcountb
+\newdimen\progressbar@pbht
+\newdimen\progressbar@pbwd
+\newdimen\progressbar@tmpdim
+
+\progressbar@pbwd=\paperwidth
+\progressbar@pbht=1pt
+
+\def\progressbar@progressbar{%
+   \begin{tikzpicture}[very thin]
+       \shade[top color=myblue!50,bottom color=myblue]
+           (0pt, 0pt) rectangle (\insertframenumber\progressbar@pbwd/\inserttotalframenumber, \progressbar@pbht);
+   \end{tikzpicture}%
+}
+
+% Modified frame title template
+\setbeamertemplate{frametitle}{
+   \nointerlineskip
+   \vskip1ex
+   \begin{beamercolorbox}[wd=\paperwidth,ht=4ex,dp=2ex]{frametitle}
+       \begin{minipage}[t]{\dimexpr\paperwidth-4em}
+           \centering
+           \vspace{2pt}
+           \insertframetitle
+           \vspace{2pt}
+       \end{minipage}
+   \end{beamercolorbox}
+   \vskip.5ex
+   \progressbar@progressbar
+}
+\makeatother"""
+
+    # Institution setup
+    inst_setup = rf"\makeatletter{chr(10)}\def\insertshortinstitute{{{short_institute if short_institute else institution}}}{chr(10)}\makeatother"
+
+    # Footline template
+    footline_template = r"""
+% Footline template
+\setbeamertemplate{footline}{%
+ \leavevmode%
+ \hbox{%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+     \usebeamerfont{title in head/foot}\insertshorttitle%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
+     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
+     \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
+   \end{beamercolorbox}}%
+ \vskip0pt%
+}"""
+
+    # Additional settings
+    additional_settings = r"""
+% Additional settings
+\setbeamersize{text margin left=5pt,text margin right=5pt}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=true]"""
+
+    title_setup = (
+        "% Title setup\n"
+        "\\title{" + title + "}\n"
+        + ("\\subtitle{" + subtitle + "}\n" if subtitle else "") +
+        "\\author{" + author + "}\n"
+        "\\institute{\\textcolor{mygreen}{" + institution + "}}\n"
+        "\\date{" + date + "}\n"
+    )
+
+    # Title page template - FIXED: Removed duplicate \begin{document} and \maketitle
+    title_page = (
+        "% Title page\n"
+        "\\begin{frame}[plain]\n"
+        "   \\begin{tikzpicture}[overlay,remember picture]\n"
+        "       % Background gradient\n"
+        "       \\fill[top color=black!90,bottom color=black!70,middle color=myblue!30]\n"
+        "       (current page.south west) rectangle (current page.north east);\n"
+        "       % Title with glow effect\n"
+        "       \\node[align=center] at (current page.center) {\n"
+        "           \\begin{tikzpicture}[baseline]\n"
+        "               \\node[circle, inner sep=1pt, fill=glowblue!80,\n"
+        "                     blur shadow={shadow blur steps=10, shadow xshift=0pt,\n"
+        "                     shadow yshift=0pt, shadow blur radius=5pt,\n"
+        "                     shadow opacity=0.5}, text=white] {\\Huge\\textbf{" + title + "}};\n"
+        "           \\end{tikzpicture}\n"
+        + ("           \\\\[1em]\n"
+           "           \\begin{tikzpicture}[baseline]\n"
+           "               \\node[circle, inner sep=1pt, fill=glowyellow!80,\n"
+           "                     blur shadow={shadow blur steps=10, shadow xshift=0pt,\n"
+           "                     shadow yshift=0pt, shadow blur radius=5pt,\n"
+           "                     shadow opacity=0.5}, text=white] {\\large " + subtitle + "};\n"
+           "           \\end{tikzpicture}\n" if subtitle else "") +
+        "           \\\\[2em]\n"
+        "           \\begin{tikzpicture}[baseline]\n"
+        "               \\node[circle, inner sep=1pt, fill=glowgreen!80,\n"
+        "                     blur shadow={shadow blur steps=10, shadow xshift=0pt,\n"
+        "                     shadow yshift=0pt, shadow blur radius=5pt,\n"
+        "                     shadow opacity=0.5}, text=white] {\\large " + author + "};\n"
+        "           \\end{tikzpicture}\n"
+        "           \\\\[0.5em]\n"
+        "           \\textcolor{white}{\\small " + institution + "}\n"
+        "           \\\\[1em]\n"
+        "           \\textcolor{white}{\\small " + date + "}\n"
+        "       };\n"
+        "   \\end{tikzpicture}\n"
+        "\\end{frame}"
+    )
+
+    # Combine all parts
+    return "\n".join([
+        core_preamble,
+        frame_setup,
+        inst_setup,
+        footline_template,
+        additional_settings,
+        title_setup,
+        "% Document begins\n",
+        "\\begin{document}",
+        "\\maketitle",
+        title_page
+    ])
+
+def detect_preamble(lines):
+    """
+    Detects if the input file has a complete preamble by checking for key commands.
+    Returns: (has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle)
+    """
+    has_author = False
+    has_institute = False
+    has_title = False
+    has_begin_document = False
+    has_titlepage = False
+    has_maketitle = False
+    has_short_institute = False
+    preamble_end_idx = -1
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if '\\author{' in line:
+            has_author = True
+        if '\\institute{' in line:
+            has_institute = True
+        if '\\instituteShort{' in line or '\\def\\insertshortinstitute{' in line:
+            has_short_institute = True
+        if '\\title{' in line and not line.startswith('\\title '):
+            has_title = True
+        if '\\begin{document}' in line:
+            has_begin_document = True
+            preamble_end_idx = i
+            break
+
+    # If we didn't find \begin{document}, check if it's a different format
+    if preamble_end_idx == -1:
+        # Look for document end to find content start
+        for i, line in enumerate(lines):
+            if '\\end{document}' in line:
+                # Content starts after previous frame
+                content_start = i
+                for j in range(i-1, -1, -1):
+                    if lines[j].strip().startswith('\\end{frame}'):
+                        preamble_end_idx = j
+                        has_begin_document = True  # Assume it exists somewhere
+                        break
+                break
+
+    # Check for titlepage and maketitle after \begin{document}
+    if has_begin_document and preamble_end_idx >= 0:
+        for i in range(preamble_end_idx + 1, min(preamble_end_idx + 20, len(lines))):
+            if '\\titlepage' in lines[i]:
+                has_titlepage = True
+            if '\\maketitle' in lines[i]:
+                has_maketitle = True
+
+    has_preamble = has_author and has_institute and has_title and has_begin_document
+
+    if has_preamble and preamble_end_idx >= 0:
+        preamble_lines = lines[:preamble_end_idx + 1]
+        content_lines = lines[preamble_end_idx + 1:]
+    else:
+        preamble_lines = []
+        content_lines = lines
+
+    return has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle
+
+def parse_media_directive(directive_string):
+    """Parse media directive string into components.
+    Returns: (directive_type, media_source, playable, original_directive)"""
+    try:
+        directive_string = directive_string.strip()
+        playable = False
+        original_directive = directive_string
+
+        # Handle empty or None cases
+        if not directive_string or directive_string == '\\None':
+            return 'none', None, False, original_directive
+
+        # Define directive mappings
+        directives = {
+            '\\wm': 'watermark',
+            '\\ff': 'fullframe',
+            '\\pip': 'pip',
+            '\\split': 'split',
+            '\\hl': 'highlight',
+            '\\bg': 'background',
+            '\\tb': 'topbottom',
+            '\\ol': 'overlay',
+            '\\corner': 'corner',
+            '\\mosaic': 'mosaic',
+            '\\stack': 'stack'  # Stack layout for vertical images
+        }
+
+        # Check for layout directives first
+        for directive_key, directive_type in directives.items():
+            if directive_string.startswith(directive_key):
+                media_source = directive_string[len(directive_key):].strip()
+                # For stack layout, we need to handle multiple files
+                if directive_type == 'stack':
+                    # Clean up the media source - remove \file commands
+                    media_source = media_source.replace('\\file', '').strip()
+                    # Split by spaces and filter out empty strings
+                    files = [f.strip() for f in media_source.split() if f.strip()]
+                    media_source = '; '.join(files)
+                return directive_type, media_source, False, original_directive
+
+        # Initialize variables for other directives
+        directive_type = 'url'  # default type
+        media_source = directive_string  # default to full string
+
+        # Process standard directives
+        parts = directive_string.split()
+
+        # Check for multiple files (for stack layout)
+        if '\\file' in directive_string and directive_string.count('\\file') > 1:
+            # Extract all file paths
+            files = []
+            current_part = ''
+            for part in parts:
+                if part == '\\file':
+                    if current_part:
+                        files.append(current_part.strip())
+                    current_part = ''
+                elif current_part is not None:
+                    current_part += ' ' + part if current_part else part
+            if current_part:
+                files.append(current_part.strip())
+
+            if files:
+                # Join with semicolons for stack layout
+                media_source = '; '.join(files)
+                return 'stack', media_source, False, original_directive
+
+        for i, part in enumerate(parts):
+            if part.startswith('\\'):
+                if part == '\\play':
+                    playable = True
+                    if i < len(parts) - 1:
+                        remaining_parts = parts[i + 1:]
+                        if remaining_parts[0] == '\\file':
+                            directive_type = 'file'
+                            media_source = ' '.join(remaining_parts[1:])
+                        elif remaining_parts[0] == '\\url':
+                            directive_type = 'url'
+                            media_source = ' '.join(remaining_parts[1:])
+                        else:
+                            media_source = ' '.join(remaining_parts)
+                    break
+                elif part == '\\file':
+                    directive_type = 'file'
+                    if i < len(parts) - 1:
+                        media_source = ' '.join(parts[i + 1:])
+                    break
+                elif part == '\\None':
+                    return 'none', None, False, original_directive
+                elif part == '\\url':
+                    directive_type = 'url'
+                    if i < len(parts) - 1:
+                        media_source = ' '.join(parts[i + 1:])
+                    break
+
+        # Clean up media source
+        if media_source and media_source.startswith('\\'):
+            # Remove any leading \ and command name
+            parts = media_source.split(maxsplit=1)
+            if len(parts) > 1:
+                media_source = parts[1]
+
+        # Handle special URLs
+        if directive_type == 'url' and media_source.startswith(('http://', 'https://')):
+            # Special handling for known video platforms
+            if any(domain in media_source.lower() for domain in ['youtube.com', 'youtu.be', 'vimeo.com']):
+                playable = True
+
+        # Handle local file paths
+        if directive_type == 'file':
+            # Check if it's a video file
+            if media_source.lower().endswith(('.mp4', '.avi', '.mov', '.webm', '.mkv')):
+                playable = True
+            # Ensure proper path format
+            media_source = media_source.replace('\\', '/')
+            if not media_source.startswith('media_files/') and not media_source.startswith('./'):
+                media_source = f"media_files/{media_source}"
+
+        return directive_type, media_source, playable, original_directive
+
+    except Exception as e:
+        print(f"Error parsing media directive: {str(e)}")
+        return 'none', None, False, directive_string
+
 def process_input_file(file_path, output_filename='movie.tex', ide_callback=None):
     """Process input file to convert to TeX format with proper slide navigation"""
-    # Debug first
-    debug_content_processing()
-
     processed = 0
     failed = 0
     errors = []
 
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
         # Get preamble information first
         has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle = detect_preamble(lines)
 
-        with open(output_filename, 'w') as outfile:
+        with open(output_filename, 'w', encoding='utf-8') as outfile:
             # Write preamble
             if has_preamble:
+                # Write the existing preamble
                 outfile.writelines(preamble_lines)
-                if '\\newcommand{\\spotlight}' not in ''.join(preamble_lines):
+
+                # Check if special commands are needed
+                preamble_content = ''.join(preamble_lines)
+                if '\\newcommand{\\spotlight}' not in preamble_content:
                     outfile.write(generate_special_commands())
-                if not has_maketitle:
-                    outfile.write("\\maketitle\n")
-                if not has_titlepage:
-                    outfile.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
+
+                # Don't add duplicate \maketitle or \titlepage
+                # The existing preamble should already have them
             else:
-                outfile.write("\\documentclass[12pt]{beamer}\n")
-                outfile.write("\\usepackage{graphicx}\n\\usepackage{multimedia}\n")
-                outfile.write("\\usepackage{tcolorbox}\n")
+                # Write minimal preamble
+                outfile.write("\\documentclass[aspectratio=169]{beamer}\n")
+                outfile.write("\\usepackage{graphicx}\n\\usepackage{multimedia}\n\\usepackage{tikz}\n")
+                outfile.write("\\usepackage{xcolor}\n\\usepackage{amsmath}\n")
                 outfile.write(generate_special_commands())
-                outfile.write("\\begin{document}\n\n")
+                outfile.write("\\begin{document}\n")
+                outfile.write("\\maketitle\n")
+                outfile.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
 
             i = 0
             current_frame_notes = []
@@ -3053,6 +3086,7 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
             current_media = None
             in_content_block = False
             in_notes_block = False
+            skip_next_frame = False
 
             while i < len(content_lines):
                 line = content_lines[i].strip()
@@ -3064,7 +3098,9 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                         process_frame(outfile, current_frame_title, current_frame_content,
                                    current_frame_notes, current_media)
                         processed += 1
-                    outfile.write("\\end{document}\n")
+                    # Don't write duplicate \end{document} if already in preamble
+                    if not has_preamble:
+                        outfile.write("\\end{document}\n")
                     break
 
                 # Handle new frame
@@ -3080,15 +3116,25 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                     current_frame_content = []
                     current_frame_notes = []
                     current_media = None
+                    skip_next_frame = False
 
                 # Handle Content blocks
                 elif line.startswith('\\begin{Content}'):
                     in_content_block = True
                     if len(line) > len('\\begin{Content}'):
                         current_media = line[len('\\begin{Content}'):].strip()
+                        # Skip frames that are actually preamble elements
+                        if current_frame_title in ['\\title', '\\author', '\\institute', '\\date', '\\maketitle', '\\titlepage']:
+                            skip_next_frame = True
 
                 elif line.startswith('\\end{Content}'):
                     in_content_block = False
+                    # Only process frame if it's not a skipped one
+                    if not skip_next_frame and should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
+                        process_frame(outfile, current_frame_title, current_frame_content,
+                                   current_frame_notes, current_media)
+                        processed += 1
+                    skip_next_frame = False
 
                 # Handle Notes blocks
                 elif line.startswith('\\begin{Notes}'):
@@ -3112,11 +3158,17 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
 
                 i += 1
 
+            # Write final \end{document} if not already present
+            if not has_preamble:
+                outfile.write("\\end{document}\n")
+
         return processed, failed, errors
 
     except Exception as e:
         error_msg = f"Error processing file: {str(e)}"
         errors.append(error_msg)
+        import traceback
+        traceback.print_exc()
         if ide_callback:
             ide_callback("error", {'message': error_msg})
         return processed, failed, errors
