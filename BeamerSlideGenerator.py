@@ -1162,14 +1162,19 @@ def process_special_effects(content_line):
     return content_line
 
 def process_latex_content(content_line: str) -> str:
-    """Enhanced content processing with special effects support"""
+    """Enhanced content processing that preserves TikZ content."""
     if not content_line:
         return content_line
 
-    # First process special effects
-    content_line = process_special_effects(content_line)
+    # If it's TikZ content, return as-is
+    if '\\begin{tikzpicture}' in content_line or '\\end{tikzpicture}' in content_line:
+        return content_line
 
-    # Then process standard LaTeX content
+    # If it's other LaTeX environment, return as-is
+    if content_line.startswith(('\\begin{', '\\end{', '\\scalebox{')):
+        return content_line
+
+    # Original processing for regular text
     result = []
     in_math = False
     brace_level = 0
@@ -1208,6 +1213,7 @@ def process_latex_content(content_line: str) -> str:
         i += 1
 
     return ''.join(result)
+
 #----------------------------------------------------------------------
 def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
     """Generate LaTeX code with support for all media layouts."""
@@ -1219,6 +1225,36 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
         frame_title = "Media: " + base_name_escaped
 
+    # Check if content contains TikZ
+    has_tikz = False
+    if content:
+        for item in content:
+            if isinstance(item, str) and '\\begin{tikzpicture}' in item:
+                has_tikz = True
+                break
+
+    # Handle no media case with TikZ
+    if has_tikz and (not filename or filename == "\\None"):
+        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+        latex_code += "    \\vspace{0.5em}\n"
+
+        # Add TikZ content directly
+        for item in content:
+            if isinstance(item, str) and '\\begin{tikzpicture}' in item:
+                latex_code += f"    {item}\n"
+            elif item.strip() and item.strip().startswith('-'):
+                clean_item = item.strip()[1:].strip()
+                processed_item = process_latex_content(clean_item)
+                if not '\\item' in latex_code:  # Start itemize if not started
+                    latex_code += "    \\begin{itemize}\n"
+                latex_code += f"        \\item {processed_item}\n"
+
+        # Close itemize if opened
+        if '\\begin{itemize}' in latex_code:
+            latex_code += "    \\end{itemize}\n"
+
+        latex_code += "\\end{frame}\n"
+        return latex_code
     # Handle no media case first
     if not filename or filename == "\\None":
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
@@ -1437,56 +1473,6 @@ def generate_source_citation(source_url):
         }};
     \\end{{tikzpicture}}"""
 
-def generate_content_items(content, color=None):
-    """Generate formatted content items with optional color"""
-    if not content:
-        return ""
-    cnt=1
-    items = []
-    pause_set=False
-    for itemx in content:
-        if itemx.startswith(('\\pause')):
-            pause_set=True
-    for item in content:
-
-        if item.strip():
-            item = str(item).strip()
-            if pause_set and not item.startswith(('\\pause','\\begin','\\end','\\item')):
-                item=f'\item<{cnt}| alert@1>'+item
-            elif pause_set and item.startswith(('\\item')):
-                item = re.sub('item',f'item<{cnt}| alert@1>',item)
-            elif pause_set and item.startswith(('\\pause')):
-                cnt=cnt+1
-            if item.startswith(('\\pause','\\item')):
-                items.append(item)
-                continue
-            # Preserve original item format if it starts with special characters
-            if item.startswith(('\\pause', '•')):
-                processed_item = process_latex_content(item)
-            else:
-                # Remove any leading hyphen before processing
-                clean_item = item.lstrip('- ')
-                processed_item = process_latex_content(clean_item)
-            # Handle environment directives
-            if item == '\\begin{enumerate}':
-                in_enumerate = True
-                items.append(item)
-                continue
-            elif item == '\\end{enumerate}':
-                in_enumerate = False
-                items.append(item)
-                continue
-            elif item in ['\\begin{itemize}', '\\end{itemize}']:
-                continue
-            if item.startswith('-'):
-                item = item[1:].strip()
-            processed_item = process_latex_content(item)
-            if color:
-                processed_item = f"{{\\color{{{color}}}{processed_item}}}"
-            items.append(f"\\item {processed_item}")
-
-    return '\n        '.join(items)
-
 def format_source_citation(url):
     """
     Format source URLs for citation with proper LaTeX formatting and hyperlinks.
@@ -1514,7 +1500,140 @@ def format_source_citation(url):
     except:
         return f"{{\\tiny Source: {url}}}"
 
+# Add this function to detect and process TikZ content
+def detect_tikz_content(content_lines):
+    """Detect if content contains TikZ diagram and extract it properly."""
+    tikz_blocks = []
+    remaining_content = []
+    in_tikz = False
+    current_tikz = []
 
+    for line in content_lines:
+        stripped = line.strip()
+
+        # Detect start of TikZ environment
+        if '\\begin{tikzpicture}' in stripped:
+            in_tikz = True
+            current_tikz = [stripped]
+        # Detect end of TikZ environment
+        elif in_tikz and '\\end{tikzpicture}' in stripped:
+            current_tikz.append(stripped)
+            tikz_blocks.append('\n'.join(current_tikz))
+            in_tikz = False
+        # Inside TikZ environment
+        elif in_tikz:
+            current_tikz.append(stripped)
+        # Outside TikZ environment - treat as regular content
+        else:
+            if stripped and not stripped.startswith('%'):
+                remaining_content.append(line)
+
+    return tikz_blocks, remaining_content
+
+# Update the process_frame function to handle TikZ content
+def process_frame(outfile, title, content, notes, media):
+    """Process a single frame and write it to the output file"""
+
+    # Separate TikZ content from regular content
+    tikz_blocks, regular_content = detect_tikz_content(content if content else [])
+
+    # If we have TikZ content, handle it specially
+    if tikz_blocks:
+        # Create a combined content list with TikZ blocks properly formatted
+        combined_content = []
+
+        for tikz_block in tikz_blocks:
+            # Wrap TikZ block in appropriate LaTeX environment
+            wrapped_tikz = f"\\begin{{center}}\n\\scalebox{{0.8}}{{\n{tikz_block}\n}}\n\\end{{center}}"
+            combined_content.append(wrapped_tikz)
+
+        # Add regular content items (bulleted lists, etc.)
+        for item in regular_content:
+            if item.strip() and item.strip().startswith('-'):
+                combined_content.append(item.strip())
+
+        # Generate LaTeX code with the combined content
+        latex_code, directive = process_media(
+            media if media else "\\None",
+            combined_content,
+            title,
+            False  # playable flag
+        )
+    else:
+        # Original processing for non-TikZ content
+        latex_code, directive = process_media(
+            media if media else "\\None",
+            content if content else [],  # Pass empty list instead of None
+            title,
+            False  # playable flag
+        )
+
+    # Insert notes before \end{frame}
+    if latex_code and notes:
+        frame_end = latex_code.rfind('\\end{frame}')
+        if frame_end != -1:
+            notes_text = '\n'.join(f'    \\note{{{note}}}' for note in notes)
+            latex_code = latex_code[:frame_end] + '\n' + notes_text + '\n' + latex_code[frame_end:]
+
+    outfile.write(latex_code + '\n')
+
+# Also need to update the generate_content_items function to pass through TikZ content
+def generate_content_items(content, color=None):
+    """Generate formatted content items with optional color, handling TikZ separately."""
+    if not content:
+        return ""
+
+    cnt = 1
+    items = []
+    pause_set = False
+
+    # Check if any item has \pause
+    for itemx in content:
+        if itemx.startswith('\\pause'):
+            pause_set = True
+
+    for item in content:
+        item_str = str(item).strip()
+
+        # Skip empty items
+        if not item_str:
+            continue
+
+        # Handle TikZ blocks - pass them through unchanged
+        if '\\begin{tikzpicture}' in item_str:
+            items.append(item_str)
+            continue
+
+        # Handle other LaTeX environments
+        if item_str.startswith(('\\begin{center}', '\\end{center}', '\\scalebox{')):
+            items.append(item_str)
+            continue
+
+        # Handle pause directives
+        if pause_set and not item_str.startswith(('\\pause','\\begin','\\end','\\item')):
+            item_str = f'\\item<{cnt}| alert@1>' + item_str
+        elif pause_set and item_str.startswith(('\\item')):
+            item_str = re.sub('item', f'item<{cnt}| alert@1>', item_str)
+        elif pause_set and item_str.startswith(('\\pause')):
+            cnt += 1
+
+        # Pass through items that are already properly formatted
+        if item_str.startswith(('\\pause', '\\item', '\\begin{', '\\end{')):
+            items.append(item_str)
+            continue
+
+        # Process regular text content
+        if item_str.startswith('-'):
+            item_str = item_str[1:].strip()
+
+        # Process special effects if any
+        processed_item = process_latex_content(item_str)
+        if color:
+            processed_item = f"{{\\color{{{color}}}{processed_item}}}"
+
+        items.append(f"\\item {processed_item}")
+
+    return '\n        '.join(items)
 
 def verify_media_file(filepath):
     """
@@ -2305,24 +2424,6 @@ def should_process_frame(title, content, media, notes):
             (content is not None and len(content) > 0) or
             (notes is not None and len(notes) > 0))
 
-def process_frame(outfile, title, content, notes, media):
-    """Process a single frame and write it to the output file"""
-    # Generate frame content
-    latex_code, directive = process_media(
-        media if media else "\\None",
-        content if content else [],  # Pass empty list instead of None
-        title,
-        False  # playable flag
-    )
-
-    # Insert notes before \end{frame}
-    if latex_code and notes:
-        frame_end = latex_code.rfind('\\end{frame}')
-        if frame_end != -1:
-            notes_text = '\n'.join(f'    \\note{{{note}}}' for note in notes)
-            latex_code = latex_code[:frame_end] + '\n' + notes_text + '\n' + latex_code[frame_end:]
-
-    outfile.write(latex_code + '\n')
 
 #------------------------------------------------------
 
