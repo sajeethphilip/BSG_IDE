@@ -17,118 +17,6 @@ from urllib.parse import urlparse, unquote
 from pathlib import Path
 import mimetypes
 output_dir = ""
-#--------------------Cache URL -----------------------------------
-import hashlib
-import json
-import time
-
-def get_url_cache_key(url):
-    """Generate a unique cache key for a URL"""
-    return hashlib.md5(url.encode('utf-8')).hexdigest()
-
-def get_cache_file_path(url, output_folder='media_files'):
-    """Get the path for cache metadata file"""
-    cache_key = get_url_cache_key(url)
-    return os.path.join(output_folder, f"{cache_key}_cache.json")
-
-def is_url_cached(url, output_folder='media_files'):
-    """Check if URL is already cached and valid"""
-    cache_file = get_cache_file_path(url, output_folder)
-
-    if not os.path.exists(cache_file):
-        return False
-
-    try:
-        with open(cache_file, 'r') as f:
-            cache_data = json.load(f)
-
-        # Check if cached file still exists
-        cached_file_path = cache_data.get('local_path')
-        if not cached_file_path or not os.path.exists(cached_file_path):
-            return False
-
-        # Optional: Check if cache is too old (e.g., older than 30 days)
-        cache_age = time.time() - cache_data.get('timestamp', 0)
-        if cache_age > 30 * 24 * 60 * 60:  # 30 days in seconds
-            return False
-
-        return True
-
-    except (json.JSONDecodeError, KeyError, Exception):
-        return False
-
-def get_cached_file_path(url, output_folder='media_files'):
-    """Get the local file path for a cached URL"""
-    if not is_url_cached(url, output_folder):
-        return None
-
-    try:
-        cache_file = get_cache_file_path(url, output_folder)
-        with open(cache_file, 'r') as f:
-            cache_data = json.load(f)
-        return cache_data.get('local_path')
-    except:
-        return None
-
-def save_to_cache(url, local_file_path, output_folder='media_files'):
-    """Save URL to local file mapping in cache"""
-    try:
-        cache_data = {
-            'url': url,
-            'local_path': local_file_path,
-            'filename': os.path.basename(local_file_path),
-            'timestamp': time.time(),
-            'cache_key': get_url_cache_key(url)
-        }
-
-        cache_file = get_cache_file_path(url, output_folder)
-        with open(cache_file, 'w') as f:
-            json.dump(cache_data, f, indent=2)
-
-        return True
-    except Exception as e:
-        print(f"Warning: Could not save cache for {url}: {str(e)}")
-        return False
-
-def clear_media_cache(output_folder='media_files'):
-    """Clear all cached media files and metadata"""
-    try:
-        cache_files = [f for f in os.listdir(output_folder) if f.endswith('_cache.json')]
-        for cache_file in cache_files:
-            os.remove(os.path.join(output_folder, cache_file))
-        print(f"Cleared {len(cache_files)} cache files")
-        return True
-    except Exception as e:
-        print(f"Error clearing cache: {str(e)}")
-        return False
-
-def show_cache_status(output_folder='media_files'):
-    """Show cache status and statistics"""
-    try:
-        cache_files = [f for f in os.listdir(output_folder) if f.endswith('_cache.json')]
-        total_size = 0
-        valid_entries = 0
-
-        for cache_file in cache_files:
-            cache_path = os.path.join(output_folder, cache_file)
-            try:
-                with open(cache_path, 'r') as f:
-                    cache_data = json.load(f)
-                local_path = cache_data.get('local_path')
-                if local_path and os.path.exists(local_path):
-                    valid_entries += 1
-                    total_size += os.path.getsize(local_path)
-            except:
-                continue
-
-        print(f"Cache Status:")
-        print(f"  Total cache entries: {len(cache_files)}")
-        print(f"  Valid cached files: {valid_entries}")
-        print(f"  Total cache size: {total_size / (1024*1024):.2f} MB")
-        return True
-    except Exception as e:
-        print(f"Error reading cache status: {str(e)}")
-        return False
 #--------------------------------------------------------------------------------------------------------
 def set_terminal_io(term_io):
     """Set the terminal I/O object and verify it's working"""
@@ -213,37 +101,261 @@ def generate_preview_frame(filepath, output_path=None):
         print(f"Error generating preview frame: {str(e)}")
         return None
 
-def process_inline_images(content_line):
-    """Process inline images in content with text scaling and optional size parameter"""
-    if '\\inlineimg' not in content_line:
-        return content_line
+def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
+    """Returns complete Beamer preamble including notes support"""
 
-    print(f"process_inline_images INPUT: {content_line}")  # DEBUG
+    core_preamble = r"""
+\documentclass[aspectratio=169]{beamer}
 
-    # Use the same pattern as process_latex_content for consistency
-    import re
-    pattern = r'\\inlineimg\{([^}]+)\}(?:\{([^}]+)\})?'
+% Essential packages (core)
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{xstring}
+\usepackage{animate}
+\usepackage{multimedia}
+\usepackage{xifthen}
+\usepackage{xcolor}
+% Define the style for covered text
+\setbeamercovered{dynamic} % This should enable progressive transparency
+\setbeamerfont{item projected}{size=\small}
+%\setbeamercolor{alerted text}{fg=blue}        % Standard blue
+%\setbeamercolor{alerted text}{fg=darkblue}    % Darker blue
+%\setbeamercolor{alerted text}{fg=violet}      % Violet
+%\setbeamercolor{alerted text}{fg=purple}      % Purple
+%\setbeamercolor{alerted text}{fg=olive}       % Olive green
+%\setbeamercolor{alerted text}{fg=teal}        % Teal
+\setbeamercolor{alerted text}{fg=white}        % white
+% Extended packages with fallbacks
+\IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
+\IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
+\IfFileExists{pifont.sty}{\usepackage{pifont}}{}
+\IfFileExists{soul.sty}{\usepackage{soul}}{}
 
-    def replace_inline(match):
-        filename = match.group(1).strip()
-        scale = match.group(2) if match.group(2) else "0.8"  # Default scale
+% Package configurations
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{shadows.blur, shapes.geometric, positioning, arrows.meta, backgrounds, fit}
 
-        # Try to find the file
-        verified_path = None
-        if os.path.exists(filename):
-            verified_path = filename
-        elif os.path.exists(os.path.join('media_files', filename)):
-            verified_path = os.path.join('media_files', filename)
+% Original text effects
+\newcommand{\shadowtext}[2][2pt]{%
+   \begin{tikzpicture}[baseline]
+       \node[blur shadow={shadow blur steps=5,shadow xshift=0pt,shadow yshift=-#1,
+             shadow opacity=0.75}, text=white] {#2};
+   \end{tikzpicture}%
+}
 
-        if verified_path:
-            return f"\\includegraphics[height={scale}\\baselineskip]{{{verified_path}}}"
-        else:
-            return f"[IMAGE:{filename}]"  # Fallback
+\newcommand{\glowtext}[2][myblue]{%
+   \begin{tikzpicture}[baseline]
+       \node[circle, inner sep=1pt,
+             blur shadow={shadow blur steps=10,shadow xshift=0pt,
+             shadow yshift=0pt,shadow blur radius=5pt,
+             shadow opacity=0.5,shadow color=#1},
+             text=white] {#2};
+   \end{tikzpicture}%
+}
 
-    processed_line = re.sub(pattern, replace_inline, content_line)
+% Conditional definitions based on package availability
+\IfFileExists{tcolorbox.sty}{%
+    \newtcolorbox{alertbox}[1][red]{%
+        colback=#1!5!white,
+        colframe=#1!75!black,
+        fonttitle=\bfseries,
+        boxrule=0.5pt,
+        rounded corners,
+        shadow={2mm}{-1mm}{0mm}{black!50}
+    }
 
-    print(f"process_inline_images OUTPUT: {processed_line}")  # DEBUG
-    return processed_line
+    \newtcolorbox{infobox}[1][blue]{%
+        enhanced,
+        colback=#1!5!white,
+        colframe=#1!75!black,
+        arc=4mm,
+        boxrule=0.5pt,
+        fonttitle=\bfseries,
+        attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
+        boxed title style={size=small,colback=#1!75!black},
+        shadow={2mm}{-1mm}{0mm}{black!50}
+    }
+}{}
+
+
+% Define colors
+
+\definecolor{myred}{RGB}{255,50,50}
+\definecolor{myblue}{RGB}{0,130,255}
+\definecolor{mygreen}{RGB}{0,200,100}
+\definecolor{myyellow}{RGB}{255,210,0}
+\definecolor{myorange}{RGB}{255,130,0}
+\definecolor{mypurple}{RGB}{147,112,219}
+\definecolor{mypink}{RGB}{255,105,180}
+\definecolor{myteal}{RGB}{0,128,128}
+
+% Glow colors
+\definecolor{glowblue}{RGB}{0,150,255}
+\definecolor{glowyellow}{RGB}{255,223,0}
+\definecolor{glowgreen}{RGB}{0,255,128}
+\definecolor{glowpink}{RGB}{255,182,193}
+
+% Special effect support
+\usetikzlibrary{shadows.blur}
+\usetikzlibrary{decorations.text}
+\usetikzlibrary{fadings}
+
+% Basic highlighting commands
+\newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
+\newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
+\newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
+\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textcolor{white}{\textbf{#1}}}}
+\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textcolor{white}{\textbf{#1}}}}
+
+% Basic theme setup
+\usetheme{Madrid}
+\usecolortheme{owl}
+
+% Color settings
+\setbeamercolor{normal text}{fg=white}
+\setbeamercolor{structure}{fg=myyellow}
+\setbeamercolor{alerted text}{fg=myorange}
+\setbeamercolor{example text}{fg=mygreen}
+\setbeamercolor{background canvas}{bg=black}
+\setbeamercolor{frametitle}{fg=white,bg=black}
+
+% Notes support
+\usepackage{pgfpages}
+\setbeameroption{show notes on second screen=right}
+\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
+
+
+% Animated background support
+\newcommand{\anbg}[2][0.2]{%
+    \ifx\@empty#2\@empty
+        % Clear background if empty argument
+        \setbeamertemplate{background}{}
+    \else
+        % Set animated background
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=#1] at (current page.center) {%
+                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
+                };
+            \end{tikzpicture}%
+        }
+    \fi
+}
+"""
+   # Progress bar template
+    frame_setup = r"""
+% Progress bar setup
+\makeatletter
+\def\progressbar@progressbar{}
+\newcount\progressbar@tmpcounta
+\newcount\progressbar@tmpcountb
+\newdimen\progressbar@pbht
+\newdimen\progressbar@pbwd
+\newdimen\progressbar@tmpdim
+
+\progressbar@pbwd=\paperwidth
+\progressbar@pbht=1pt
+
+\def\progressbar@progressbar{%
+   \begin{tikzpicture}[very thin]
+       \shade[top color=myblue!50,bottom color=myblue]
+           (0pt, 0pt) rectangle (\insertframenumber\progressbar@pbwd/\inserttotalframenumber, \progressbar@pbht);
+   \end{tikzpicture}%
+}
+
+% Modified frame title template
+\setbeamertemplate{frametitle}{
+   \nointerlineskip
+   \vskip1ex
+   \begin{beamercolorbox}[wd=\paperwidth,ht=4ex,dp=2ex]{frametitle}
+       \begin{minipage}[t]{\dimexpr\paperwidth-4em}
+           \centering
+           \vspace{2pt}
+           \insertframetitle
+           \vspace{2pt}
+       \end{minipage}
+   \end{beamercolorbox}
+   \vskip.5ex
+   \progressbar@progressbar
+}
+\makeatother"""
+
+   # Institution setup
+    inst_setup = rf"\makeatletter{chr(10)}\def\insertshortinstitute{{{short_institute if short_institute else institution}}}{chr(10)}\makeatother"
+
+   # Footline template
+    footline_template = r"""
+% Footline template
+\setbeamertemplate{footline}{%
+ \leavevmode%
+ \hbox{%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+     \usebeamerfont{title in head/foot}\insertshorttitle%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
+     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
+     \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
+   \end{beamercolorbox}}%
+ \vskip0pt%
+}"""
+
+   # Additional settings
+    additional_settings = r"""
+% Additional settings
+\setbeamersize{text margin left=5pt,text margin right=5pt}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=true]"""
+
+    title_setup = (
+       "% Title setup\n"
+       "\\title{" + title + "}\n"
+       + ("\\subtitle{" + subtitle + "}\n" if subtitle else "") +
+       "\\author{" + author + "}\n"
+       "\\institute{\\textcolor{mygreen}{" + institution + "}}\n"
+       "\\date{" + date + "}\n"
+       "\\begin{document}\n"
+       "\\maketitle\n"
+    )
+
+    # Title page template
+    title_page = (
+       "% Title page\n"
+       "\\begin{frame}[plain]\n"
+       "   \\begin{tikzpicture}[overlay,remember picture]\n"
+       "       % Background gradient\n"
+       "       \\fill[top color=black!90,bottom color=black!70,middle color=myblue!30]\n"
+       "       (current page.south west) rectangle (current page.north east);\n"
+       "       % Title with glow effect\n"
+       "       \\node[align=center] at (current page.center) {\n"
+       "           \\glowtext[glowblue]{\\Huge\\textbf{" + title + "}}\n"
+       + ("           \\\\[1em]\\glowtext[glowyellow]{\\large " + subtitle + "}\n" if subtitle else "") +
+       "           \\\\[2em]\n"
+       "           \\glowtext[glowgreen]{\\large " + author + "}\n"
+       "           \\\\[0.5em]\n"
+       "           \\textcolor{white}{\\small " + institution + "}\n"
+       "           \\\\[1em]\n"
+       "           \\textcolor{white}{\\small " + date + "}\n"
+       "       };\n"
+       "   \\end{tikzpicture}\n"
+       "\\end{frame}"
+    )
+
+   # Combine all parts
+    return "\n".join([
+       core_preamble,
+       frame_setup,
+       inst_setup,
+       footline_template,
+       additional_settings,
+       title_setup,
+       title_page
+   ])
 
 def get_footline_template():
     """
@@ -419,6 +531,64 @@ def create_new_input_file(file_path):
         print("\nNo slides created.")
         return False
 
+def detect_preamble(lines):
+    """
+    Detects if the input file has a complete preamble by checking for key commands.
+    Now also checks for short institution name.
+    """
+    has_author = False
+    has_institute = False
+    has_title = False
+    has_begin_document = False
+    has_titlepage = False
+    has_maketitle = False
+    has_short_institute = False
+    preamble_end_idx = -1
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if '\\author{' in line:
+            has_author = True
+        if '\\institute{' in line:
+            has_institute = True
+        if '\\instituteShort{' in line or '\\def\\insertshortinstitute{' in line:
+            has_short_institute = True
+        if '\\title{' in line and not line.startswith('\\title '):
+            has_title = True
+        if '\\begin{document}' in line:
+            has_begin_document = True
+            preamble_end_idx = i
+            break
+
+    # If we have a long institution name but no short version, suggest adding one
+    if has_institute and not has_short_institute:
+        # Find the institution line to check its length
+        for line in lines[:preamble_end_idx] if preamble_end_idx >= 0 else lines:
+            if '\\institute{' in line:
+                inst_text = line[line.find('{')+1:line.rfind('}')]
+                if len(inst_text) > 50:  # threshold for suggesting short name
+                    print("\nWarning: Long institution name detected.")
+                    print("Consider adding a short version using \\instituteShort{} or modifying the footline template.")
+                break
+
+    # Check for titlepage and maketitle after \begin{document}
+    if preamble_end_idx >= 0:
+        for i in range(preamble_end_idx + 1, min(preamble_end_idx + 10, len(lines))):
+            if '\\titlepage' in lines[i]:
+                has_titlepage = True
+            if '\\maketitle' in lines[i]:
+                has_maketitle = True
+
+    has_preamble = has_author and has_institute and has_title and has_begin_document
+
+    if has_preamble:
+        preamble_lines = lines[:preamble_end_idx + 1]
+        content_lines = lines[preamble_end_idx + 1:]
+    else:
+        preamble_lines = []
+        content_lines = lines
+
+    return has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle
 #---------------------------------------------------------------------------------------------------------
 
 def sanitize_filename(filename, max_length=50):
@@ -539,28 +709,17 @@ class MediaConverter:
 
         # Max dimensions for images
         self.max_dimensions = (1920, 1080)
-        # Cache directory
-        self.cache_dir = 'media_cache'
-        os.makedirs(self.cache_dir, exist_ok=True)
 
     def convert_from_url(self, url: str, output_folder: str = 'media_files') -> tuple:
         """
-        Download and convert media from URL to appropriate format with caching.
+        Download and convert media from URL to appropriate format.
         Returns (success, file_path, media_type)
         """
         try:
             # Create media_files directory if it doesn't exist
             os.makedirs(output_folder, exist_ok=True)
 
-            # CHECK CACHE FIRST - New caching logic
-            cached_file = get_cached_file_path(url, output_folder)
-            if cached_file and os.path.exists(cached_file):
-                print(f"Using cached version for: {url}")
-                media_type = self._detect_media_type(cached_file)
-                return True, cached_file, media_type
-
             # Download content to temporary file
-            print(f"Downloading and converting: {url}")
             response = requests.get(url, stream=True)
             response.raise_for_status()
 
@@ -575,14 +734,7 @@ class MediaConverter:
                 temp_path = temp_file.name
 
             # Convert the downloaded file
-            success, converted_path, media_type = self.convert_file(temp_path, output_folder)
-
-            # SAVE TO CACHE if conversion was successful
-            if success and converted_path:
-                save_to_cache(url, converted_path, output_folder)
-                print(f"Cached successfully: {converted_path}")
-
-            return success, converted_path, media_type
+            return self.convert_file(temp_path, output_folder)
 
         except Exception as e:
             print(f"Error converting from URL: {str(e)}")
@@ -787,7 +939,7 @@ def convert_media(url_or_path: str, output_folder: str = 'media_files') -> tuple
 
 def download_media(url, output_folder='media_files'):
     """
-    Enhanced version with caching to avoid re-downloading.
+    Enhanced version with source tracking and automatic format conversion.
     Returns (base_name, filename, first_frame_path)
     """
     try:
@@ -812,24 +964,7 @@ def download_media(url, output_folder='media_files'):
         if 'giphy.com' in url:
             return download_giphy_gif(url, output_folder)
 
-        # CHECK CACHE FIRST - NEW CACHE LOGIC
-        cached_file = get_cached_file_path(url, output_folder)
-        if cached_file and os.path.exists(cached_file):
-            print(f"Using cached file for {url}")
-            base_name = os.path.splitext(os.path.basename(cached_file))[0]
-            filename = os.path.basename(cached_file)
-
-            # Generate preview frame if needed
-            first_frame_path = None
-            media_type = self._detect_media_type(cached_file)  # You might need to make this method static or accessible
-            if media_type in ['video', 'animation']:
-                first_frame_path = generate_preview_frame(cached_file)
-            elif media_type == 'image':
-                first_frame_path = cached_file
-
-            return base_name, filename, first_frame_path
-
-        # Handle regular URLs (download only if not cached)
+        # Handle regular URLs
         try:
             # First download the content
             response = requests.get(url, timeout=10)
@@ -841,9 +976,6 @@ def download_media(url, output_folder='media_files'):
             if success:
                 base_name = os.path.splitext(os.path.basename(converted_path))[0]
                 filename = os.path.basename(converted_path)
-
-                # SAVE TO CACHE - NEW
-                save_to_cache(url, converted_path, output_folder)
 
                 # Generate preview frame if needed
                 first_frame_path = None
@@ -859,7 +991,6 @@ def download_media(url, output_folder='media_files'):
                     f.write(f"Original Type: {media_type}\n")
                     f.write(f"Converted Format: {os.path.splitext(filename)[1]}\n")
                     f.write(f"Downloaded: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write(f"Cached: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")  # NEW
 
                     # Add media-specific metadata
                     if media_type == 'image':
@@ -891,6 +1022,7 @@ def download_media(url, output_folder='media_files'):
     except Exception as e:
         print(f"Error processing media from {url}: {str(e)}")
         return None, None, None
+
 
 def download_giphy_gif(url, output_folder='media_files'):
     """
@@ -1030,35 +1162,11 @@ def process_special_effects(content_line):
     return content_line
 
 def process_latex_content(content_line: str) -> str:
-    """Enhanced content processing with special effects and inline images support"""
+    """Enhanced content processing with special effects support"""
     if not content_line:
         return content_line
 
-    # Process inline images first - UPDATED VERSION
-    if '\\inlineimg' in content_line:
-        import re
-        # Pattern to match \inlineimg{filename}{scale} or \inlineimg{filename}
-        pattern = r'\\inlineimg\{([^}]+)\}(?:\{([^}]+)\})?'
-
-        def replace_inline(match):
-            filename = match.group(1).strip()
-            scale = match.group(2) if match.group(2) else "0.8"  # Default scale
-
-            # Try to find the file
-            verified_path = None
-            if os.path.exists(filename):
-                verified_path = filename
-            elif os.path.exists(os.path.join('media_files', filename)):
-                verified_path = os.path.join('media_files', filename)
-
-            if verified_path:
-                return f"\\includegraphics[height={scale}\\baselineskip]{{{verified_path}}}"
-            else:
-                return f"[IMAGE:{filename}]"  # Fallback
-
-        content_line = re.sub(pattern, replace_inline, content_line)
-
-    # Then process special effects
+    # First process special effects
     content_line = process_special_effects(content_line)
 
     # Then process standard LaTeX content
@@ -1100,8 +1208,7 @@ def process_latex_content(content_line: str) -> str:
         i += 1
 
     return ''.join(result)
-
-      #----------------------------------------------------------------------
+#----------------------------------------------------------------------
 def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
     """Generate LaTeX code with support for all media layouts."""
 
@@ -1112,81 +1219,29 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
         frame_title = "Media: " + base_name_escaped
 
-    # Check if this is an animated GIF
-    if filename and filename.lower().endswith('.gif') and is_animated_gif(filename):
-        return generate_animated_gif_frame(filename, content, title)
-
-
-    # Generate layout based on directive
-    latex_code = ""
     # Handle no media case first
     if not filename or filename == "\\None":
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
         latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    " + generate_content_items(content) + "\n"
+        latex_code += "    \\begin{itemize}\n"
+        latex_code += "        " + generate_content_items(content) + "\n"
+        latex_code += "    \\end{itemize}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
-    # Handle stack layout for multiple images in left column
-    elif layout == 'stack':
-        print(f"DEBUG: Processing stack layout with filename: '{filename}'")
 
-        # Robust splitting - handle different semicolon formats
-        images = []
-        import re
-        images = re.split(r'\s*;\s*', filename)
-        print(f"DEBUG: Split {filename} intoimages: {images}")
-        # Remove empty strings
-        images = [img.strip() for img in images if img.strip()]
+    # Generate layout based on directive
+    latex_code = ""
 
-        print(f"DEBUG: Split images: {images}")
-
-        # Filter out empty strings and verify files exist
-        valid_images = []
-        for img in images:
-            if img:
-                verified_path = verify_media_file(img)
-                if verified_path:
-                    valid_images.append(verified_path)
-                    print(f"DEBUG: Valid image: {verified_path}")
-                else:
-                    print(f"DEBUG: Image not found: {img}")
-
-        if not valid_images:
-            # Fallback to no media
-            print("DEBUG: No valid images found, falling back to no media")
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\vspace{0.5em}\n"
-            latex_code += "    " + generate_content_items(content) + "\n"
-            latex_code += "\\end{frame}\n"
-            return latex_code
-
-        # Generate LaTeX code with valid images
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{columns}[T]\n"
-        latex_code += "        \\begin{column}{0.49\\textwidth}\n"
-
-        for i, image_path in enumerate(valid_images):
-            if i > 0:
-                latex_code += "            \\vspace{0.5em}\n"
-            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}\n"
-
-        latex_code += "        \\end{column}\n"
-        latex_code += "        \\begin{column}{0.49\\textwidth}\n"
-        latex_code += "            " + generate_content_items(content)
-
-        if source_url:
-            latex_code = latex_code.rstrip() + format_url_footnote(source_url)
-
-        latex_code += "\n        \\end{column}\n"
-        latex_code += "    \\end{columns}"
-    elif layout == 'watermark':
+    if layout == 'watermark':
         latex_code = "\\begin{frame}{" + (frame_title if title else '') + "}\n"
         latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
         latex_code += "        \\node[opacity=0.15] at (current page.center) {%\n"
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}\n"
-        latex_code += "    " + generate_content_items(content)
+        latex_code += "    \\begin{itemize}\n"
+        latex_code += "        " + generate_content_items(content) + "\n"
+        latex_code += "    \\end{itemize}"
 
     elif layout == 'fullframe':
         latex_code = "\\begin{frame}[plain]\n"
@@ -1194,9 +1249,11 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "        \\node at (current page.center) {%\n"
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
-        latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current_page.center) {\n"
+        latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current page.center) {\n"
         latex_code += "            \\Large\\textbf{" + frame_title + "}\\\\[1em]\n"
-        latex_code += "            " + generate_content_items(content, color='white') + "\n"
+        latex_code += "            \\begin{itemize}\n"
+        latex_code += "                " + generate_content_items(content, color='white') + "\n"
+        latex_code += "            \\end{itemize}\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}"
 
@@ -1204,7 +1261,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += "        \\begin{column}{0.7\\textwidth}\n"
-        latex_code += "            " + generate_content_items(content) + "\n"
+        latex_code += "            \\begin{itemize}\n"
+        latex_code += "                " + generate_content_items(content) + "\n"
+        latex_code += "            \\end{itemize}\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.28\\textwidth}\n"
         latex_code += "            \\vspace{1em}\n"
@@ -1219,7 +1278,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\includegraphics[width=\\textwidth,keepaspectratio]{" + filename + "}\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        latex_code += "            " + generate_content_items(content) + "\n"
+        latex_code += "            \\begin{itemize}\n"
+        latex_code += "                " + generate_content_items(content) + "\n"
+        latex_code += "            \\end{itemize}\n"
         latex_code += "        \\end{column}\n"
         latex_code += "    \\end{columns}"
 
@@ -1229,108 +1290,52 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.6\\textheight,keepaspectratio]{" + filename + "}\n"
         latex_code += "    \\end{center}\n"
         latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    " + generate_content_items(content)
+        latex_code += "    \\begin{itemize}\n"
+        latex_code += "        " + generate_content_items(content) + "\n"
+        latex_code += "    \\end{itemize}"
 
     elif layout == 'mosaic':
         images = [img.strip() for img in filename.split(',')]
-        num_images = len(images)
+        grid_size = int(math.ceil(math.sqrt(len(images))))
 
-        # Intelligent layout based on number of images
-        if num_images == 1:
-            # Single image - use highlight layout
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\begin{center}\n"
-            latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.7\\textheight,keepaspectratio]{" + images[0] + "}\n"
-            latex_code += "    \\end{center}\n"
-            if content:
-                latex_code += "    \\vspace{0.5em}\n"
-                latex_code += "    " + generate_content_items(content)
+        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+        latex_code += "    \\begin{center}\n"  # Center the entire grid
+        latex_code += "    \\vbox{\\vspace{1em}}\n"  # Add some vertical space at top
 
-        elif num_images == 2:
-            # Two images - side by side
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\centering\n"
-            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.6\\textheight,keepaspectratio]{" + images[0] + "}\n"
-            latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\centering\n"
-            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.6\\textheight,keepaspectratio]{" + images[1] + "}\n"
-            latex_code += "        \\end{column}\n"
-            latex_code += "    \\end{columns}\n"
-            if content:
-                latex_code += "    \\vspace{0.5em}\n"
-                latex_code += "    " + generate_content_items(content)
+        # Start a tabular environment for grid layout
+        latex_code += "    \\begin{tabular}{" + "c" * grid_size + "}\n"
 
-        elif num_images == 3:
-            # Three images - one on top, two below
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\begin{center}\n"
-            latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.35\\textheight,keepaspectratio]{" + images[0] + "}\n"
-            latex_code += "    \\end{center}\n"
-            latex_code += "    \\vspace{0.3em}\n"
-            latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\centering\n"
-            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.35\\textheight,keepaspectratio]{" + images[1] + "}\n"
-            latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\centering\n"
-            latex_code += "            \\includegraphics[width=0.95\\textwidth,height=0.35\\textheight,keepaspectratio]{" + images[2] + "}\n"
-            latex_code += "        \\end{column}\n"
-            latex_code += "    \\end{columns}\n"
-            if content:
-                latex_code += "    \\vspace{0.5em}\n"
-                latex_code += "    " + generate_content_items(content)
+        # Calculate image size - use smaller of width/height constraint
+        img_width = "0.25\\textwidth"  # Adjust these values to control image size
+        img_height = "0.2\\textheight"
 
-        elif num_images == 4:
-            # Four images - 2x2 grid
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\begin{center}\n"
-            latex_code += "    \\begin{tabular}{cc}\n"
-            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[0] + "} &\n"
-            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[1] + "} \\\\\n"
-            latex_code += "        \\vspace{0.2em} \\\\\n"
-            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[2] + "} &\n"
-            latex_code += "        \\includegraphics[width=0.45\\textwidth,height=0.3\\textheight,keepaspectratio]{" + images[3] + "}\n"
-            latex_code += "    \\end{tabular}\n"
-            latex_code += "    \\end{center}\n"
-            if content:
-                latex_code += "    \\vspace{0.5em}\n"
-                latex_code += "    " + generate_content_items(content)
+        # Generate grid row by row
+        for i in range(grid_size):
+            row_images = []
+            for j in range(grid_size):
+                idx = i * grid_size + j
+                if idx < len(images):
+                    # Each image in its own box for consistent spacing
+                    cell = "\\includegraphics[width=" + img_width + ",height=" + img_height + ",keepaspectratio]{" + images[idx] + "}"
+                    row_images.append(cell)
+                else:
+                    row_images.append("")  # Empty cell
 
-        else:
-            # 5 or more images - dynamic grid layout
-            rows, cols = self.calculate_grid_size(num_images)
-            cell_width = f"{0.9/cols:.2f}\\textwidth"
-            cell_height = f"{0.7/rows:.2f}\\textheight"
+            # Join cells with & and end row with \\
+            latex_code += "        " + " & ".join(row_images)
+            if i < grid_size - 1:  # Don't add \\ after last row
+                latex_code += " \\\\\n        \\vspace{0.5em}\\\\\n"  # Add vertical space between rows
 
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\begin{center}\n"
-            latex_code += f"    \\begin{{tabular}}{{{'c' * cols}}}\n"
+        latex_code += "\n    \\end{tabular}\n"
+        latex_code += "    \\end{center}\n"
 
-            for i in range(rows):
-                row_images = []
-                for j in range(cols):
-                    idx = i * cols + j
-                    if idx < num_images:
-                        cell = f"\\includegraphics[width={cell_width},height={cell_height},keepaspectratio]{{{images[idx]}}}"
-                        row_images.append(cell)
-                    else:
-                        row_images.append("")  # Empty cell
+        if content:
+            latex_code += "    \\vspace{1em}\n"  # Space between grid and content
+            latex_code += "    \\begin{itemize}\n"
+            latex_code += "        " + generate_content_items(content) + "\n"
+            latex_code += "    \\end{itemize}\n"
 
-                # Join cells with & and end row with \\
-                latex_code += "        " + " & ".join(row_images)
-                if i < rows - 1:  # Don't add \\ after last row
-                    latex_code += " \\\\\n        \\vspace{0.2em}\\\\\n"
-
-            latex_code += "\n    \\end{tabular}\n"
-            latex_code += "    \\end{center}\n"
-
-            if content:
-                latex_code += "    \\vspace{0.5em}\n"
-                latex_code += "    " + generate_content_items(content)
+        latex_code += "    \\end{columns}"
 
     elif layout == 'background':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
@@ -1339,7 +1344,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}\n"
-        latex_code += "    " + generate_content_items(content)
+        latex_code += "    \\begin{itemize}\n"
+        latex_code += "        " + generate_content_items(content) + "\n"
+        latex_code += "    \\end{itemize}"
 
     elif layout == 'topbottom':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
@@ -1348,7 +1355,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.45\\textheight,keepaspectratio]{" + filename + "}\n"
         latex_code += "    \\end{center}\n"
         latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    " + generate_content_items(content)
+        latex_code += "    \\begin{itemize}\n"
+        latex_code += "        " + generate_content_items(content) + "\n"
+        latex_code += "    \\end{itemize}"
 
     elif layout == 'overlay':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
@@ -1357,33 +1366,40 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current page.center) {\n"
-        latex_code += "            " + generate_content_items(content, color='white') + "\n"
+        latex_code += "            \\begin{itemize}\n"
+        latex_code += "                " + generate_content_items(content, color='white') + "\n"
+        latex_code += "            \\end{itemize}\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}"
 
     elif layout == 'corner':
         latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    " + generate_content_items(content) + "\n"
+        latex_code += "    \\begin{itemize}\n"
+        latex_code += "        " + generate_content_items(content) + "\n"
+        latex_code += "    \\end{itemize}\n"
         latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
         latex_code += "        \\node[anchor=south east] at (current page.south east) {%\n"
         latex_code += "            \\includegraphics[width=0.2\\textwidth,keepaspectratio]{" + filename + "}%\n"
         latex_code += "        };\n"
         latex_code += "    \\end{tikzpicture}"
+
     else:
         # Default side-by-side layout
         if playable and first_frame_path:
             latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
             latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
-            latex_code += "            \\includegraphics[width=\\textwidth,height=\\textheight,keepaspectratio]{" + first_frame_path + "}\n"
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{" + first_frame_path + "}\n"
             latex_code += "            \\begin{center}\n"
             latex_code += "                \\vspace{0.3em}\n"
             latex_code += "                \\footnotesize{Click to play}\\\\\n"
             latex_code += "                \\movie[externalviewer]{\\textcolor{blue}{\\underline{Play}}}{" + filename + "}\n"
             latex_code += "            \\end{center}\n"
             latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
-            latex_code += "            " + generate_content_items(content)
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\begin{itemize}\n"
+            latex_code += "                " + generate_content_items(content) + "\n"
+            latex_code += "            \\end{itemize}"
 
             if source_url:
                 latex_code = latex_code.rstrip() + format_url_footnote(source_url)
@@ -1393,11 +1409,13 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         else:
             latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
             latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
-            latex_code += "            \\includegraphics[width=\\textwidth,height=\\textheight,keepaspectratio]{" + filename + "}\n"
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{" + filename + "}\n"
             latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.49\\textwidth}\n"
-            latex_code += "            " + generate_content_items(content)
+            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+            latex_code += "            \\begin{itemize}\n"
+            latex_code += "                " + generate_content_items(content) + "\n"
+            latex_code += "            \\end{itemize}"
 
             if source_url:
                 latex_code = latex_code.rstrip() + format_url_footnote(source_url)
@@ -1407,42 +1425,6 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     latex_code += "\n\\end{frame}\n"
     return latex_code
-
-def calculate_grid_size(self, num_images):
-    """
-    Calculate optimal grid dimensions for mosaic layout.
-    Prioritizes square-like arrangements for visual appeal.
-    """
-    if num_images <= 4:
-        # Small numbers get special treatment
-        if num_images == 1:
-            return 1, 1
-        elif num_images == 2:
-            return 1, 2
-        elif num_images == 3:
-            return 2, 2  # One empty cell
-        elif num_images == 4:
-            return 2, 2
-
-    # For larger numbers, find factors closest to square root
-    sqrt_num = math.sqrt(num_images)
-    rows = math.floor(sqrt_num)
-    cols = math.ceil(num_images / rows)
-
-    # Try to make it more square-like
-    while rows * cols < num_images:
-        if cols - rows > 1:
-            rows += 1
-        else:
-            cols += 1
-
-    # Ensure we have enough cells
-    while rows * cols < num_images:
-        cols += 1
-
-    return rows, cols
-
-
 #----------------------------------------------------------------------
 
 def generate_source_citation(source_url):
@@ -1456,92 +1438,54 @@ def generate_source_citation(source_url):
     \\end{{tikzpicture}}"""
 
 def generate_content_items(content, color=None):
-    """Generate formatted content items with intelligent itemization"""
+    """Generate formatted content items with optional color"""
     if not content:
         return ""
-
-    cnt = 1
+    cnt=1
     items = []
-    pause_set = False
-    in_itemize = False
-    in_other_env = False
-    current_env = None
-
-    # Check if we have pause commands
+    pause_set=False
     for itemx in content:
         if itemx.startswith(('\\pause')):
-            pause_set = True
-            break
-
+            pause_set=True
     for item in content:
-        if not item.strip():
-            continue
 
-        item = item.strip()
-        print(f"PROCESSING CONTENT ITEM: {item}")  # DEBUG
-
-        # Handle environment begins/ends
-        if item.startswith('\\begin{'):
-            env_match = re.match(r'\\begin\{([^}]+)\}', item)
-            if env_match:
-                current_env = env_match.group(1)
-                if current_env == 'itemize':
-                    in_itemize = True
-                else:
-                    in_other_env = True
+        if item.strip():
+            item = str(item).strip()
+            if pause_set and not item.startswith(('\\pause','\\begin','\\end','\\item')):
+                item=f'\item<{cnt}| alert@1>'+item
+            elif pause_set and item.startswith(('\\item')):
+                item = re.sub('item',f'item<{cnt}| alert@1>',item)
+            elif pause_set and item.startswith(('\\pause')):
+                cnt=cnt+1
+            if item.startswith(('\\pause','\\item')):
                 items.append(item)
                 continue
-
-        elif item.startswith('\\end{'):
-            env_match = re.match(r'\\end\{([^}]+)\}', item)
-            if env_match:
-                ending_env = env_match.group(1)
-                if ending_env == 'itemize':
-                    in_itemize = False
-                elif ending_env == current_env:
-                    in_other_env = False
-                    current_env = None
-                items.append(item)
-                continue
-
-        # Handle explicit items
-        if item.startswith('\\item'):
-            if pause_set:
-                item = re.sub(r'\\item', f'\\\\item<{cnt}| alert@1>', item)
-                cnt += 1
-            items.append(item)
-            continue
-
-        # Handle pause commands
-        if item.startswith('\\pause'):
-            if pause_set:
-                cnt += 1
-            items.append(item)
-            continue
-
-        # PROCESS ALL CONTENT THROUGH process_latex_content - This is key
-        processed_item = process_latex_content(item)
-        print(f"AFTER process_latex_content: {processed_item}")  # DEBUG
-
-        # Add color if specified
-        if color:
-            processed_item = f"{{\\color{{{color}}}{processed_item}}}"
-
-        # Only add automatic \item if we're explicitly in itemize environment
-        # AND the line doesn't start with special commands
-        if in_itemize and not item.startswith(('\\', '%', '---', '***')):
-            if pause_set:
-                items.append(f'\\item<{cnt}| alert@1> {processed_item}')
-                cnt += 1
+            # Preserve original item format if it starts with special characters
+            if item.startswith(('\\pause', '•')):
+                processed_item = process_latex_content(item)
             else:
-                items.append(f'\\item {processed_item}')
-        else:
-            # For all other cases, just add the processed content as-is
-            items.append(processed_item)
+                # Remove any leading hyphen before processing
+                clean_item = item.lstrip('- ')
+                processed_item = process_latex_content(clean_item)
+            # Handle environment directives
+            if item == '\\begin{enumerate}':
+                in_enumerate = True
+                items.append(item)
+                continue
+            elif item == '\\end{enumerate}':
+                in_enumerate = False
+                items.append(item)
+                continue
+            elif item in ['\\begin{itemize}', '\\end{itemize}']:
+                continue
+            if item.startswith('-'):
+                item = item[1:].strip()
+            processed_item = process_latex_content(item)
+            if color:
+                processed_item = f"{{\\color{{{color}}}{processed_item}}}"
+            items.append(f"\\item {processed_item}")
 
-    result = '\n        '.join(items)
-    print(f"FINAL generate_content_items RESULT: {result}")  # DEBUG
-    return result
+    return '\n        '.join(items)
 
 def format_source_citation(url):
     """
@@ -1575,21 +1519,19 @@ def format_source_citation(url):
 def verify_media_file(filepath):
     """
     Verifies that a media file exists and returns its proper path.
-    Enhanced for inline images.
     """
-    # Direct path check
     if os.path.exists(filepath):
         return filepath
 
-    # Check in media_files directory
     base_filepath = os.path.join('media_files', os.path.basename(filepath))
     if os.path.exists(base_filepath):
         return base_filepath
 
     # Try to find the file with any extension
+    global output_dir
     base_name = os.path.splitext(os.path.basename(filepath))[0]
-    base_path = os.path.join('media_files', base_name)
-
+    output_dir = os.path.dirname(os.path.abspath(file_path))  # Get the directory of the input file
+    base_path = os.path.join(output_dir,'media_files', base_name)
     import glob
     possible_files = glob.glob(base_path + '.*')
     if possible_files:
@@ -1599,14 +1541,12 @@ def verify_media_file(filepath):
     return None
 
 
-import re  # Add this import at the top
-import os
-import urllib.parse
-
 def process_media(url, content=None, title=None, playable=False, slide_index=None, callback=None):
     """Process media with graceful handling of missing files and URLs"""
 
+
     try:
+
         directive_type, media_source, is_playable, original_directive = parse_media_directive(url)
         playable = playable or is_playable
 
@@ -1617,22 +1557,23 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
         # Create a list to store footnotes
         footnotes = []
 
+
         # First collect any existing footnotes from content
         processed_content = []
         for item in content:
             if '\\anbg' in item:
-                # Extract image name from \anbg command
-                match = re.search(r'\\anbg\{(.*?)\}', item)
-                if match:
-                    image_name = match.group(1)
-                    if image_name:
-                        # Add background command before frame
-                        processed_content.append(f"\\anbg{{{image_name}}}")
-                    else:
-                        # Clear background if empty
-                        processed_content.append("\\anbg{}")
-                # Don't add the original \anbg line to processed_content
-                continue
+                    # Extract image name from \anbg command
+                    match = re.search(r'\\anbg\{(.*?)\}', item)
+                    if match:
+                        image_name = match.group(1)
+                        if image_name:
+                            # Add background command before frame
+                           processed_content.append(f"\\anbg{{{image_name}}}")
+                        else:
+                            # Clear background if empty
+                            processed_content.append("\\anbg{}")
+                    # Remove \anbg line from content
+                    content.pop(i)
             elif '\\footnote{' in item:
                 # Extract footnote text
                 footnote_start = item.index('\\footnote{') + len('\\footnote{')
@@ -1645,6 +1586,7 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
                 processed_content.append(cleaned_item)
             else:
                 processed_content.append(item)
+
 
         # Now add all footnotes to the last content item or create a phantom item
         if processed_content:
@@ -1661,73 +1603,12 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
             combined_footnotes = ''.join([f"\\footnote{{{f}}}" for f in footnotes])
             processed_content.append(f"\\phantom{{.}}{combined_footnotes}")
 
+
         # Handle explicit \None directive
         if url.strip() == "\\None":
-            return generate_latex_code(None, "\\None", None, processed_content, title, False), "\\None"
+            return generate_latex_code(None, "\\None", None, content, title, False), "\\None"
 
-        # Handle GIF animations specifically with ImageMagick player
-        if directive_type in ['file', 'url'] and media_source.lower().endswith('.gif'):
-            # For local files
-            if directive_type == 'file':
-                media_path = media_source
-                if not os.path.exists(media_path):
-                    media_path = os.path.join('media_files', os.path.basename(media_path))
-
-                if os.path.exists(media_path):
-                    if is_animated_gif(media_path):
-                        # Use ImageMagick external player for animated GIFs
-                        return generate_imagemagick_gif_frame(media_path, processed_content, title), original_directive
-                    else:
-                        # Static GIF - treat as regular image
-                        return generate_latex_code(
-                            os.path.splitext(os.path.basename(media_path))[0],
-                            media_path,
-                            media_path,
-                            processed_content,
-                            title,
-                            False
-                        ), original_directive
-
-            # For URLs - download first, then process
-            elif directive_type == 'url' and media_source.startswith(('http://', 'https://')):
-                # Check cache first
-                cached_file = get_cached_file_path(media_source)
-                if cached_file and os.path.exists(cached_file):
-                    print(f"Using cached file for: {media_source}")
-                    # Use cached file instead of downloading
-                    base_name = os.path.splitext(os.path.basename(cached_file))[0]
-                    first_frame_path = None
-                    if playable:
-                        first_frame_path = generate_preview_frame(cached_file)
-
-                    return generate_latex_code(
-                        base_name,
-                        cached_file,
-                        first_frame_path,
-                        processed_content,
-                        title,
-                        playable,
-                        media_source
-                    ), f"\\file {cached_file}"
-                base_name, filename, first_frame_path = download_media(media_source)
-                if base_name and filename:
-                    gif_path = f"media_files/{filename}"
-                    if os.path.exists(gif_path) and is_animated_gif(gif_path):
-                        # Use ImageMagick external player for animated GIFs
-                        return generate_imagemagick_gif_frame(gif_path, processed_content, title), f"\\file media_files/{filename}"
-                    else:
-                        # Static GIF or download failed
-                        return generate_latex_code(
-                            base_name,
-                            gif_path,
-                            first_frame_path or gif_path,
-                            processed_content,
-                            title,
-                            False,
-                            media_source
-                        ), f"\\file media_files/{filename}"
-
-        # Handle URLs in \play directive (non-GIF videos)
+        # Handle URLs in \play directive
         if directive_type == 'url' and playable:
             if media_source.startswith(('http://', 'https://')):
                 if 'youtube.com' in media_source or 'youtu.be' in media_source:
@@ -1740,63 +1621,58 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
                             base_name,
                             f"media_files/{filename}",
                             first_frame_path,
-                            processed_content,
+                            content,
                             title,
                             True,
                             media_source
                         ), f"\\play \\file media_files/{filename}"
                 else:
-                    # Download other media URLs (skip if it's a GIF since we handled above)
-                    if not media_source.lower().endswith('.gif'):
-                        base_name, filename, first_frame_path = download_media(media_source)
-                        if base_name and filename:
-                            return generate_latex_code(
-                                base_name,
-                                f"media_files/{filename}",
-                                first_frame_path,
-                                processed_content,
-                                title,
-                                True,
-                                media_source
-                            ), f"\\play \\file media_files/{filename}"
-
-        # Handle regular URLs (non-GIF, non-playable)
-        elif directive_type == 'url':
-            if media_source.startswith(('http://', 'https://')):
-                # Skip if it's a GIF since we handled above
-                if not media_source.lower().endswith('.gif'):
+                    # Download other media URLs
                     base_name, filename, first_frame_path = download_media(media_source)
                     if base_name and filename:
                         return generate_latex_code(
                             base_name,
                             f"media_files/{filename}",
                             first_frame_path,
-                            processed_content,
+                            content,
                             title,
-                            False,
+                            True,
                             media_source
-                        ), f"\\file media_files/{filename}"
+                        ), f"\\play \\file media_files/{filename}"
 
-        # Handle local files (non-GIF)
-        elif directive_type == 'file':
-            # Skip if it's a GIF since we handled above
-            if not media_source.lower().endswith('.gif'):
-                media_path = media_source
-                if not os.path.exists(media_path):
-                    media_path = os.path.join('media_files', os.path.basename(media_path))
-
-                if os.path.exists(media_path):
-                    first_frame_path = None
-                    if playable:
-                        first_frame_path = generate_preview_frame(media_path)
+        # Handle regular URLs
+        elif directive_type == 'url' :
+            if media_source.startswith(('http://', 'https://')):
+                base_name, filename, first_frame_path = download_media(media_source)
+                if base_name and filename:
                     return generate_latex_code(
-                        os.path.splitext(os.path.basename(media_path))[0],
-                        media_path,
+                        base_name,
+                        f"media_files/{filename}",
                         first_frame_path,
-                        processed_content,
+                        content,
                         title,
-                        playable
-                    ), original_directive
+                        False,
+                        media_source
+                    ), f"\\file media_files/{filename}"
+
+        # Handle local files
+        elif directive_type == 'file':
+            media_path = media_source
+            if not os.path.exists(media_path):
+                media_path = os.path.join('media_files', os.path.basename(media_path))
+
+            if os.path.exists(media_path):
+                first_frame_path = None
+                if playable:
+                    first_frame_path = generate_preview_frame(media_path)
+                return generate_latex_code(
+                    os.path.splitext(os.path.basename(media_path))[0],
+                    media_path,
+                    first_frame_path,
+                    content,
+                    title,
+                    playable
+                ), original_directive
 
         # Handle layout directives (watermark, fullframe, etc.)
         elif directive_type in ['watermark', 'fullframe', 'pip', 'split', 'highlight',
@@ -1805,7 +1681,7 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
                 base_name=None,
                 filename=media_source,
                 first_frame_path=None,
-                content=processed_content,
+                content=content,
                 title=title,
                 playable=playable,
                 layout=directive_type
@@ -1814,252 +1690,14 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
         # If we get here, the media wasn't handled
         if callback and slide_index is not None:
             callback(slide_index)
-        return handle_missing_media(url, processed_content, title, playable)
+        return handle_missing_media(url, content, title, playable)
 
     except Exception as e:
         print(f"Error processing media: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return handle_missing_media(url, content, title, playable)
 
 
-def is_animated_gif(filepath):
-    """Check if a GIF file is animated (has multiple frames)"""
-    try:
-        from PIL import Image
-        # Ensure the file exists
-        if not os.path.exists(filepath):
-            print(f"GIF file not found: {filepath}")
-            return False
-
-        with Image.open(filepath) as img:
-            is_animated = getattr(img, 'is_animated', False)
-            frame_count = getattr(img, 'n_frames', 1)
-            print(f"GIF {filepath} is animated: {is_animated}, frames: {frame_count}")
-
-            # Some GIFs might be "animated" but only have 1 frame
-            return is_animated and frame_count > 1
-    except ImportError:
-        print("PIL (Pillow) not available for GIF animation detection")
-        return False
-    except Exception as e:
-        print(f"Error checking GIF animation for {filepath}: {str(e)}")
-        return False
-
-def generate_compact_imagemagick_frame(gif_path, content=None, title=None):
-    """Generate LaTeX code with very compact ImageMagick buttons"""
-    # Process title
-    if title:
-        frame_title = process_latex_content(title)
-    else:
-        base_name = os.path.splitext(os.path.basename(gif_path))[0]
-        base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
-        frame_title = "Animation: " + base_name_escaped
-
-    gif_info = get_gif_info(gif_path)
-
-    latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-    latex_code += "    \\begin{center}\n"
-
-    # Display first frame as preview
-    latex_code += "        \\includegraphics[width=0.7\\textwidth,height=0.5\\textheight,keepaspectratio]{" + gif_path + "}\n"
-    latex_code += "        \\\\[0.2em]\n"
-    latex_code += "        \\textcolor{gray}{\\footnotesize " + gif_info + "}\n"
-    latex_code += "    \\end{center}\n"
-
-    # Very compact inline buttons below the image
-    latex_code += "    \\vspace{0.3em}\n"
-    latex_code += "    \\begin{center}\n"
-    latex_code += "        \\href{run:imagemagick:\\\"display\\\" \\\"" + gif_path + "\\\"}{\n"
-    latex_code += "            \\tikz\\node[fill=green!15, rounded corners=2pt, inner sep=3pt, draw=green!40, thin, font=\\footnotesize] {ImageMagick};\n"
-    latex_code += "        }\n"
-    latex_code += "        \\hspace{0.5em}\n"
-    latex_code += "        \\href{run:" + gif_path + "}{\n"
-    latex_code += "            \\tikz\\node[fill=blue!15, rounded corners=2pt, inner sep=3pt, draw=blue!40, thin, font=\\footnotesize] {Default App};\n"
-    latex_code += "        }\n"
-    latex_code += "        \\hspace{0.5em}\n"
-    latex_code += "        \\href{run:imagemagick:\\\"animate\\\" \\\"-loop\\\" \\\"0\\\" \\\"" + gif_path + "\\\"}{\n"
-    latex_code += "            \\tikz\\node[fill=orange!15, rounded corners=2pt, inner sep=3pt, draw=orange!40, thin, font=\\footnotesize] {Loop};\n"
-    latex_code += "        }\n"
-    latex_code += "        \\\\[0.2em]\n"
-    latex_code += "        \\textcolor{gray}{\\tiny Click any button to play}\n"
-    latex_code += "    \\end{center}\n"
-
-    if content:
-        latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    " + generate_content_items(content)
-
-    latex_code += "\\end{frame}\n"
-
-    print(f"Generated very compact ImageMagick frame for: {gif_path}")
-    return latex_code
-
-def generate_animated_gif_frame(filename, content=None, title=None):
-    """Generate LaTeX code for animated GIFs - alias for generate_imagemagick_gif_frame"""
-    return generate_imagemagick_gif_frame(filename, content, title)
-
-def generate_imagemagick_gif_frame(gif_path, content=None, title=None):
-    """Generate LaTeX code for GIF with compact ImageMagick external player"""
-    # Process title
-    if title:
-        frame_title = process_latex_content(title)
-    else:
-        base_name = os.path.splitext(os.path.basename(gif_path))[0]
-        base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
-        frame_title = "Animation: " + base_name_escaped
-
-    # Get GIF info for better user experience
-    gif_info = get_gif_info(gif_path)
-
-    latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-    latex_code += "    \\begin{center}\n"
-
-    # Display first frame as preview - slightly smaller to make room
-    latex_code += "        \\includegraphics[width=0.65\\textwidth,height=0.45\\textheight,keepaspectratio]{" + gif_path + "}\n"
-    latex_code += "        \\\\[0.3em]\n"
-    latex_code += "        \\textcolor{gray}{\\footnotesize " + gif_info + "}\n"
-    latex_code += "        \\\\[0.8em]\n"
-
-    # Compact player options
-    latex_code += "        \\begin{tabular}{cc}\n"
-
-    # ImageMagick display - compact button
-    latex_code += "            \\href{run:imagemagick:\\\"display\\\" \\\"" + gif_path + "\\\"}{\n"
-    latex_code += "                \\begin{tikzpicture}\n"
-    latex_code += "                    \\node[fill=green!20, rounded corners=3pt, inner sep=4pt, draw=green!50, thick, minimum width=0.5cm, font=\\small] {\n"
-    latex_code += "                        \\textbf{ImageMagick}\n"
-    latex_code += "                    };\n"
-    latex_code += "                \\end{tikzpicture}\n"
-    latex_code += "            } &\n"
-
-    # System default viewer - compact button
-    latex_code += "            \\href{run:" + gif_path + "}{\n"
-    latex_code += "                \\begin{tikzpicture}\n"
-    latex_code += "                    \\node[fill=blue!20, rounded corners=3pt, inner sep=4pt, draw=blue!50, thick, minimum width=1.8cm, font=\\small] {\n"
-    latex_code += "                        \\textbf{Default App}\n"
-    latex_code += "                    };\n"
-    latex_code += "                \\end{tikzpicture}\n"
-    latex_code += "            } \\\\\n"
-
-    # Compact labels
-    latex_code += "            \\scriptsize{Best control} & \\scriptsize{System default} \\\\\n"
-
-    latex_code += "        \\end{tabular}\n"
-    latex_code += "        \\\\[0.3em]\n"
-    latex_code += "        \\textcolor{gray}{\\tiny Click to play animation}\n"
-
-    latex_code += "    \\end{center}\n"
-
-    if content:
-        latex_code += "    \\vspace{0.8em}\n"
-        latex_code += "    " + generate_content_items(content)
-
-    latex_code += "\\end{frame}\n"
-
-    print(f"Generated compact ImageMagick player frame for: {gif_path}")
-    return latex_code
-
-
-def get_gif_info(gif_path):
-    """Get GIF information for display"""
-    try:
-        from PIL import Image
-        with Image.open(gif_path) as img:
-            frames = getattr(img, 'n_frames', 1)
-            width, height = img.size
-            duration = getattr(img, 'info', {}).get('duration', 0)
-
-            info_parts = []
-            if frames > 1:
-                info_parts.append(f"{frames} frames")
-            info_parts.append(f"{width}×{height}")
-            if duration and frames > 1:
-                total_duration = (duration * frames) / 1000.0
-                info_parts.append(f"{total_duration:.1f}s")
-
-            return " • ".join(info_parts) if info_parts else "GIF image"
-
-    except Exception as e:
-        return "Animated GIF"
-
-
-def check_imagemagick_available():
-    """Check if ImageMagick is available on the system"""
-    try:
-        import subprocess
-        result = subprocess.run(['display', '--version'], capture_output=True, text=True)
-        return result.returncode == 0
-    except:
-        return False
-
-
-# Optional: Advanced version with more ImageMagick options
-def generate_advanced_imagemagick_frame(gif_path, content=None, title=None):
-    """Generate LaTeX code with advanced ImageMagick options"""
-    # Process title
-    if title:
-        frame_title = process_latex_content(title)
-    else:
-        base_name = os.path.splitext(os.path.basename(gif_path))[0]
-        base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
-        frame_title = "Animation: " + base_name_escaped
-
-    gif_info = get_gif_info(gif_path)
-
-    latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-    latex_code += "    \\begin{center}\n"
-
-    # Display first frame as preview
-    latex_code += "        \\includegraphics[width=0.6\\textwidth,height=0.4\\textheight,keepaspectratio]{" + gif_path + "}\n"
-    latex_code += "        \\\\[0.5em]\n"
-    latex_code += "        \\textcolor{gray}{\\footnotesize " + gif_info + "}\n"
-    latex_code += "        \\\\[1em]\n"
-
-    # Advanced player options
-    latex_code += "        \\begin{tabular}{ccc}\n"
-
-    # ImageMagick display
-    latex_code += "            \\href{run:imagemagick:\\\"display\\\" \\\"" + gif_path + "\\\"}{\n"
-    latex_code += "                \\begin{tikzpicture}\n"
-    latex_code += "                    \\node[fill=green!20, rounded corners=5pt, inner sep=6pt, draw=green!50, thick, minimum width=2cm] {\n"
-    latex_code += "                        \\scriptsize\\textbf{Display}\n"
-    latex_code += "                    };\n"
-    latex_code += "                \\end{tikzpicture}\n"
-    latex_code += "            } &\n"
-
-    # ImageMagick animate (loop)
-    latex_code += "            \\href{run:imagemagick:\\\"animate\\\" \\\"-loop\\\" \\\"0\\\" \\\"" + gif_path + "\\\"}{\n"
-    latex_code += "                \\begin{tikzpicture}\n"
-    latex_code += "                    \\node[fill=blue!20, rounded corners=5pt, inner sep=6pt, draw=blue!50, thick, minimum width=2cm] {\n"
-    latex_code += "                        \\scriptsize\\textbf{Animate}\n"
-    latex_code += "                    };\n"
-    latex_code += "                \\end{tikzpicture}\n"
-    latex_code += "            } &\n"
-
-    # System default
-    latex_code += "            \\href{run:" + gif_path + "}{\n"
-    latex_code += "                \\begin{tikzpicture}\n"
-    latex_code += "                    \\node[fill=orange!20, rounded corners=5pt, inner sep=6pt, draw=orange!50, thick, minimum width=2cm] {\n"
-    latex_code += "                        \\scriptsize\\textbf{Default}\n"
-    latex_code += "                    };\n"
-    latex_code += "                \\end{tikzpicture}\n"
-    latex_code += "            } \\\\\n"
-
-    # Labels
-    latex_code += "            \\footnotesize{View} & \\footnotesize{Loop} & \\footnotesize{System} \\\\\n"
-
-    latex_code += "        \\end{tabular}\n"
-
-    latex_code += "    \\end{center}\n"
-
-    if content:
-        latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    " + generate_content_items(content)
-
-    latex_code += "\\end{frame}\n"
-
-    print(f"Generated advanced ImageMagick frame for: {gif_path}")
-    return latex_code
+import urllib.parse
 
 def update_text_file(file_path, line_number, new_directive):
     """Update the text file with new directive"""
@@ -2390,6 +2028,110 @@ def update_input_file(file_path, url_updates, is_tex_file=False):
         print(f"Error updating file: {str(e)}")
         return False
 
+def parse_media_directive(directive_string):
+    """Parse media directive string into components.
+    Returns: (directive_type, media_source, playable, original_directive)"""
+    try:
+        directive_string = directive_string.strip()
+        playable = False
+        original_directive = directive_string
+
+        # Handle empty or None cases
+        if not directive_string or directive_string == '\\None':
+            return 'none', None, False, original_directive
+
+        # Define directive mappings
+        directives = {
+            '\\wm': 'watermark',
+            '\\ff': 'fullframe',
+            '\\pip': 'pip',
+            '\\split': 'split',
+            '\\hl': 'highlight',
+            '\\bg': 'background',
+            '\\tb': 'topbottom',
+            '\\ol': 'overlay',
+            '\\corner': 'corner',
+            '\\mosaic': 'mosaic'
+        }
+
+        # Split the string to handle multiple parts
+        parts = directive_string.split()
+
+        # Check for layout directives first
+        if parts and parts[0] in directives:
+            return directives[parts[0]], ' '.join(parts[1:]), False, original_directive
+
+        # Initialize variables for other directives
+        directive_type = 'url'  # default type
+        media_source = directive_string  # default to full string
+
+        # Process standard directives
+        for i, part in enumerate(parts):
+            if part.startswith('\\'):
+                if part == '\\play':
+                    playable = True
+                    if i < len(parts) - 1:
+                        remaining_parts = parts[i + 1:]
+                        if remaining_parts[0] == '\\file':
+                            directive_type = 'file'
+                            media_source = ' '.join(remaining_parts[1:])
+                        elif remaining_parts[0] == '\\url':
+                            directive_type = 'url'
+                            media_source = ' '.join(remaining_parts[1:])
+                        else:
+                            media_source = ' '.join(remaining_parts)
+                    break
+                elif part == '\\file':
+                    directive_type = 'file'
+                    if i < len(parts) - 1:
+                        media_source = ' '.join(parts[i + 1:])
+                    break
+                elif part == '\\None':
+                    return 'none', None, False, original_directive
+                elif part == '\\url':
+                    directive_type = 'url'
+                    if i < len(parts) - 1:
+                        media_source = ' '.join(parts[i + 1:])
+                    break
+
+        # Clean up media source
+        if media_source and media_source.startswith('\\'):
+            # Remove any leading \ and command name
+            parts = media_source.split(maxsplit=1)
+            if len(parts) > 1:
+                media_source = parts[1]
+
+        # Handle special URLs
+        if directive_type == 'url' and media_source.startswith(('http://', 'https://')):
+            # Special handling for known video platforms
+            if any(domain in media_source.lower() for domain in ['youtube.com', 'youtu.be', 'vimeo.com']):
+                playable = True
+
+        # Handle local file paths
+        if directive_type == 'file':
+            # Check if it's a video file
+            if media_source.lower().endswith(('.mp4', '.avi', '.mov', '.webm', '.mkv')):
+                playable = True
+            # Ensure proper path format
+            media_source = media_source.replace('\\', '/')
+            if not media_source.startswith('media_files/') and not media_source.startswith('./'):
+                media_source = f"media_files/{media_source}"
+
+        # Special handling for mosaic directive
+        if directive_type == 'mosaic':
+            # Ensure all image paths are properly formatted
+            images = [img.strip() for img in media_source.split(',')]
+            media_source = ','.join(
+                f"media_files/{img}" if not img.startswith(('media_files/', './')) else img
+                for img in images
+            )
+
+        return directive_type, media_source, playable, original_directive
+
+    except Exception as e:
+        print(f"Error parsing media directive: {str(e)}")
+        return 'none', None, False, directive_string
+
 def generate_special_commands():
     """Generate special effect commands for LaTeX"""
     return r"""
@@ -2448,601 +2190,6 @@ def format_url_note(url):
 
 
 #------------------------------------------------------
-def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
-    """Returns complete Beamer preamble including notes support"""
-
-    core_preamble = r"""
-\documentclass[aspectratio=169]{beamer}
-
-% Essential packages (core)
-\usepackage{hyperref}
-\usepackage{graphicx}
-\usepackage{amsmath}
-\usepackage{tikz}
-\usepackage{pgfplots}
-\usepackage{xstring}
-\usepackage{animate}
-\usepackage{multimedia}
-\usepackage{xifthen}
-\usepackage{xcolor}
-\usepackage[utf8]{inputenc}
-\usepackage{textcomp}
-\usepackage{adjustbox}
-\usepackage{tikz-3dplot}
-\usepackage{amssymb}
-\usepackage{bm}
-\usetheme{Madrid}
-\usecolortheme{seahorse}
-\usetikzlibrary{arrows, shapes, positioning, calc, patterns, decorations.pathreplacing, 3d}
-\graphicspath{ {./images/} {./media_files/} }
-% Define the style for covered text
-\setbeamercovered{dynamic} % This should enable progressive transparency
-\setbeamerfont{item projected}{size=\small}
-\setbeamercolor{alerted text}{fg=white}        % white
-
-% Extended packages with fallbacks
-\IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
-\IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
-\IfFileExists{pifont.sty}{\usepackage{pifont}}{}
-\IfFileExists{soul.sty}{\usepackage{soul}}{}
-
-% Package configurations
-\pgfplotsset{compat=1.18}
-\usetikzlibrary{shadows.blur, shapes.geometric, positioning, arrows.meta, backgrounds, fit}
-
-% FIXED: Original text effects with correct TikZ syntax
-\newcommand{\shadowtext}[2][2pt]{%
-   \begin{tikzpicture}[baseline]
-       \node[blur shadow={shadow blur steps=5, shadow xshift=0pt, shadow yshift=-#1,
-             shadow opacity=0.75}, fill=black!80, text=white, inner sep=2pt, rounded corners=2pt] {#2};
-   \end{tikzpicture}%
-}
-
-\newcommand{\glowtext}[2][myblue]{%
-   \begin{tikzpicture}[baseline]
-       \node[circle, inner sep=1pt, fill=#1!80,
-             blur shadow={shadow blur steps=10, shadow xshift=0pt,
-             shadow yshift=0pt, shadow blur radius=5pt,
-             shadow opacity=0.5}, text=white] {#2};
-   \end{tikzpicture}%
-}
-
-% Conditional definitions based on package availability
-\IfFileExists{tcolorbox.sty}{%
-    \newtcolorbox{alertbox}[1][red]{%
-        colback=#1!5!white,
-        colframe=#1!75!black,
-        fonttitle=\bfseries,
-        boxrule=0.5pt,
-        rounded corners,
-        shadow={2mm}{-1mm}{0mm}{black!50}
-    }
-
-    \newtcolorbox{infobox}[1][blue]{%
-        enhanced,
-        colback=#1!5!white,
-        colframe=#1!75!black,
-        arc=4mm,
-        boxrule=0.5pt,
-        fonttitle=\bfseries,
-        attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
-        boxed title style={size=small,colback=#1!75!black},
-        shadow={2mm}{-1mm}{0mm}{black!50}
-    }
-}{}
-
-% Coloured block begins
-% Card-style block definitions with borders and shadows
-\definecolor{myred}{RGB}{255,50,50}
-\definecolor{myblue}{RGB}{0,130,255}
-\definecolor{mygreen}{RGB}{0,200,100}
-\definecolor{myyellow}{RGB}{255,210,0}
-\definecolor{myorange}{RGB}{255,130,0}
-\definecolor{mypurple}{RGB}{147,112,219}
-\definecolor{mypink}{RGB}{255,105,180}
-\definecolor{myteal}{RGB}{0,128,128}
-
-% Glow colors
-\definecolor{glowblue}{RGB}{0,150,255}
-\definecolor{glowyellow}{RGB}{255,223,0}
-\definecolor{glowgreen}{RGB}{0,255,128}
-\definecolor{glowpink}{RGB}{255,182,193}
-
-\setbeamercolor{block title}{fg=white,bg=myblue!80!black}
-\setbeamercolor{block body}{fg=white,bg=black!95}
-
-\setbeamercolor{block title example}{fg=white,bg=mygreen!80!black}
-\setbeamercolor{block body example}{fg=white,bg=black!95}
-
-\setbeamercolor{block title alerted}{fg=white,bg=myred!80!black}
-\setbeamercolor{block body alerted}{fg=white,bg=black!95}
-
-% Card-style block template with border and shadow
-\setbeamertemplate{block begin}{
-  \vskip1.5ex
-  \begin{beamercolorbox}[
-      rounded=4pt,                    % More rounded corners for card look
-      leftskip=1.2ex,
-      colsep*=1ex,
-      shadow={0mm}{-2mm}{6mm}{black!70},  % Main shadow
-      shadow={1mm}{-1mm}{3mm}{black!40},  % Secondary shadow
-      line width=1.5pt,               % Border width
-      draw=myblue!60!white,           % Border color
-      fill=myblue!80!black            % Background color
-    ]{block title}
-    \usebeamerfont*{block title}\insertblocktitle
-  \end{beamercolorbox}
-  {\nointerlineskip\vskip-1pt}        % Remove gap between title and body
-  \begin{beamercolorbox}[
-      rounded=4pt,
-      leftskip=1.2ex,
-      rightskip=1.2ex,
-      colsep*=1ex,
-      shadow={0mm}{-2mm}{8mm}{black!60},
-      shadow={1mm}{-1mm}{4mm}{black!30},
-      line width=1.5pt,
-      draw=black!40,                  % Subtle border for body
-      fill=black!95                   % Slightly off-black background
-    ]{block body}
-    \vskip1ex
-    \usebeamerfont{block body}
-}
-
-\setbeamertemplate{block end}{
-  \vskip1ex
-  \end{beamercolorbox}
-  \vskip2ex
-}
-
-% Custom colored card block
-\newenvironment<>{coloredblock}[2][myblue]{%
-  \begin{actionenv}#3%
-  \def\insertblocktitle{#2}%
-  \par%
-  \mode<presentation>{%
-    \setbeamercolor{block title}{fg=white,bg=#1!80!black}
-    \setbeamercolor{block body}{fg=white,bg=black!95}
-  }%
-  \usebeamertemplate{block begin}}
-  {\par\usebeamertemplate{block end}\end{actionenv}}
-
-% Premium card block with enhanced styling
-\newenvironment<>{cardblock}[2][myblue]{%
-  \begin{actionenv}#3%
-  \def\insertblocktitle{#2}%
-  \par%
-  \mode<presentation>{%
-    \setbeamercolor{block title}{fg=white,bg=#1!90!black}
-    \setbeamercolor{block body}{fg=white,bg=black!92}
-  }%
-  % Title with enhanced border
-  \begin{beamercolorbox}[
-      rounded=5pt,
-      leftskip=1.5ex,
-      colsep*=1.2ex,
-      shadow={0mm}{-3mm}{8mm}{#1!50},
-      shadow={2mm}{-2mm}{5mm}{#1!30},
-      line width=2pt,
-      draw=#1!40!white,
-      fill=#1!90!black
-    ]{block title}
-    \usebeamerfont*{block title}\textbf{\large\insertblocktitle}
-  \end{beamercolorbox}
-  {\nointerlineskip\vskip-1.5pt}
-  % Body with matching border
-  \begin{beamercolorbox}[
-      rounded=5pt,
-      leftskip=1.5ex,
-      rightskip=1.5ex,
-      colsep*=1.2ex,
-      shadow={0mm}{-3mm}{10mm}{black!50},
-      shadow={2mm}{-2mm}{6mm}{black!25},
-      line width=2pt,
-      draw=#1!20!white,
-      fill=black!92
-    ]{block body}
-    \vskip1.2ex
-    \usebeamerfont{block body}}
-  {\vskip1.2ex\end{beamercolorbox}\end{actionenv}}
-
-% Minimal card block for subtle emphasis
-\newenvironment<>{minimalcard}[2][myblue]{%
-  \begin{actionenv}#3%
-  \def\insertblocktitle{#2}%
-  \par%
-  \mode<presentation>{%
-    \setbeamercolor{block title}{fg=white,bg=#1!70!black}
-    \setbeamercolor{block body}{fg=white,bg=black!97}
-  }%
-  \begin{beamercolorbox}[
-      rounded=3pt,
-      leftskip=1ex,
-      colsep*=0.8ex,
-      shadow={0mm}{-1mm}{4mm}{black!40},
-      line width=1pt,
-      draw=#1!30!white,
-      fill=#1!70!black
-    ]{block title}
-    \usebeamerfont*{block title}\insertblocktitle
-  \end{beamercolorbox}
-  {\nointerlineskip\vskip-0.8pt}
-  \begin{beamercolorbox}[
-      rounded=3pt,
-      leftskip=1ex,
-      rightskip=1ex,
-      colsep*=0.8ex,
-      shadow={0mm}{-1mm}{5mm}{black!30},
-      line width=1pt,
-      draw=black!30,
-      fill=black!97
-    ]{block body}
-    \vskip0.8ex
-    \usebeamerfont{block body}}
-  {\vskip0.8ex\end{beamercolorbox}\end{actionenv}}
-
-% Coloured block ends
-
-% Special effect support
-\usetikzlibrary{shadows.blur}
-\usetikzlibrary{decorations.text}
-\usetikzlibrary{fadings}
-
-% Basic highlighting commands
-\newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
-\newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
-\newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
-\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textcolor{white}{\textbf{#1}}}}
-\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textcolor{white}{\textbf{#1}}}}
-
-% Basic theme setup
-\usecolortheme{owl}
-
-% Color settings
-\setbeamercolor{normal text}{fg=white}
-\setbeamercolor{structure}{fg=myyellow}
-\setbeamercolor{alerted text}{fg=myorange}
-\setbeamercolor{example text}{fg=mygreen}
-\setbeamercolor{background canvas}{bg=black}
-\setbeamercolor{frametitle}{fg=white,bg=black}
-
-% Notes support
-\usepackage{pgfpages}
-\setbeameroption{show notes on second screen=right}
-\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
-
-% Animated background support
-\newcommand{\anbg}[2][0.2]{%
-    \ifx\@empty#2\@empty
-        % Clear background if empty argument
-        \setbeamertemplate{background}{}
-    \else
-        % Set animated background
-        \setbeamertemplate{background}{%
-            \begin{tikzpicture}[remember picture,overlay]
-                \node[opacity=#1] at (current page.center) {%
-                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
-                };
-            \end{tikzpicture}%
-        }
-    \fi
-}
-"""
-
-    # Progress bar template
-    frame_setup = r"""
-% Progress bar setup
-\makeatletter
-\def\progressbar@progressbar{}
-\newcount\progressbar@tmpcounta
-\newcount\progressbar@tmpcountb
-\newdimen\progressbar@pbht
-\newdimen\progressbar@pbwd
-\newdimen\progressbar@tmpdim
-
-\progressbar@pbwd=\paperwidth
-\progressbar@pbht=1pt
-
-\def\progressbar@progressbar{%
-   \begin{tikzpicture}[very thin]
-       \shade[top color=myblue!50,bottom color=myblue]
-           (0pt, 0pt) rectangle (\insertframenumber\progressbar@pbwd/\inserttotalframenumber, \progressbar@pbht);
-   \end{tikzpicture}%
-}
-
-% Modified frame title template
-\setbeamertemplate{frametitle}{
-   \nointerlineskip
-   \vskip1ex
-   \begin{beamercolorbox}[wd=\paperwidth,ht=4ex,dp=2ex]{frametitle}
-       \begin{minipage}[t]{\dimexpr\paperwidth-4em}
-           \centering
-           \vspace{2pt}
-           \insertframetitle
-           \vspace{2pt}
-       \end{minipage}
-   \end{beamercolorbox}
-   \vskip.5ex
-   \progressbar@progressbar
-}
-\makeatother"""
-
-    # Institution setup
-    inst_setup = rf"\makeatletter{chr(10)}\def\insertshortinstitute{{{short_institute if short_institute else institution}}}{chr(10)}\makeatother"
-
-    # Footline template
-    footline_template = r"""
-% Footline template
-\setbeamertemplate{footline}{%
- \leavevmode%
- \hbox{%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
-     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
-   \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
-     \usebeamerfont{title in head/foot}\insertshorttitle%
-   \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
-     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
-     \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
-   \end{beamercolorbox}}%
- \vskip0pt%
-}"""
-
-    # Additional settings
-    additional_settings = r"""
-% Additional settings
-\setbeamersize{text margin left=5pt,text margin right=5pt}
-\setbeamertemplate{navigation symbols}{}
-\setbeamertemplate{blocks}[rounded][shadow=true]"""
-
-    title_setup = (
-        "% Title setup\n"
-        "\\title{" + title + "}\n"
-        + ("\\subtitle{" + subtitle + "}\n" if subtitle else "") +
-        "\\author{" + author + "}\n"
-        "\\institute{\\textcolor{mygreen}{" + institution + "}}\n"
-        "\\date{" + date + "}\n"
-    )
-
-    # Title page template - FIXED: Removed duplicate \begin{document} and \maketitle
-    title_page = (
-        "% Title page\n"
-        "\\begin{frame}[plain]\n"
-        "   \\begin{tikzpicture}[overlay,remember picture]\n"
-        "       % Background gradient\n"
-        "       \\fill[top color=black!90,bottom color=black!70,middle color=myblue!30]\n"
-        "       (current page.south west) rectangle (current page.north east);\n"
-        "       % Title with glow effect\n"
-        "       \\node[align=center] at (current page.center) {\n"
-        "           \\begin{tikzpicture}[baseline]\n"
-        "               \\node[circle, inner sep=1pt, fill=glowblue!80,\n"
-        "                     blur shadow={shadow blur steps=10, shadow xshift=0pt,\n"
-        "                     shadow yshift=0pt, shadow blur radius=5pt,\n"
-        "                     shadow opacity=0.5}, text=white] {\\Huge\\textbf{" + title + "}};\n"
-        "           \\end{tikzpicture}\n"
-        + ("           \\\\[1em]\n"
-           "           \\begin{tikzpicture}[baseline]\n"
-           "               \\node[circle, inner sep=1pt, fill=glowyellow!80,\n"
-           "                     blur shadow={shadow blur steps=10, shadow xshift=0pt,\n"
-           "                     shadow yshift=0pt, shadow blur radius=5pt,\n"
-           "                     shadow opacity=0.5}, text=white] {\\large " + subtitle + "};\n"
-           "           \\end{tikzpicture}\n" if subtitle else "") +
-        "           \\\\[2em]\n"
-        "           \\begin{tikzpicture}[baseline]\n"
-        "               \\node[circle, inner sep=1pt, fill=glowgreen!80,\n"
-        "                     blur shadow={shadow blur steps=10, shadow xshift=0pt,\n"
-        "                     shadow yshift=0pt, shadow blur radius=5pt,\n"
-        "                     shadow opacity=0.5}, text=white] {\\large " + author + "};\n"
-        "           \\end{tikzpicture}\n"
-        "           \\\\[0.5em]\n"
-        "           \\textcolor{white}{\\small " + institution + "}\n"
-        "           \\\\[1em]\n"
-        "           \\textcolor{white}{\\small " + date + "}\n"
-        "       };\n"
-        "   \\end{tikzpicture}\n"
-        "\\end{frame}"
-    )
-
-    # Combine all parts
-    return "\n".join([
-        core_preamble,
-        frame_setup,
-        inst_setup,
-        footline_template,
-        additional_settings,
-        title_setup,
-        "% Document begins\n",
-        "\\begin{document}",
-        "\\maketitle",
-        title_page
-    ])
-
-def detect_preamble(lines):
-    """
-    Detects if the input file has a complete preamble by checking for key commands.
-    Returns: (has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle)
-    """
-    has_author = False
-    has_institute = False
-    has_title = False
-    has_begin_document = False
-    has_titlepage = False
-    has_maketitle = False
-    has_short_institute = False
-    preamble_end_idx = -1
-
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if '\\author{' in line:
-            has_author = True
-        if '\\institute{' in line:
-            has_institute = True
-        if '\\instituteShort{' in line or '\\def\\insertshortinstitute{' in line:
-            has_short_institute = True
-        if '\\title{' in line and not line.startswith('\\title '):
-            has_title = True
-        if '\\begin{document}' in line:
-            has_begin_document = True
-            preamble_end_idx = i
-            break
-
-    # If we didn't find \begin{document}, check if it's a different format
-    if preamble_end_idx == -1:
-        # Look for document end to find content start
-        for i, line in enumerate(lines):
-            if '\\end{document}' in line:
-                # Content starts after previous frame
-                content_start = i
-                for j in range(i-1, -1, -1):
-                    if lines[j].strip().startswith('\\end{frame}'):
-                        preamble_end_idx = j
-                        has_begin_document = True  # Assume it exists somewhere
-                        break
-                break
-
-    # Check for titlepage and maketitle after \begin{document}
-    if has_begin_document and preamble_end_idx >= 0:
-        for i in range(preamble_end_idx + 1, min(preamble_end_idx + 20, len(lines))):
-            if '\\titlepage' in lines[i]:
-                has_titlepage = True
-            if '\\maketitle' in lines[i]:
-                has_maketitle = True
-
-    has_preamble = has_author and has_institute and has_title and has_begin_document
-
-    if has_preamble and preamble_end_idx >= 0:
-        preamble_lines = lines[:preamble_end_idx + 1]
-        content_lines = lines[preamble_end_idx + 1:]
-    else:
-        preamble_lines = []
-        content_lines = lines
-
-    return has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle
-
-def parse_media_directive(directive_string):
-    """Parse media directive string into components.
-    Returns: (directive_type, media_source, playable, original_directive)"""
-    try:
-        directive_string = directive_string.strip()
-        playable = False
-        original_directive = directive_string
-
-        # Handle empty or None cases
-        if not directive_string or directive_string == '\\None':
-            return 'none', None, False, original_directive
-
-        # Define directive mappings
-        directives = {
-            '\\wm': 'watermark',
-            '\\ff': 'fullframe',
-            '\\pip': 'pip',
-            '\\split': 'split',
-            '\\hl': 'highlight',
-            '\\bg': 'background',
-            '\\tb': 'topbottom',
-            '\\ol': 'overlay',
-            '\\corner': 'corner',
-            '\\mosaic': 'mosaic',
-            '\\stack': 'stack'  # Stack layout for vertical images
-        }
-
-        # Check for layout directives first
-        for directive_key, directive_type in directives.items():
-            if directive_string.startswith(directive_key):
-                media_source = directive_string[len(directive_key):].strip()
-                # For stack layout, we need to handle multiple files
-                if directive_type == 'stack':
-                    # Clean up the media source - remove \file commands
-                    media_source = media_source.replace('\\file', '').strip()
-                    # Split by spaces and filter out empty strings
-                    files = [f.strip() for f in media_source.split() if f.strip()]
-                    media_source = '; '.join(files)
-                return directive_type, media_source, False, original_directive
-
-        # Initialize variables for other directives
-        directive_type = 'url'  # default type
-        media_source = directive_string  # default to full string
-
-        # Process standard directives
-        parts = directive_string.split()
-
-        # Check for multiple files (for stack layout)
-        if '\\file' in directive_string and directive_string.count('\\file') > 1:
-            # Extract all file paths
-            files = []
-            current_part = ''
-            for part in parts:
-                if part == '\\file':
-                    if current_part:
-                        files.append(current_part.strip())
-                    current_part = ''
-                elif current_part is not None:
-                    current_part += ' ' + part if current_part else part
-            if current_part:
-                files.append(current_part.strip())
-
-            if files:
-                # Join with semicolons for stack layout
-                media_source = '; '.join(files)
-                return 'stack', media_source, False, original_directive
-
-        for i, part in enumerate(parts):
-            if part.startswith('\\'):
-                if part == '\\play':
-                    playable = True
-                    if i < len(parts) - 1:
-                        remaining_parts = parts[i + 1:]
-                        if remaining_parts[0] == '\\file':
-                            directive_type = 'file'
-                            media_source = ' '.join(remaining_parts[1:])
-                        elif remaining_parts[0] == '\\url':
-                            directive_type = 'url'
-                            media_source = ' '.join(remaining_parts[1:])
-                        else:
-                            media_source = ' '.join(remaining_parts)
-                    break
-                elif part == '\\file':
-                    directive_type = 'file'
-                    if i < len(parts) - 1:
-                        media_source = ' '.join(parts[i + 1:])
-                    break
-                elif part == '\\None':
-                    return 'none', None, False, original_directive
-                elif part == '\\url':
-                    directive_type = 'url'
-                    if i < len(parts) - 1:
-                        media_source = ' '.join(parts[i + 1:])
-                    break
-
-        # Clean up media source
-        if media_source and media_source.startswith('\\'):
-            # Remove any leading \ and command name
-            parts = media_source.split(maxsplit=1)
-            if len(parts) > 1:
-                media_source = parts[1]
-
-        # Handle special URLs
-        if directive_type == 'url' and media_source.startswith(('http://', 'https://')):
-            # Special handling for known video platforms
-            if any(domain in media_source.lower() for domain in ['youtube.com', 'youtu.be', 'vimeo.com']):
-                playable = True
-
-        # Handle local file paths
-        if directive_type == 'file':
-            # Check if it's a video file
-            if media_source.lower().endswith(('.mp4', '.avi', '.mov', '.webm', '.mkv')):
-                playable = True
-            # Ensure proper path format
-            media_source = media_source.replace('\\', '/')
-            if not media_source.startswith('media_files/') and not media_source.startswith('./'):
-                media_source = f"media_files/{media_source}"
-
-        return directive_type, media_source, playable, original_directive
-
-    except Exception as e:
-        print(f"Error parsing media directive: {str(e)}")
-        return 'none', None, False, directive_string
-
 def process_input_file(file_path, output_filename='movie.tex', ide_callback=None):
     """Process input file to convert to TeX format with proper slide navigation"""
     processed = 0
@@ -3050,34 +2197,28 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
     errors = []
 
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, 'r') as f:
             lines = f.readlines()
 
         # Get preamble information first
         has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle = detect_preamble(lines)
 
-        with open(output_filename, 'w', encoding='utf-8') as outfile:
+        with open(output_filename, 'w') as outfile:
             # Write preamble
             if has_preamble:
-                # Write the existing preamble
                 outfile.writelines(preamble_lines)
-
-                # Check if special commands are needed
-                preamble_content = ''.join(preamble_lines)
-                if '\\newcommand{\\spotlight}' not in preamble_content:
+                if '\\newcommand{\\spotlight}' not in ''.join(preamble_lines):
                     outfile.write(generate_special_commands())
-
-                # Don't add duplicate \maketitle or \titlepage
-                # The existing preamble should already have them
+                if not has_maketitle:
+                    outfile.write("\\maketitle\n")
+                if not has_titlepage:
+                    outfile.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
             else:
-                # Write minimal preamble
-                outfile.write("\\documentclass[aspectratio=169]{beamer}\n")
-                outfile.write("\\usepackage{graphicx}\n\\usepackage{multimedia}\n\\usepackage{tikz}\n")
-                outfile.write("\\usepackage{xcolor}\n\\usepackage{amsmath}\n")
+                outfile.write("\\documentclass[12pt]{beamer}\n")
+                outfile.write("\\usepackage{graphicx}\n\\usepackage{multimedia}\n")
+                outfile.write("\\usepackage{tcolorbox}\n")
                 outfile.write(generate_special_commands())
-                outfile.write("\\begin{document}\n")
-                outfile.write("\\maketitle\n")
-                outfile.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
+                outfile.write("\\begin{document}\n\n")
 
             i = 0
             current_frame_notes = []
@@ -3086,7 +2227,6 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
             current_media = None
             in_content_block = False
             in_notes_block = False
-            skip_next_frame = False
 
             while i < len(content_lines):
                 line = content_lines[i].strip()
@@ -3098,9 +2238,7 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                         process_frame(outfile, current_frame_title, current_frame_content,
                                    current_frame_notes, current_media)
                         processed += 1
-                    # Don't write duplicate \end{document} if already in preamble
-                    if not has_preamble:
-                        outfile.write("\\end{document}\n")
+                    outfile.write("\\end{document}\n")
                     break
 
                 # Handle new frame
@@ -3116,25 +2254,15 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                     current_frame_content = []
                     current_frame_notes = []
                     current_media = None
-                    skip_next_frame = False
 
                 # Handle Content blocks
                 elif line.startswith('\\begin{Content}'):
                     in_content_block = True
                     if len(line) > len('\\begin{Content}'):
                         current_media = line[len('\\begin{Content}'):].strip()
-                        # Skip frames that are actually preamble elements
-                        if current_frame_title in ['\\title', '\\author', '\\institute', '\\date', '\\maketitle', '\\titlepage']:
-                            skip_next_frame = True
 
                 elif line.startswith('\\end{Content}'):
                     in_content_block = False
-                    # Only process frame if it's not a skipped one
-                    if not skip_next_frame and should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
-                        process_frame(outfile, current_frame_title, current_frame_content,
-                                   current_frame_notes, current_media)
-                        processed += 1
-                    skip_next_frame = False
 
                 # Handle Notes blocks
                 elif line.startswith('\\begin{Notes}'):
@@ -3158,227 +2286,14 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
 
                 i += 1
 
-            # Write final \end{document} if not already present
-            if not has_preamble:
-                outfile.write("\\end{document}\n")
-
         return processed, failed, errors
 
     except Exception as e:
         error_msg = f"Error processing file: {str(e)}"
         errors.append(error_msg)
-        import traceback
-        traceback.print_exc()
         if ide_callback:
             ide_callback("error", {'message': error_msg})
         return processed, failed, errors
-
-#----------------------------------------------------------------------
-# NEW FUNCTIONS FOR LATEX-TO-NATIVE CONVERSION
-#----------------------------------------------------------------------
-
-def clean_latex_for_extraction(latex_line):
-    """Extract readable text from LaTeX commands"""
-    if not latex_line:
-        return ""
-
-    # Remove LaTeX commands but keep their arguments
-    import re
-
-    # Replace common formatting commands
-    cleaned = latex_line
-
-    # Remove \textbf{}, \textit{}, etc. but keep content
-    commands_to_remove = [
-        r'\\textbf\{(.*?)\}',
-        r'\\textit\{(.*?)\}',
-        r'\\emph\{(.*?)\}',
-        r'\\texttt\{(.*?)\}',
-        r'\\url\{(.*?)\}',
-        r'\\href\{.*?\}\{(.*?)\}',
-        r'\\footnote\{.*?\}',
-        r'\\cite\{.*?\}',
-        r'\\label\{.*?\}',
-        r'\\ref\{.*?\}',
-    ]
-
-    for pattern in commands_to_remove:
-        cleaned = re.sub(pattern, r'\1', cleaned)
-
-    # Remove remaining LaTeX commands (single backslash)
-    cleaned = re.sub(r'\\[a-zA-Z]+\*?(?:\[.*?\])?(?:\{.*?\})*', '', cleaned)
-
-    # Clean up math mode markers
-    cleaned = cleaned.replace('$', '')
-
-    # Remove extra spaces
-    cleaned = ' '.join(cleaned.split())
-
-    return cleaned.strip()
-
-
-def extract_slides_from_tex(tex_content):
-    """Extract slides from standard LaTeX Beamer file"""
-    slides = []
-    lines = tex_content.split('\n')
-    i = 0
-
-    while i < len(lines):
-        line = lines[i].strip()
-
-        # Look for frame beginnings
-        if line.startswith(r'\begin{frame'):
-            slide = {
-                'title': '',
-                'content': [],
-                'images': [],
-                'raw_latex': []
-            }
-
-            # Extract frame options if any
-            frame_start = i
-
-            # Look for frametitle
-            j = i + 1
-            while j < len(lines) and not lines[j].strip().startswith(r'\end{frame}'):
-                frame_line = lines[j].strip()
-
-                # Capture frametitle
-                if frame_line.startswith(r'\frametitle{'):
-                    title_start = frame_line.find('{') + 1
-                    title_end = frame_line.rfind('}')
-                    slide['title'] = frame_line[title_start:title_end]
-                # Capture images
-                elif r'\includegraphics' in frame_line:
-                    # Extract image path
-                    import re
-                    img_match = re.search(r'\\includegraphics(?:\[.*?\])?\{(.*?)\}', frame_line)
-                    if img_match:
-                        slide['images'].append(img_match.group(1))
-                # Capture content (excluding commands)
-                elif frame_line and not frame_line.startswith('%'):
-                    # Clean up LaTeX commands for text extraction
-                    cleaned = clean_latex_for_extraction(frame_line)
-                    if cleaned:
-                        slide['content'].append(cleaned)
-
-                slide['raw_latex'].append(frame_line)
-                j += 1
-
-            # Store the slide
-            if slide['title'] or slide['content']:
-                slides.append(slide)
-
-            i = j + 1  # Skip past \end{frame}
-        else:
-            i += 1
-
-    return slides
-
-
-def convert_slides_to_native_format(slides, output_file):
-    """Convert extracted slides to native format"""
-    with open(output_file, 'w') as f:
-        # Write header for native format
-        f.write("# Extracted from LaTeX Beamer file\n")
-        f.write("# Converted to native format\n\n")
-
-        for i, slide in enumerate(slides, 1):
-            f.write(f"\\title {slide['title'] or f'Slide {i}'}\n")
-
-            # Handle images - convert to native format
-            if slide['images']:
-                # For multiple images, use mosaic or stack layout
-                if len(slide['images']) > 1:
-                    images_str = '; '.join(slide['images'])
-                    f.write(f"\\begin{{Content}} \\mosaic {images_str}\n")
-                else:
-                    f.write(f"\\begin{{Content}} \\file {slide['images'][0]}\n")
-            else:
-                f.write("\\begin{Content} \\None\n")
-
-            # Write content items
-            for item in slide['content']:
-                if item:  # Skip empty lines
-                    f.write(f"- {item}\n")
-
-            f.write("\\end{Content}\n\n")
-
-
-def convert_tex_to_native(input_tex_file, output_native_file):
-    """Main conversion function from LaTeX to native format"""
-    print(f"Converting {input_tex_file} to native format...")
-
-    try:
-        # Read the LaTeX file
-        with open(input_tex_file, 'r', encoding='utf-8') as f:
-            tex_content = f.read()
-
-        # Extract slides
-        slides = extract_slides_from_tex(tex_content)
-
-        if not slides:
-            print("No slides found in the LaTeX file.")
-            return False
-
-        print(f"Found {len(slides)} slides")
-
-        # Convert to native format
-        convert_slides_to_native_format(slides, output_native_file)
-
-        print(f"Successfully converted to {output_native_file}")
-        print("\nNext steps:")
-        print("1. Review the converted file")
-        print("2. Add any missing media (images might need to be in media_files folder)")
-        print("3. Run the normal processing on the native file")
-
-        return True
-
-    except Exception as e:
-        print(f"Error during conversion: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-def ensure_inline_images_in_content(content):
-    """Ensure inline images are processed in content before frame generation"""
-    if not content:
-        return content
-
-    processed_content = []
-    for item in content:
-        if item and '\\inlineimg' in item:
-            print(f"PROCESSING INLINE IMAGE IN CONTENT: {item}")
-            # Process through the full latex content processor
-            processed_item = process_latex_content(item)
-            print(f"PROCESSED RESULT: {processed_item}")
-            processed_content.append(processed_item)
-        else:
-            processed_content.append(item)
-
-    return processed_content
-def debug_content_processing():
-    """Debug the entire content processing pipeline"""
-    print("\n=== DEBUG CONTENT PROCESSING ===")
-
-    # Test the exact content from your slide
-    test_content = [
-        "It is good to have an idea about the likelihood, but most of the time \\textcolor{pink}{we are interested in a given object } and not in the whole population.",
-        "To know the class of an individual object, we can use the same logic we apply to differentiate a \\inlineimg{catdog.png} cat from a dog .",
-        "Identify \\textcolor{red}{distiguishable features} of the object and base our judgement on the combined likelihood of the pieces.",
-        "We may have a \\textcolor{red}{subjective belief} (prior) and an \\textcolor{red}{objective likelihood} for each feature in a class."
-    ]
-
-    print("Input content:")
-    for i, line in enumerate(test_content):
-        print(f"  {i}: {line}")
-
-    # Test generate_content_items
-    result = generate_content_items(test_content)
-    print(f"\nOutput from generate_content_items:")
-    print(result)
-    print("=== END DEBUG ===\n")
-
 
 def should_process_frame(title, content, media, notes):
     """
@@ -3392,11 +2307,6 @@ def should_process_frame(title, content, media, notes):
 
 def process_frame(outfile, title, content, notes, media):
     """Process a single frame and write it to the output file"""
-    # Ensure inline images are processed in content BEFORE generating the frame
-    if content:
-        content = ensure_inline_images_in_content(content)
-        print(f"CONTENT AFTER INLINE IMAGE PROCESSING: {content}")
-
     # Generate frame content
     latex_code, directive = process_media(
         media if media else "\\None",
@@ -3424,8 +2334,7 @@ def main():
     print("Choose an option:")
     print("1. Process a single media URL (appends to movie.tex)")
     print("2. Process multiple media files from an input file (creates new .tex file)")
-    print("3. Convert existing LaTeX Beamer file to native format")
-    choice = input("Enter your choice (1, 2, or 3): ")
+    choice = input("Enter your choice (1 or 2): ")
 
     if choice == '1':
         url = input("Enter the media URL or local file (local:filename): ").strip()
@@ -3469,23 +2378,8 @@ def main():
         output_file = os.path.splitext(os.path.basename(file_path))[0] + '.tex'
         process_input_file(file_path, output_file)
         print(f"All slides have been written to '{output_file}'.")
-
-    elif choice == '3':
-        input_file = input("Enter path to LaTeX Beamer file: ").strip()
-        if not os.path.exists(input_file):
-            print(f"File {input_file} not found!")
-            return
-
-        # Generate output filename
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
-        output_file = f"{base_name}_converted.txt"
-
-        if convert_tex_to_native(input_file, output_file):
-            print(f"\nConversion complete!")
-            print(f"You can now edit {output_file} and process it with option 2")
-
     else:
-        print("Invalid choice. Please run the script again and choose 1, 2, or 3.")
+        print("Invalid choice. Please run the script again and choose 1 or 2.")
 
 
 if __name__ == "__main__":
