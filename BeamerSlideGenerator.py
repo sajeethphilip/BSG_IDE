@@ -112,6 +112,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{tikz}
+\usetikzlibrary{positioning}
 \usepackage{pgfplots}
 \usepackage{xstring}
 \usepackage{animate}
