@@ -1600,15 +1600,146 @@ def generate_content_items(content, color=None):
         if not item_str:
             continue
 
-        # Handle TikZ blocks - pass them through unchanged
-        if '\\begin{tikzpicture}' in item_str:
+        # ====== SECTION 1: Pass-through LaTeX commands and environments ======
+        # These should be passed through unchanged
+
+        # A) Graphics and media commands
+        graphics_commands = [
+            '\\includegraphics', '\\movie', '\\animategraphics',
+            '\\sound', '\\hyperlinksound'
+        ]
+        if any(cmd in item_str for cmd in graphics_commands):
             items.append(item_str)
             continue
 
-        # Handle other LaTeX environments
-        if item_str.startswith(('\\begin{center}', '\\end{center}', '\\scalebox{')):
+        # B) Text formatting and styling commands
+        styling_commands = [
+            '\\textbf{', '\\textit{', '\\texttt{', '\\textsf{', '\\textrm{',
+            '\\underline{', '\\emph{', '\\textsc{', '\\textsuperscript{',
+            '\\textsubscript{', '\\sout{', '\\uline{', '\\uuline{',
+            '\\uwave{', '\\textcolor{', '\\color{', '\\colorbox{',
+            '\\fcolorbox{', '\\hl{', '\\hlkey{', '\\hlnote{',
+            '\\shadowtext{', '\\glowtext{', '\\gradienttext{',
+            '\\scalebox{', '\\resizebox{', '\\rotatebox{'
+        ]
+        if any(item_str.startswith(cmd) for cmd in styling_commands):
             items.append(item_str)
             continue
+
+        # C) Math and symbol commands
+        math_commands = [
+            '\\(', '\\)', '\\[', '\\]', '\\begin{equation', '\\end{equation',
+            '\\begin{align', '\\end{align', '\\begin{gather', '\\end{gather',
+            '\\begin{multline', '\\end{multline}', '\\mathbb{', '\\mathcal{',
+            '\\mathfrak{', '\\mathscr{', '\\mathbf{', '\\mathit{', '\\mathrm{',
+            '\\mathsf{', '\\mathtt{', '\\boldsymbol{', '\\vec{', '\\hat{',
+            '\\tilde{', '\\dot{', '\\ddot{', '\\bar{'
+        ]
+        if any(cmd in item_str for cmd in math_commands):
+            items.append(item_str)
+            continue
+
+        # D) Cross-referencing commands
+        ref_commands = [
+            '\\label{', '\\ref{', '\\pageref{', '\\cite{', '\\citep{',
+            '\\citet{', '\\citeauthor{', '\\citeyear{', '\\footnote{',
+            '\\footnotemark', '\\footnotetext{', '\\marginpar{'
+        ]
+        if any(item_str.startswith(cmd) for cmd in ref_commands):
+            items.append(item_str)
+            continue
+
+        # E) Spacing and layout commands
+        spacing_commands = [
+            '\\vspace{', '\\hspace{', '\\vfill', '\\hfill', '\\vskip',
+            '\\hskip', '\\smallskip', '\\medskip', '\\bigskip',
+            '\\quad', '\\qquad', '\\,', '\\:', '\\;', '\\!', '\\enspace',
+            '\\phantom{', '\\hphantom{', '\\vphantom{'
+        ]
+        if any(item_str.startswith(cmd) for cmd in spacing_commands):
+            items.append(item_str)
+            continue
+
+        # F) Box and frame commands
+        box_commands = [
+            '\\framebox{', '\\fbox{', '\\makebox{', '\\parbox{',
+            '\\minipage', '\\raisebox{', '\\savebox{', '\\usebox{',
+            '\\sbox{', '\\newsavebox'
+        ]
+        if any(item_str.startswith(cmd) for cmd in box_commands):
+            items.append(item_str)
+            continue
+
+        # G) Float environments
+        float_envs = [
+            '\\begin{figure', '\\end{figure', '\\begin{table', '\\end{table}',
+            '\\begin{wrapfigure', '\\end{wrapfigure}', '\\begin{wraptable',
+            '\\end{wraptable}', '\\centering', '\\caption{', '\\captionof{',
+            '\\listoffigures', '\\listoftables'
+        ]
+        if any(item_str.startswith(cmd) for cmd in float_envs):
+            items.append(item_str)
+            continue
+
+        # H) List and description environments
+        list_envs = [
+            '\\begin{itemize}', '\\end{itemize}', '\\begin{enumerate}',
+            '\\end{enumerate}', '\\begin{description}', '\\end{description}',
+            '\\item[', '\\item ', '\\setlength{\\itemindent}', '\\setlength{\\itemsep}'
+        ]
+        if any(item_str.startswith(cmd) for cmd in list_envs):
+            items.append(item_str)
+            continue
+
+        # I) Special Beamer/BSG commands
+        beamer_commands = [
+            '\\begin{alertbox}', '\\end{alertbox}', '\\begin{infobox}',
+            '\\end{infobox}', '\\begin{block}', '\\end{block}',
+            '\\begin{exampleblock}', '\\end{exampleblock}',
+            '\\begin{alertblock}', '\\end{alertblock}', '\\anbg{',
+            '\\only<', '\\visible<', '\\invisible<', '\\alt<',
+            '\\temporal<', '\\uncover<'
+        ]
+        if any(item_str.startswith(cmd) for cmd in beamer_commands):
+            items.append(item_str)
+            continue
+
+        # J) Table/tabular environments
+        table_envs = [
+            '\\begin{tabular}', '\\end{tabular}', '\\begin{tabularx}',
+            '\\end{tabularx}', '\\begin{longtable}', '\\end{longtable}',
+            '\\hline', '\\cline{', '\\multicolumn{', '\\multirow{',
+            '\\toprule', '\\midrule', '\\bottomrule', '\\addlinespace'
+        ]
+        if any(item_str.startswith(cmd) for cmd in table_envs):
+            items.append(item_str)
+            continue
+
+        # K) Miscellaneous LaTeX commands
+        misc_commands = [
+            '\\url{', '\\href{', '\\usepackage', '\\documentclass',
+            '\\newcommand{', '\\renewcommand{', '\\providecommand{',
+            '\\def', '\\let', '\\usepackage', '\\RequirePackage',
+            '\\input{', '\\include{', '\\includeonly{', '\\bibliography{',
+            '\\bibliographystyle{', '\\printbibliography', '\\nocite{',
+            '\\index{', '\\glossary{', '\\addcontentsline',
+            '\\addtocontents', '\\tableofcontents', '\\listoffigures',
+            '\\listoftables', '\\appendix', '\\part{', '\\chapter{',
+            '\\section{', '\\subsection{', '\\subsubsection{',
+            '\\paragraph{', '\\subparagraph{', '\\pagebreak',
+            '\\newpage', '\\clearpage', '\\cleardoublepage'
+        ]
+        if any(item_str.startswith(cmd) for cmd in misc_commands):
+            items.append(item_str)
+            continue
+
+        # L) Environment begin/end markers (catch-all for any environment)
+        if item_str.startswith(('\\begin{', '\\end{')):
+            items.append(item_str)
+            continue
+
+        # ====== SECTION 2: Original processing logic ======
+        # This handles items that aren't LaTeX commands
 
         # Handle pause directives
         if pause_set and not item_str.startswith(('\\pause','\\begin','\\end','\\item')):
