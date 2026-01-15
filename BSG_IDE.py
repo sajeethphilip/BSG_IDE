@@ -4806,8 +4806,6 @@ class BeamerSlideEditor(ctk.CTk):
             # Remove movie commands
             clean_content = re.sub(r'\\movie[^}]*\}', '', clean_content)
 
-            # Remove TikZ environments
-            clean_content = re.sub(r'\\begin\{tikzpicture\}.*?\\end\{tikzpicture\}', '', clean_content, flags=re.DOTALL)
 
             # Extract blocks with safer patterns
             block_patterns = [
@@ -10722,243 +10720,179 @@ def convert_beamer_tex_to_simple_text(tex_file_path):
         tex_path = Path(tex_file_path)
         output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
 
-        def clean_latex_text(text):
-            """Clean LaTeX commands, keep plain text - SIMPLIFIED"""
+        def extract_complete_tikz_blocks(text):
+            """Extract complete TikZ blocks including surrounding LaTeX commands"""
+            tikz_blocks = []
+
+            # Pattern to match TikZ with possible surrounding commands like \scalebox, \centering, etc.
+            # This captures things like: \centering\begin{tikzpicture}...\end{tikzpicture}
+            tikz_pattern = r'((?:\\centering\s*)?(?:\\scalebox\{[^}]*\}\s*\{)?(?:\\begin\{center\})?(?:\\begin\{tikzpicture\}.*?\\end\{tikzpicture\})(?:\\end\{center\})?(?:\})?)'
+            tikz_matches = list(re.finditer(tikz_pattern, text, re.DOTALL))
+
+            # Replace from last to first to avoid index issues
+            for i, match in enumerate(reversed(tikz_matches)):
+                tikz_code = match.group(1).strip()
+                # Store the full TikZ block
+                tikz_blocks.append(tikz_code)
+                # Replace with unique placeholder
+                placeholder = f"{{TIKZ_BLOCK_{len(tikz_matches)-i-1}}}"
+                text = text[:match.start()] + placeholder + text[match.end():]
+
+            return text, tikz_blocks
+
+        def clean_text_keeping_structure(text):
+            """Clean LaTeX text while keeping structure"""
             if not text:
                 return ""
 
-            # First, remove LaTeX comments
+            # Remove LaTeX comments
             text = re.sub(r'%.*$', '', text, flags=re.MULTILINE)
 
-            # Remove LaTeX commands but keep their content
-            # Pattern for commands with {} arguments
-            text = re.sub(r'\\[a-zA-Z]+\s*\{([^}]*)\}', r'\1', text)
+            # Preserve \file commands
+            if '\\includegraphics' in text:
+                # Convert \includegraphics to \file
+                text = re.sub(r'\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}', r'\\file \1', text)
 
-            # Remove remaining commands without arguments
-            text = re.sub(r'\\[a-zA-Z]+', '', text)
+            # Remove specific LaTeX environments we'll handle separately
+            text = re.sub(r'\\begin\{center\}', r'\\centering\n', text)
+            text = re.sub(r'\\end\{center\}', r'', text)
 
-            # Remove special LaTeX characters
-            text = text.replace('~', ' ')
-            text = text.replace('``', '"')
-            text = text.replace("''", '"')
-            text = text.replace('\\&', '&')
-            text = text.replace('\\%', '%')
-            text = text.replace('\\#', '#')
-            text = text.replace('\\_', '_')
+            # Clean up multiple newlines
+            text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
 
-            # Clean up whitespace
-            text = re.sub(r'\s+', ' ', text)
-            text = text.strip()
+            return text.strip()
 
-            return text
+        def extract_and_clean_content(frame_content):
+            """Extract and clean slide content"""
+            if not frame_content:
+                return []
 
-        def extract_text_from_env(match):
-            """Extract text from LaTeX environment"""
-            env_type = match.group(1)
-            env_content = match.group(2)
+            # First, extract TikZ blocks with their surrounding LaTeX
+            content_with_placeholders, tikz_blocks = extract_complete_tikz_blocks(frame_content)
 
-            if env_type in ['itemize', 'enumerate']:
-                # Extract bullet points
-                items = []
-                # Find all \item commands
-                item_matches = re.findall(r'\\item\s*(.*?)(?=\\item|$)', env_content, re.DOTALL)
-                for item in item_matches:
-                    cleaned = clean_latex_text(item)
-                    if cleaned:
-                        items.append(f"- {cleaned}")
-                return '\n'.join(items)
-            elif env_type in ['block', 'exampleblock', 'alertblock']:
-                # Extract block content
-                # Find title and content
-                title_match = re.match(r'\{([^}]*)\}(.*)', env_content, re.DOTALL)
-                if title_match:
-                    title = clean_latex_text(title_match.group(1))
-                    block_content = title_match.group(2)
-                    if title:
-                        return f"{title}:\n{extract_text(block_content)}"
-                    else:
-                        return extract_text(block_content)
-                else:
-                    return extract_text(env_content)
-            else:
-                # Generic environment - extract text
-                return extract_text(env_content)
+            # Extract notes separately if present
+            notes_content = ""
+            if '\\note{' in content_with_placeholders:
+                # This is simplified - you might need better note extraction
+                note_match = re.search(r'\\note\{(.*?)\}', content_with_placeholders, re.DOTALL)
+                if note_match:
+                    notes_content = note_match.group(1)
+                    # Remove notes from main content
+                    content_with_placeholders = content_with_placeholders[:note_match.start()]
 
-        def extract_text(content):
-            """Extract plain text from LaTeX content"""
-            # Remove LaTeX environments recursively
-            def replace_env(match):
-                return extract_text_from_env(match)
+            # Clean the remaining content
+            cleaned_content = clean_text_keeping_structure(content_with_placeholders)
 
-            # Process environments first
-            while True:
-                new_content = re.sub(r'\\begin\{([^}]+)\}(.*?)\\end\{\1\}',
-                                   replace_env, content, flags=re.DOTALL)
-                if new_content == content:
-                    break
-                content = new_content
+            # Restore TikZ blocks
+            for i, tikz_block in enumerate(tikz_blocks):
+                placeholder = f"{{TIKZ_BLOCK_{i}}}"
+                cleaned_content = cleaned_content.replace(placeholder, f"\n{tikz_block}\n")
 
-            # Now clean remaining LaTeX
-            return clean_latex_text(content)
+            # Split into lines and clean
+            content_lines = []
+            for line in cleaned_content.split('\n'):
+                line = line.strip()
+                if line:
+                    # Handle itemize/enumerate
+                    if '\\item' in line:
+                        # Replace \item with -
+                        line = re.sub(r'\\item\s*', '- ', line)
+                        # Remove \textbf{...} but keep content
+                        line = re.sub(r'\\textbf\{([^}]*)\}', r'\1', line)
+                    content_lines.append(line)
 
-        # Extract presentation metadata
-        metadata = {}
-        patterns = {
-            'title': r'\\title\{([^}]*)\}',
-            'author': r'\\author\{([^}]*)\}',
-            'institute': r'\\institute\{([^}]*)\}',
-            'date': r'\\date\{([^}]*)\}',
-        }
+            return content_lines, notes_content
 
-        for key, pattern in patterns.items():
-            match = re.search(pattern, tex_content)
-            if match:
-                metadata[key] = clean_latex_text(match.group(1))
+        def process_notes(notes_content):
+            """Process LaTeX notes into simple format"""
+            notes_lines = []
+            if not notes_content:
+                return notes_lines
 
-        # Extract document body
-        doc_match = re.search(r'\\begin\{document\}(.*?)\\end\{document\}', tex_content, re.DOTALL)
+            # Simple processing - convert \item to •
+            lines = notes_content.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.startswith('\\item'):
+                    # Clean \item command
+                    line = re.sub(r'\\item\s*', '• ', line)
+                    # Handle nested items
+                    if '\\begin{itemize}' in line:
+                        continue  # Skip begin commands
+                    if '\\end{itemize}' in line:
+                        continue  # Skip end commands
+                    if line:
+                        notes_lines.append(line)
+
+            return notes_lines
+
+        # Parse the TeX file
+        slides = []
+
+        # Extract document content
+        doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', tex_content, re.DOTALL)
         if not doc_match:
             raise ValueError("No document body found in TeX file")
 
         document_content = doc_match.group(1)
 
-        # Find frames - use non-greedy matching
-        frames = list(re.finditer(r'\\begin\{frame\}(.*?)\\end\{frame\}',
-                                 document_content, re.DOTALL))
+        # Find frames
+        frame_pattern = r'\\begin\{frame\}(.*?)\\end\{frame\}'
+        frame_matches = re.finditer(frame_pattern, document_content, re.DOTALL)
 
-        slides_data = []
-
-        for i, frame_match in enumerate(frames):
+        slide_count = 0
+        for frame_match in frame_matches:
+            slide_count += 1
             frame_content = frame_match.group(1)
 
-            # Skip title pages
+            # Skip title page frames
             if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
                 continue
 
             # Extract title
-            title = ""
-            ft_match = re.search(r'\\frametitle\s*\{([^}]*)\}', frame_content)
-            if ft_match:
-                title = clean_latex_text(ft_match.group(1))
-
-            if not title:
-                # Look for text that might be a title
-                lines = frame_content.strip().split('\n')
-                for line in lines[:5]:
-                    line = line.strip()
-                    if line and not line.startswith('\\') and len(line) < 100:
-                        title = clean_latex_text(line)
-                        break
-
-            if not title or len(title) > 100:
-                title = f"Slide {i+1}"
-
-            # Extract media
-            media = ""
-            graphics_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}', frame_content)
-            if graphics_match:
-                media = f"\\file {graphics_match.group(1)}"
-
-            # Extract content - FIXED APPROACH
-            content_lines = []
-
-            # Remove LaTeX environments and extract text
-            clean_frame = frame_content
-
-            # Remove frametitle
-            clean_frame = re.sub(r'\\frametitle\{[^}]*\}', '', clean_frame)
-
-            # Remove notes
-            clean_frame = re.sub(r'\\note\{[^}]*\}', '', clean_frame)
-
-            # Process itemize/enumerate
-            list_envs = re.finditer(r'\\begin\{(itemize|enumerate)\}(.*?)\\end\{\1\}',
-                                   clean_frame, re.DOTALL)
-            for env_match in list_envs:
-                items = re.findall(r'\\item\s*(.*?)(?=\\item|$)', env_match.group(2), re.DOTALL)
-                for item in items:
-                    cleaned = clean_latex_text(item)
-                    if cleaned:
-                        content_lines.append(f"- {cleaned}")
-
-            # Remove processed environments
-            clean_frame = re.sub(r'\\begin\{(itemize|enumerate)\}.*?\\end\{\1\}', '',
-                               clean_frame, flags=re.DOTALL)
-
-            # Remove blocks
-            clean_frame = re.sub(r'\\begin\{(block|exampleblock|alertblock)\}.*?\\end\{\1\}', '',
-                               clean_frame, flags=re.DOTALL)
-
-            # Remove columns
-            clean_frame = re.sub(r'\\begin\{column\}.*?\\end\{column\}', '',
-                               clean_frame, flags=re.DOTALL)
-            clean_frame = re.sub(r'\\begin\{columns\}.*?\\end\{columns\}', '',
-                               clean_frame, flags=re.DOTALL)
-
-            # Remove tikzpicture
-            clean_frame = re.sub(r'\\begin\{tikzpicture\}.*?\\end\{tikzpicture\}', '',
-                               clean_frame, flags=re.DOTALL)
-
-            # Now process remaining lines
-            lines = clean_frame.split('\n')
-            for line in lines:
-                line = line.strip()
-                if line and not line.startswith('\\'):
-                    cleaned = clean_latex_text(line)
-                    if cleaned and len(cleaned) > 2:
-                        # Don't add if it looks like a title or metadata
-                        if not (':' in cleaned or cleaned.endswith('?') or
-                               len(cleaned) < 10 and cleaned[0].isupper()):
-                            content_lines.append(cleaned)
-
-            # If no content found, add a placeholder
-            if not content_lines:
-                content_lines.append("% Content extracted from LaTeX slide")
-
-            slides_data.append({
-                'title': title,
-                'media': media,
-                'content': content_lines
-            })
-
-        # Write to text format
-        with open(output_path, 'w', encoding='utf-8') as f:
-            # Write metadata
-            if 'title' in metadata:
-                f.write(f"\\title{{{metadata['title']}}}\n")
-            if 'author' in metadata:
-                f.write(f"\\author{{{metadata['author']}}}\n")
-            if 'institute' in metadata:
-                f.write(f"\\institute{{{metadata['institute']}}}\n")
-            if 'date' in metadata:
-                f.write(f"\\date{{{metadata['date']}}}\n")
+            title = f"Slide {slide_count}"
+            title_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
+            if title_match:
+                title = title_match.group(1)
             else:
-                f.write("\\date{\\today}\n")
+                # Check for title in frame options
+                title_match = re.match(r'^\s*\{([^}]+)\}', frame_content.strip())
+                if title_match:
+                    title = title_match.group(1)
 
-            f.write("\n")
+            # Extract and clean content
+            content_lines, raw_notes = extract_and_clean_content(frame_content)
 
-            # Write slides
-            for slide in slides_data:
+            # Process notes
+            notes_lines = process_notes(raw_notes)
+
+            # Only add slides with content
+            if content_lines:
+                slides.append({
+                    'title': title,
+                    'content': content_lines,
+                    'notes': notes_lines
+                })
+
+        # Write to output file in IDE format
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for slide in slides:
                 f.write(f"\\title {slide['title']}\n")
-                f.write("\\begin{Content}")
-                if slide['media']:
-                    f.write(f" {slide['media']}")
-                f.write("\n")
-
-                for item in slide['content']:
-                    f.write(f"{item}\n")
-
-                f.write("\\end{Content}\n\n")
-
-            f.write("\\end{document}\n")
-
-        print(f"✓ Converted: {Path(tex_file_path).name} -> {output_path.name}")
-        print(f"✓ Extracted {len(slides_data)} slides")
+                f.write("\\begin{Content}\n")
+                for content_line in slide['content']:
+                    f.write(f"{content_line}\n")
+                f.write("\\end{Content}\n")
+                if slide['notes']:
+                    f.write("\\begin{Notes}\n")
+                    for note_line in slide['notes']:
+                        f.write(f"{note_line}\n")
+                    f.write("\\end{Notes}\n")
+                f.write("\n")  # Slide separator
 
         return str(output_path)
 
     except Exception as e:
-        print(f"✗ Error converting TeX file: {str(e)}")
+        print(f"Error converting TeX file: {e}")
         import traceback
         traceback.print_exc()
         return None

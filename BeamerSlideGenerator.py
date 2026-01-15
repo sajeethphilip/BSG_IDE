@@ -117,8 +117,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         text = text.replace('$', '\\$')
         text = text.replace('#', '\\#')
         text = text.replace('_', '\\_')
-        text = text.replace('{', '\\{')
-        text = text.replace('}', '\\}')
         text = text.replace('~', '\\textasciitilde')
         text = text.replace('^', '\\textasciicircum')
         return text
@@ -203,7 +201,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
         boxed title style={size=small,colback=#1!75!black}
     }
-}{}
+}
 
 % Define colors
 \definecolor{myred}{RGB}{255,50,50}
@@ -1439,6 +1437,8 @@ def detect_tikz_content(content_lines):
         elif in_tikz and '\\end{tikzpicture}' in stripped:
             current_tikz.append(stripped)
             tikz_blocks.append('\n'.join(current_tikz))
+            # CRITICAL FIX: Add TikZ block to remaining_content
+            remaining_content.append('\n'.join(current_tikz))
             in_tikz = False
         # Inside TikZ environment
         elif in_tikz:
@@ -1452,51 +1452,268 @@ def detect_tikz_content(content_lines):
 
 # Update the process_frame function to handle TikZ content
 def process_frame(outfile, title, content, notes, media):
-    """Process a single frame and write it to the output file"""
+    """Process a single frame and write it to the output file.
 
-    # Separate TikZ content from regular content
-    tikz_blocks, regular_content = detect_tikz_content(content if content else [])
+    Args:
+        outfile: File object to write LaTeX output to
+        title: Frame title (string)
+        content: List of content lines for the frame
+        notes: List of note lines for speaker notes
+        media: Media directive string or None
 
-    # If we have TikZ content, handle it specially
-    if tikz_blocks:
-        # Create a combined content list with TikZ blocks properly formatted
-        combined_content = []
+    Returns:
+        None (writes directly to outfile)
+    """
+    try:
+        # Validate and sanitize inputs
+        title = sanitize_frame_title(title) if title else "Untitled Frame"
+        content = content or []
+        notes = notes or []
 
-        for tikz_block in tikz_blocks:
-            # Wrap TikZ block in appropriate LaTeX environment
-            wrapped_tikz = f"\\begin{{center}}\n\\scalebox{{0.8}}{{\n{tikz_block}\n}}\n\\end{{center}}"
-            combined_content.append(wrapped_tikz)
+        # Process content preserving all LaTeX environments including TikZ
+        processed_content = process_content_preserving_environments(content)
 
-        # Add regular content items (bulleted lists, etc.)
-        for item in regular_content:
-            if item.strip() and item.strip().startswith('-'):
-                combined_content.append(item.strip())
-
-        # Generate LaTeX code with the combined content
+        # Generate LaTeX code for the frame
         latex_code, directive = process_media(
-            media if media else "\\None",
-            combined_content,
+            media or "\\None",
+            processed_content,
             title,
             False  # playable flag
         )
-    else:
-        # Original processing for non-TikZ content
-        latex_code, directive = process_media(
-            media if media else "\\None",
-            content if content else [],  # Pass empty list instead of None
-            title,
-            False  # playable flag
-        )
+
+        # Add speaker notes if provided
+        if latex_code and notes:
+            latex_code = insert_speaker_notes(latex_code, notes)
+
+        # Write the processed frame to output
+        outfile.write(latex_code + '\n')
+
+    except Exception as e:
+        error_msg = f"Error processing frame '{title}': {str(e)}"
+        print(error_msg)
+        # Write an error frame instead of crashing
+        outfile.write(f"% ERROR: {error_msg}\n")
+        outfile.write(generate_error_frame(title, content))
+        raise  # Re-raise if you want the calling function to handle it
+
+
+def sanitize_frame_title(title):
+    """Sanitize frame title to prevent LaTeX compilation errors.
+
+    Args:
+        title: Raw frame title string
+
+    Returns:
+        Sanitized title safe for LaTeX frame titles
+    """
+    if not title:
+        return "Untitled Frame"
+
+    # Create a safe copy
+    safe_title = str(title)
+
+    # Remove problematic brace patterns that cause compilation errors
+    # Frame titles in LaTeX cannot contain {} braces
+    safe_title = re.sub(r'\{[^{}]*\}', '', safe_title)  # Remove simple braces
+    safe_title = safe_title.replace('{', '').replace('}', '')
+
+    # Escape special LaTeX characters (except braces which we removed)
+    special_chars = ['#', '$', '%', '&', '_', '~', '^']
+    for char in special_chars:
+        safe_title = safe_title.replace(char, f'\\{char}')
+
+    # Ensure title has reasonable length
+    if len(safe_title) > 100:
+        safe_title = safe_title[:97] + '...'
+
+    return safe_title.strip()
+
+
+def process_content_preserving_environments(content_lines):
+    """Process content while preserving LaTeX environments including TikZ."""
+    if not content_lines:
+        return []
+
+    processed_lines = []
+    in_tikz = False
+    in_other_env = False
+    current_env = None
+
+    for line in content_lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Detect TikZ environment
+        if '\\begin{tikzpicture}' in line:
+            in_tikz = True
+            processed_lines.append(line)
+            continue
+        elif '\\end{tikzpicture}' in line:
+            in_tikz = False
+            processed_lines.append(line)
+            continue
+
+        # Detect other LaTeX environments
+        env_match = re.match(r'\\begin\{([^}]+)\}', line)
+        if env_match and not in_tikz:
+            env_name = env_match.group(1)
+            in_other_env = True
+            current_env = env_name
+            processed_lines.append(line)
+            continue
+
+        if line.startswith('\\end{') and not in_tikz:
+            in_other_env = False
+            current_env = None
+            processed_lines.append(line)
+            continue
+
+        # If inside TikZ or other environment, preserve line as-is
+        if in_tikz or in_other_env:
+            processed_lines.append(line)
+            continue
+
+        # For regular content outside environments, process normally
+        if line.startswith('-'):
+            bullet_content = line[1:].strip()
+            if bullet_content:
+                # Process special effects and sanitize
+                processed_bullet = process_special_effects(bullet_content)
+                processed_bullet = sanitize_latex_content(processed_bullet)
+                processed_lines.append(f"\\item {processed_bullet}")
+        elif line.startswith('\\'):
+            # Pass through LaTeX commands as-is
+            processed_lines.append(sanitize_latex_content(line))
+        else:
+            processed_line = process_special_effects(line)
+            processed_line = sanitize_latex_content(processed_line)
+            processed_lines.append(f"\\item {processed_line}")
+
+    return processed_lines
+
+def insert_speaker_notes(latex_code, notes):
+    """Insert speaker notes into LaTeX frame code.
+
+    Args:
+        latex_code: Complete LaTeX frame code
+        notes: List of note strings
+
+    Returns:
+        LaTeX code with notes inserted
+    """
+    if not notes or not latex_code:
+        return latex_code
+
+    # Find the \end{frame} position
+    frame_end_pos = latex_code.rfind('\\end{frame}')
+    if frame_end_pos == -1:
+        return latex_code  # No frame end found, return original
+
+    # Format notes with proper indentation
+    notes_text = '\n'.join([f'    \\note{{{sanitize_latex_content(note)}}}'
+                           for note in notes if note.strip()])
 
     # Insert notes before \end{frame}
-    if latex_code and notes:
-        frame_end = latex_code.rfind('\\end{frame}')
-        if frame_end != -1:
-            notes_text = '\n'.join(f'    \\note{{{note}}}' for note in notes)
-            latex_code = latex_code[:frame_end] + '\n' + notes_text + '\n' + latex_code[frame_end:]
+    return (latex_code[:frame_end_pos] +
+            '\n' + notes_text + '\n' +
+            latex_code[frame_end_pos:])
 
-    outfile.write(latex_code + '\n')
 
+def ensure_proper_environments(content_lines):
+    """Ensure LaTeX environments are properly opened and closed.
+
+    Args:
+        content_lines: List of content lines
+
+    Returns:
+        List with properly nested environments
+    """
+    if not content_lines:
+        return []
+
+    # Track environments
+    env_stack = []
+    result = []
+
+    # First pass: detect environments and ensure itemize is wrapped
+    i = 0
+    while i < len(content_lines):
+        line = content_lines[i]
+
+        # Detect environment starts
+        env_match = re.match(r'\\begin\{([^}]+)\}', line)
+        if env_match:
+            env_name = env_match.group(1)
+            env_stack.append(env_name)
+            result.append(line)
+
+        # Detect environment ends
+        elif line.startswith('\\end{'):
+            if env_stack:
+                env_stack.pop()
+            result.append(line)
+
+        # Handle \item commands - ensure they're in itemize
+        elif line.startswith('\\item'):
+            # Check if we're in an itemize environment
+            if not any('itemize' in env for env in env_stack):
+                # Not in itemize, add it
+                result.append('\\begin{itemize}')
+                env_stack.append('itemize')
+                result.append(line)
+                # Look ahead to see if we need to close
+                j = i + 1
+                while j < len(content_lines):
+                    if content_lines[j].startswith('\\item'):
+                        j += 1
+                    else:
+                        break
+                # If no more items, close immediately
+                if j == len(content_lines) or not content_lines[j].startswith('\\item'):
+                    result.append('\\end{itemize}')
+                    env_stack.pop()
+            else:
+                result.append(line)
+
+        else:
+            result.append(line)
+
+        i += 1
+
+    # Close any unclosed environments
+    while env_stack:
+        env = env_stack.pop()
+        result.append(f'\\end{{{env}}}')
+
+    return result
+
+
+def generate_error_frame(title, content):
+    """Generate a simple error frame when processing fails.
+
+    Args:
+        title: Frame title
+        content: Original content
+
+    Returns:
+        Simple LaTeX frame code showing the error
+    """
+    safe_title = sanitize_frame_title(title)
+
+    error_frame = f"""\\begin{{frame}}{{{safe_title}}}
+    \\begin{{alertblock}}{{Frame Processing Error}}
+        There was an error processing this frame. The original content is shown below.
+    \\end{{alertblock}}
+
+    \\begin{{minipage}}{{\\textwidth}}
+    \\begin{{verbatim}}
+{chr(10).join(content if content else ['No content available'])}
+    \\end{{verbatim}}
+    \\end{{minipage}}
+\\end{{frame}}
+"""
+    return error_frame
 # Also need to update the generate_content_items function to pass through TikZ content
 def generate_content_items(content, color=None):
     """Generate formatted content items with optional color, handling TikZ separately."""
@@ -1547,10 +1764,11 @@ def generate_content_items(content, color=None):
                 in_itemize = False
             continue
 
-        # A) Graphics and media commands
+        # In generate_content_items function, ensure TikZ is in the pass-through list:
         graphics_commands = [
             '\\includegraphics', '\\movie', '\\animategraphics',
-            '\\sound', '\\hyperlinksound'
+            '\\sound', '\\hyperlinksound', '\\tikz', '\\begin{tikzpicture}',
+            '\\end{tikzpicture}'
         ]
         if any(cmd in item_str for cmd in graphics_commands):
             items.append(item_str)
@@ -2593,19 +2811,32 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                     in_notes_block = False
 
                 # Process content
+                # Process content
                 elif in_content_block:
                     if line.strip():  # Only add non-empty lines
-                        # FIX: Clean the content line of problematic braces
                         clean_line = line.strip()
-                        # Remove problematic braces from content items too
-                        if '- ' in clean_line[:2]:
-                            # For bullet points, clean after the dash
+
+                        # CRITICAL FIX: Don't remove braces from TikZ content
+                        # Check if this is TikZ content before processing
+                        if '\\begin{tikzpicture}' in clean_line or '\\end{tikzpicture}' in clean_line:
+                            # For TikZ content, keep all braces intact
+                            current_frame_content.append(clean_line)
+                        elif '- ' in clean_line[:2]:
+                            # For bullet points, only remove problematic brace patterns, not all braces
                             prefix = clean_line[:2]
                             content_part = clean_line[2:]
-                            # Remove braces from content
-                            content_part = content_part.replace('{', '').replace('}', '')
+
+                            # Only remove braces that would cause compilation errors in frame titles
+                            # But preserve braces for LaTeX commands and TikZ
+                            if not any(cmd in content_part for cmd in ['\\begin{tikzpicture}', '\\end{tikzpicture}', '\\tikz', '\\draw']):
+                                # For regular text, remove problematic brace patterns
+                                content_part = re.sub(r'^\{(.*)\}$', r'\1', content_part)  # Remove surrounding braces
+                                content_part = re.sub(r'\{\{(.*)\}\}', r'\1', content_part)  # Remove double braces
                             clean_line = prefix + content_part
-                        current_frame_content.append(clean_line)
+                            current_frame_content.append(clean_line)
+                        else:
+                            # For other content, keep braces for LaTeX commands
+                            current_frame_content.append(clean_line)
 
                 # Process notes - FIXED: Keep braces for LaTeX commands
                 elif in_notes_block:
@@ -2643,12 +2874,28 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
 def should_process_frame(title, content, media, notes):
     """
     Determine if a frame should be processed based on its components.
-    A frame should be processed if it has any of: title, content, media, or notes.
+    Special handling for TikZ content.
     """
+    has_content = content is not None and len(content) > 0
+
+    # Check if content contains TikZ
+    has_tikz = False
+    if has_content:
+        for item in content:
+            if isinstance(item, str) and '\\begin{tikzpicture}' in item:
+                has_tikz = True
+                break
+
+    # A frame should be processed if:
+    # 1. It has a title, OR
+    # 2. It has media, OR
+    # 3. It has notes, OR
+    # 4. It has content (including TikZ)
     return (title is not None or
             media is not None or
-            (content is not None and len(content) > 0) or
-            (notes is not None and len(notes) > 0))
+            (notes is not None and len(notes) > 0) or
+            (has_content and not has_tikz) or  # Regular content
+            has_tikz)  # TikZ content
 
 
 #------------------------------------------------------
