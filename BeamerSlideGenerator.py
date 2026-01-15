@@ -104,6 +104,33 @@ def generate_preview_frame(filepath, output_path=None):
 def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
     """Returns complete Beamer preamble including notes support"""
 
+    # Clean titles to prevent brace issues
+    def clean_text(text):
+        if not text:
+            return text
+        # Remove excessive braces that cause compilation errors
+        text = text.replace('{{', '').replace('}}', '')
+        text = text.replace('{{{', '').replace('}}}', '')
+        # Escape special LaTeX characters
+        text = text.replace('&', '\\&')
+        text = text.replace('%', '\\%')
+        text = text.replace('$', '\\$')
+        text = text.replace('#', '\\#')
+        text = text.replace('_', '\\_')
+        text = text.replace('{', '\\{')
+        text = text.replace('}', '\\}')
+        text = text.replace('~', '\\textasciitilde')
+        text = text.replace('^', '\\textasciicircum')
+        return text
+
+    # Clean all input text
+    title = clean_text(title)
+    subtitle = clean_text(subtitle) if subtitle else ""
+    author = clean_text(author)
+    institution = clean_text(institution)
+    short_institute = clean_text(short_institute) if short_institute else clean_text(institution)
+    date = clean_text(date) if date else r'\today'
+
     core_preamble = r"""
 \documentclass[aspectratio=169]{beamer}
 
@@ -112,23 +139,32 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{tikz}
-\usetikzlibrary{positioning}
 \usepackage{pgfplots}
 \usepackage{xstring}
 \usepackage{animate}
 \usepackage{multimedia}
 \usepackage{xifthen}
 \usepackage{xcolor}
+\usepackage{geometry}
+\geometry{paperwidth=128mm,paperheight=96mm}
+
+% Load TikZ libraries FIRST
+\usetikzlibrary{positioning}
+\usetikzlibrary{shapes.symbols}
+\usetikzlibrary{shapes.callouts}
+\usetikzlibrary{shapes.multipart}
+\usetikzlibrary{calc}
+\usetikzlibrary{overlay-beamer-styles}
+\usetikzlibrary{shapes.geometric}
+\usetikzlibrary{arrows.meta}
+\usetikzlibrary{backgrounds}
+\usetikzlibrary{fit}
+
 % Define the style for covered text
-\setbeamercovered{dynamic} % This should enable progressive transparency
+\setbeamercovered{dynamic}
 \setbeamerfont{item projected}{size=\small}
-%\setbeamercolor{alerted text}{fg=blue}        % Standard blue
-%\setbeamercolor{alerted text}{fg=darkblue}    % Darker blue
-%\setbeamercolor{alerted text}{fg=violet}      % Violet
-%\setbeamercolor{alerted text}{fg=purple}      % Purple
-%\setbeamercolor{alerted text}{fg=olive}       % Olive green
-%\setbeamercolor{alerted text}{fg=teal}        % Teal
-\setbeamercolor{alerted text}{fg=white}        % white
+\setbeamercolor{alerted text}{fg=white}
+
 % Extended packages with fallbacks
 \IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
 \IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
@@ -137,24 +173,14 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 
 % Package configurations
 \pgfplotsset{compat=1.18}
-\usetikzlibrary{shadows.blur, shapes.geometric, positioning, arrows.meta, backgrounds, fit}
 
-% Original text effects
+% SIMPLIFIED text effects - use standard LaTeX instead of problematic TikZ
 \newcommand{\shadowtext}[2][2pt]{%
-   \begin{tikzpicture}[baseline]
-       \node[blur shadow={shadow blur steps=5,shadow xshift=0pt,shadow yshift=-#1,
-             shadow opacity=0.75}, text=white] {#2};
-   \end{tikzpicture}%
+    \textcolor{white}{\textbf{#2}}%
 }
 
 \newcommand{\glowtext}[2][myblue]{%
-   \begin{tikzpicture}[baseline]
-       \node[circle, inner sep=1pt,
-             blur shadow={shadow blur steps=10,shadow xshift=0pt,
-             shadow yshift=0pt,shadow blur radius=5pt,
-             shadow opacity=0.5,shadow color=#1},
-             text=white] {#2};
-   \end{tikzpicture}%
+    \textcolor{#1}{\textbf{#2}}%
 }
 
 % Conditional definitions based on package availability
@@ -164,8 +190,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         colframe=#1!75!black,
         fonttitle=\bfseries,
         boxrule=0.5pt,
-        rounded corners,
-        shadow={2mm}{-1mm}{0mm}{black!50}
+        rounded corners
     }
 
     \newtcolorbox{infobox}[1][blue]{%
@@ -176,14 +201,11 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         boxrule=0.5pt,
         fonttitle=\bfseries,
         attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
-        boxed title style={size=small,colback=#1!75!black},
-        shadow={2mm}{-1mm}{0mm}{black!50}
+        boxed title style={size=small,colback=#1!75!black}
     }
 }{}
 
-
 % Define colors
-
 \definecolor{myred}{RGB}{255,50,50}
 \definecolor{myblue}{RGB}{0,130,255}
 \definecolor{mygreen}{RGB}{0,200,100}
@@ -192,24 +214,16 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \definecolor{mypurple}{RGB}{147,112,219}
 \definecolor{mypink}{RGB}{255,105,180}
 \definecolor{myteal}{RGB}{0,128,128}
-
-% Glow colors
-\definecolor{glowblue}{RGB}{0,150,255}
-\definecolor{glowyellow}{RGB}{255,223,0}
-\definecolor{glowgreen}{RGB}{0,255,128}
-\definecolor{glowpink}{RGB}{255,182,193}
-
-% Special effect support
-\usetikzlibrary{shadows.blur}
-\usetikzlibrary{decorations.text}
-\usetikzlibrary{fadings}
+\definecolor{mygray}{RGB}{128,128,128}
+\definecolor{mybrown}{RGB}{139,69,19}
+\definecolor{mycyan}{RGB}{0,255,255}
 
 % Basic highlighting commands
 \newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
 \newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
 \newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
-\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textcolor{white}{\textbf{#1}}}}
-\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textcolor{white}{\textbf{#1}}}}
+\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textbf{#1}}}
+\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textbf{#1}}}
 
 % Basic theme setup
 \usetheme{Madrid}
@@ -228,7 +242,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \setbeameroption{show notes on second screen=right}
 \setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
 
-
 % Animated background support
 \newcommand{\anbg}[2][0.2]{%
     \ifx\@empty#2\@empty
@@ -246,7 +259,8 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     \fi
 }
 """
-   # Progress bar template
+
+    # Progress bar template
     frame_setup = r"""
 % Progress bar setup
 \makeatletter
@@ -258,12 +272,16 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \newdimen\progressbar@tmpdim
 
 \progressbar@pbwd=\paperwidth
-\progressbar@pbht=1pt
+\progressbar@pbht=2pt
 
 \def\progressbar@progressbar{%
    \begin{tikzpicture}[very thin]
-       \shade[top color=myblue!50,bottom color=myblue]
-           (0pt, 0pt) rectangle (\insertframenumber\progressbar@pbwd/\inserttotalframenumber, \progressbar@pbht);
+       \ifnum\insertframenumber>0
+           \pgfmathparse{\insertframenumber/\inserttotalframenumber}
+           \edef\progress@ratio{\pgfmathresult}
+           \shade[top color=myblue!50,bottom color=myblue]
+               (0pt, 0pt) rectangle (\progress@ratio\progressbar@pbwd, \progressbar@pbht);
+       \fi
    \end{tikzpicture}%
 }
 
@@ -284,10 +302,10 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \makeatother"""
 
-   # Institution setup
-    inst_setup = rf"\makeatletter{chr(10)}\def\insertshortinstitute{{{short_institute if short_institute else institution}}}{chr(10)}\makeatother"
+    # Institution setup
+    inst_setup = rf"\makeatletter{chr(10)}\def\insertshortinstitute{{{short_institute}}}{chr(10)}\makeatother"
 
-   # Footline template
+    # Footline template
     footline_template = r"""
 % Footline template
 \setbeamertemplate{footline}{%
@@ -306,7 +324,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
  \vskip0pt%
 }"""
 
-   # Additional settings
+    # Additional settings
     additional_settings = r"""
 % Additional settings
 \setbeamersize{text margin left=5pt,text margin right=5pt}
@@ -315,16 +333,16 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 
     title_setup = (
        "% Title setup\n"
-       "\\title{" + title + "}\n"
-       + ("\\subtitle{" + subtitle + "}\n" if subtitle else "") +
-       "\\author{" + author + "}\n"
-       "\\institute{\\textcolor{mygreen}{" + institution + "}}\n"
-       "\\date{" + date + "}\n"
+       f"\\title{{{title}}}\n"
+       + (f"\\subtitle{{{subtitle}}}\n" if subtitle else "") +
+       f"\\author{{{author}}}\n"
+       f"\\institute{{\\textcolor{{mygreen}}{{{institution}}}}}\n"
+       f"\\date{{{date}}}\n"
        "\\begin{document}\n"
        "\\maketitle\n"
     )
 
-    # Title page template
+    # SIMPLIFIED title page without problematic glow effects
     title_page = (
        "% Title page\n"
        "\\begin{frame}[plain]\n"
@@ -332,22 +350,22 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
        "       % Background gradient\n"
        "       \\fill[top color=black!90,bottom color=black!70,middle color=myblue!30]\n"
        "       (current page.south west) rectangle (current page.north east);\n"
-       "       % Title with glow effect\n"
+       "       % Title with simple text\n"
        "       \\node[align=center] at (current page.center) {\n"
-       "           \\glowtext[glowblue]{\\Huge\\textbf{" + title + "}}\n"
-       + ("           \\\\[1em]\\glowtext[glowyellow]{\\large " + subtitle + "}\n" if subtitle else "") +
-       "           \\\\[2em]\n"
-       "           \\glowtext[glowgreen]{\\large " + author + "}\n"
-       "           \\\\[0.5em]\n"
-       "           \\textcolor{white}{\\small " + institution + "}\n"
-       "           \\\\[1em]\n"
-       "           \\textcolor{white}{\\small " + date + "}\n"
+       f"           {{\\Huge\\textcolor{{myblue}}{{\\textbf{{{title}}}}}}}\n"
+       + (f"           \\\\[1em]{{\\large\\textcolor{{myyellow}}{{{subtitle}}}}}\n" if subtitle else "") +
+       f"           \\\\[2em]\n"
+       f"           {{\\large\\textcolor{{mygreen}}{{{author}}}}}\n"
+       f"           \\\\[0.5em]\n"
+       f"           \\textcolor{{white}}{{\\small {institution}}}\n"
+       f"           \\\\[1em]\n"
+       f"           \\textcolor{{white}}{{\\small {date}}}\n"
        "       };\n"
        "   \\end{tikzpicture}\n"
        "\\end{frame}"
     )
 
-   # Combine all parts
+    # Combine all parts
     return "\n".join([
        core_preamble,
        frame_setup,
@@ -361,27 +379,28 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 def get_footline_template():
     """
     Returns the correct footline template for Beamer.
+    FIXED: Removed problematic parameter references
     """
-    return """% Setup footline template with proper short institute handling
-\\makeatletter
-\\defbeamertemplate*{footline}{custom}
+    return r"""% Setup footline template with proper short institute handling
+\makeatletter
+\defbeamertemplate*{footline}{custom}
 {
-  \\leavevmode%
-  \\hbox{%
-    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
-      \\usebeamerfont{author in head/foot}\\insertshortauthor~(\\usebeamercolor[fg]{author in head/foot}\\insertshortinstitute)
-    \\end{beamercolorbox}%
-    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
-      \\usebeamerfont{title in head/foot}\\insertshorttitle
-    \\end{beamercolorbox}%
-    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
-      \\usebeamerfont{date in head/foot}\\insertshortdate{\\,}\\hspace*{2em}
-      \\insertframenumber{} / \\inserttotalframenumber\\hspace*{2ex}
-    \\end{beamercolorbox}}%
-  \\vskip0pt%
+  \leavevmode%
+  \hbox{%
+    \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+      \usebeamerfont{author in head/foot}\insertshortauthor~(\usebeamercolor[fg]{author in head/foot}\insertshortinstitute)
+    \end{beamercolorbox}%
+    \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+      \usebeamerfont{title in head/foot}\insertshorttitle
+    \end{beamercolorbox}%
+    \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
+      \usebeamerfont{date in head/foot}\insertshortdate{\,}\hspace*{2em}
+      \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}
+    \end{beamercolorbox}}%
+  \vskip0pt%
 }
-\\setbeamertemplate{footline}[custom]
-\\makeatother
+\setbeamertemplate{footline}[custom]
+\makeatother
 """
 
 def format_url_footnote(url):
@@ -1090,63 +1109,53 @@ def parse_color_args(color_spec):
     return None, None
 
 def process_special_effects(content_line):
-    """Process all special text effects with color support"""
+    """Process all special text effects - SIMPLIFIED VERSION"""
     if not content_line:
         return content_line
 
-    # Process shadowtext
-    while '\\shadowtext[' in content_line or '\\shadowtext{' in content_line:
-        match = re.search(r'\\shadowtext(?:\[(.*?)\])?\{(.*?)\}', content_line)
-        if not match:
-            break
-        color_args, text = match.group(1), match.group(2)
-        shadow_color, text_color = parse_color_args(color_args) if color_args else ('black', 'white')
-        replacement = f"""\\begin{{tikzpicture}}[baseline]
-            \\node[blur shadow={{shadow blur steps=5,shadow xshift=0pt,shadow yshift=-2pt,
-                  shadow opacity=0.75,shadow color={shadow_color}}},
-                  text={text_color if text_color else 'white'}] {{{text}}};
-        \\end{{tikzpicture}}"""
-        content_line = content_line.replace(match.group(0), replacement)
+    # Replace all custom text effects with simple LaTeX equivalents
+    # This prevents compilation errors from problematic TikZ code
 
-    # Process glowtext
+    # Process glowtext - replace with colored text
     while '\\glowtext[' in content_line or '\\glowtext{' in content_line:
         match = re.search(r'\\glowtext(?:\[(.*?)\])?\{(.*?)\}', content_line)
         if not match:
             break
         color_args, text = match.group(1), match.group(2)
-        glow_color, text_color = parse_color_args(color_args) if color_args else ('myblue', 'white')
-        replacement = f"""\\begin{{tikzpicture}}[baseline]
-            \\node[circle, inner sep=1pt,
-                  blur shadow={{shadow blur steps=10,shadow xshift=0pt,
-                  shadow yshift=0pt,shadow blur radius=5pt,
-                  shadow opacity=0.5,shadow color={glow_color}}},
-                  text={text_color if text_color else 'white'}] {{{text}}};
-        \\end{{tikzpicture}}"""
+        color = color_args.strip() if color_args else 'myblue'
+        # Simple colored bold text instead of glow effect
+        replacement = f"\\textcolor{{{color}}}{{\\textbf{{{text}}}}}"
         content_line = content_line.replace(match.group(0), replacement)
 
-    # Process gradienttext
+    # Process shadowtext - replace with bold text
+    while '\\shadowtext[' in content_line or '\\shadowtext{' in content_line:
+        match = re.search(r'\\shadowtext(?:\[(.*?)\])?\{(.*?)\}', content_line)
+        if not match:
+            break
+        color_args, text = match.group(1), match.group(2)
+        # Simple bold text instead of shadow effect
+        replacement = f"\\textbf{{{text}}}"
+        content_line = content_line.replace(match.group(0), replacement)
+
+    # Process gradienttext - replace with colored text
     while '\\gradienttext[' in content_line:
         match = re.search(r'\\gradienttext\[(.*?)\]\[(.*?)\]\{(.*?)\}', content_line)
         if not match:
             break
         start_color, end_color, text = match.group(1), match.group(2), match.group(3)
-        replacement = f"""\\begin{{tikzpicture}}[baseline]
-            \\node[fill={start_color},fill opacity=0.15,
-                  path picture={{\\node at (path picture bounding box.center) {{
-                  \\color{{{end_color}}}{text}
-                  }};}},inner sep=2pt] {{}};
-        \\end{{tikzpicture}}"""
+        # Use the second color (end color) for simple coloring
+        replacement = f"\\textcolor{{{end_color}}}{{{text}}}"
         content_line = content_line.replace(match.group(0), replacement)
 
+    # Keep highlighting commands but ensure they're properly formatted
     # Process highlighting
     while '\\hlkey[' in content_line or '\\hlkey{' in content_line:
         match = re.search(r'\\hlkey(?:\[(.*?)\])?\{(.*?)\}', content_line)
         if not match:
             break
         color_args, text = match.group(1), match.group(2)
-        bg_color, text_color = parse_color_args(color_args) if color_args else ('myblue!20', 'white')
-        replacement = f"\\colorbox{{{bg_color}}}{{\\textcolor{{{text_color if text_color else 'black'}}}" + \
-                     "{\\textbf{" + text + "}}}"
+        bg_color = color_args.strip() if color_args else 'myblue!20'
+        replacement = f"\\colorbox{{{bg_color}}}{{\\textbf{{{text}}}}}"
         content_line = content_line.replace(match.group(0), replacement)
 
     # Process note highlighting
@@ -1155,9 +1164,8 @@ def process_special_effects(content_line):
         if not match:
             break
         color_args, text = match.group(1), match.group(2)
-        bg_color, text_color = parse_color_args(color_args) if color_args else ('mygreen!20', 'white')
-        replacement = f"\\colorbox{{{bg_color}}}{{\\textcolor{{{text_color if text_color else 'black'}}}" + \
-                     "{\\textbf{" + text + "}}}"
+        bg_color = color_args.strip() if color_args else 'mygreen!20'
+        replacement = f"\\colorbox{{{bg_color}}}{{\\textbf{{{text}}}}}"
         content_line = content_line.replace(match.group(0), replacement)
 
     return content_line
@@ -1167,13 +1175,13 @@ def process_latex_content(content_line: str) -> str:
     if not content_line:
         return content_line
 
-    # If it's TikZ content, return as-is
+    # If it's TikZ content, return as-is (but sanitized)
     if '\\begin{tikzpicture}' in content_line or '\\end{tikzpicture}' in content_line:
-        return content_line
+        return sanitize_latex_content(content_line)
 
-    # If it's other LaTeX environment, return as-is
+    # If it's other LaTeX environment, return as-is (but sanitized)
     if content_line.startswith(('\\begin{', '\\end{', '\\scalebox{')):
-        return content_line
+        return sanitize_latex_content(content_line)
 
     # Original processing for regular text
     result = []
@@ -1213,18 +1221,52 @@ def process_latex_content(content_line: str) -> str:
                 result.append(char)
         i += 1
 
-    return ''.join(result)
+    processed = ''.join(result)
+    # Final sanitization
+    return sanitize_latex_content(processed)
 
 #----------------------------------------------------------------------
 def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
     """Generate LaTeX code with support for all media layouts."""
 
+    def clean_frame_title(title_text):
+        """Clean frame title to prevent compilation errors - FIXED VERSION"""
+        if not title_text:
+            return "Untitled"
+
+        # CRITICAL FIX: Remove all braces from titles
+        # They cause LaTeX compilation errors in frame titles
+        title_text = str(title_text)
+
+        # First remove any existing escaped braces
+        title_text = title_text.replace('\\{', '').replace('\\}', '')
+
+        # Then remove all braces
+        title_text = title_text.replace('{', '').replace('}', '')
+
+        # Escape only the most problematic characters (but NOT braces anymore)
+        title_text = title_text.replace('&', '\\&')
+        title_text = title_text.replace('%', '\\%')
+        title_text = title_text.replace('#', '\\#')
+
+        # Remove any extra whitespace
+        title_text = title_text.strip()
+
+        # If title is empty after cleaning, use a default
+        if not title_text:
+            return "Untitled"
+
+        return title_text
+
     # Process title
     if title:
-        frame_title = process_latex_content(title)
+        frame_title = clean_frame_title(title)
     else:
-        base_name_escaped = process_latex_content(base_name if base_name else 'Untitled')
+        base_name_escaped = clean_frame_title(base_name if base_name else 'Untitled')
         frame_title = "Media: " + base_name_escaped
+
+    # Use proper frame title formatting
+    frame_title_code = frame_title
 
     # Check if content contains TikZ
     has_tikz = False
@@ -1236,233 +1278,110 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     # Handle no media case with TikZ
     if has_tikz and (not filename or filename == "\\None"):
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\vspace{0.5em}\n"
 
         # Add TikZ content directly
         for item in content:
-            if isinstance(item, str) and '\\begin{tikzpicture}' in item:
-                latex_code += f"    {item}\n"
-            elif item.strip() and item.strip().startswith('-'):
-                clean_item = item.strip()[1:].strip()
-                processed_item = process_latex_content(clean_item)
-                if not '\\item' in latex_code:  # Start itemize if not started
-                    latex_code += "    \\begin{itemize}\n"
-                latex_code += f"        \\item {processed_item}\n"
-
-        # Close itemize if opened
-        if '\\begin{itemize}' in latex_code:
-            latex_code += "    \\end{itemize}\n"
+            if isinstance(item, str):
+                if '\\begin{tikzpicture}' in item:
+                    latex_code += f"    {item}\n"
+                elif item.strip() and item.strip().startswith('-'):
+                    clean_item = item.strip()[1:].strip()
+                    processed_item = process_latex_content(clean_item)
+                    latex_code += f"    {processed_item}\n"
 
         latex_code += "\\end{frame}\n"
         return latex_code
+
     # Handle no media case first
     if not filename or filename == "\\None":
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}\n"
+        content_items = generate_content_items(content)
+        if content_items:
+            latex_code += "    " + content_items + "\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
     # Generate layout based on directive
     latex_code = ""
 
-    if layout == 'watermark':
-        latex_code = "\\begin{frame}{" + (frame_title if title else '') + "}\n"
-        latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
-        latex_code += "        \\node[opacity=0.15] at (current page.center) {%\n"
-        latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
-        latex_code += "        };\n"
-        latex_code += "    \\end{tikzpicture}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
-
-    elif layout == 'fullframe':
-        latex_code = "\\begin{frame}[plain]\n"
-        latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
-        latex_code += "        \\node at (current page.center) {%\n"
-        latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
-        latex_code += "        };\n"
-        latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current page.center) {\n"
-        latex_code += "            \\Large\\textbf{" + frame_title + "}\\\\[1em]\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content, color='white') + "\n"
-        latex_code += "            \\end{itemize}\n"
-        latex_code += "        };\n"
-        latex_code += "    \\end{tikzpicture}"
+    # FIXED: Ensure proper column closure for all layouts
+    if layout == 'split':
+        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{columns}[T]\n"
+        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+        latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+        latex_code += "        \\end{column}\n"
+        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+        content_items = generate_content_items(content)
+        if content_items:
+            latex_code += "        " + content_items + "\n"
+        latex_code += "        \\end{column}\n"
+        latex_code += "    \\end{columns}\n"
+        latex_code += "\\end{frame}\n"
+        return latex_code
 
     elif layout == 'pip':
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += "        \\begin{column}{0.7\\textwidth}\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content) + "\n"
-        latex_code += "            \\end{itemize}\n"
+        content_items = generate_content_items(content)
+        if content_items:
+            latex_code += "        " + content_items + "\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.28\\textwidth}\n"
         latex_code += "            \\vspace{1em}\n"
-        latex_code += "            \\includegraphics[width=\\textwidth,keepaspectratio]{" + filename + "}\n"
+        latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
         latex_code += "        \\end{column}\n"
-        latex_code += "    \\end{columns}"
+        latex_code += "    \\end{columns}\n"
+        latex_code += "\\end{frame}\n"
+        return latex_code
 
-    elif layout == 'split':
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
+    # Default side-by-side layout (most common)
+    if playable and first_frame_path:
+        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        latex_code += "            \\includegraphics[width=\\textwidth,keepaspectratio]{" + filename + "}\n"
+        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{first_frame_path}}}\n"
+        latex_code += "            \\begin{center}\n"
+        latex_code += "                \\vspace{0.3em}\n"
+        latex_code += "                \\footnotesize Click to play\\\\\n"
+        latex_code += f"                \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{filename}}}\n"
+        latex_code += "            \\end{center}\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content) + "\n"
-        latex_code += "            \\end{itemize}\n"
+        content_items = generate_content_items(content)
+        if content_items:
+            latex_code += "        " + content_items + "\n"
+
+        if source_url:
+            latex_code += "        " + format_url_footnote(source_url) + "\n"
+
         latex_code += "        \\end{column}\n"
-        latex_code += "    \\end{columns}"
-
-    elif layout == 'highlight':
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{center}\n"
-        latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.6\\textheight,keepaspectratio]{" + filename + "}\n"
-        latex_code += "    \\end{center}\n"
-        latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
-
-    elif layout == 'mosaic':
-        images = [img.strip() for img in filename.split(',')]
-        grid_size = int(math.ceil(math.sqrt(len(images))))
-
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{center}\n"  # Center the entire grid
-        latex_code += "    \\vbox{\\vspace{1em}}\n"  # Add some vertical space at top
-
-        # Start a tabular environment for grid layout
-        latex_code += "    \\begin{tabular}{" + "c" * grid_size + "}\n"
-
-        # Calculate image size - use smaller of width/height constraint
-        img_width = "0.25\\textwidth"  # Adjust these values to control image size
-        img_height = "0.2\\textheight"
-
-        # Generate grid row by row
-        for i in range(grid_size):
-            row_images = []
-            for j in range(grid_size):
-                idx = i * grid_size + j
-                if idx < len(images):
-                    # Each image in its own box for consistent spacing
-                    cell = "\\includegraphics[width=" + img_width + ",height=" + img_height + ",keepaspectratio]{" + images[idx] + "}"
-                    row_images.append(cell)
-                else:
-                    row_images.append("")  # Empty cell
-
-            # Join cells with & and end row with \\
-            latex_code += "        " + " & ".join(row_images)
-            if i < grid_size - 1:  # Don't add \\ after last row
-                latex_code += " \\\\\n        \\vspace{0.5em}\\\\\n"  # Add vertical space between rows
-
-        latex_code += "\n    \\end{tabular}\n"
-        latex_code += "    \\end{center}\n"
-
-        if content:
-            latex_code += "    \\vspace{1em}\n"  # Space between grid and content
-            latex_code += "    \\begin{itemize}\n"
-            latex_code += "        " + generate_content_items(content) + "\n"
-            latex_code += "    \\end{itemize}\n"
-
-        latex_code += "    \\end{columns}"
-
-    elif layout == 'background':
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
-        latex_code += "        \\node[opacity=0.1] at (current page.center) {%\n"
-        latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
-        latex_code += "        };\n"
-        latex_code += "    \\end{tikzpicture}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
-
-    elif layout == 'topbottom':
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\vspace{-0.5em}\n"
-        latex_code += "    \\begin{center}\n"
-        latex_code += "        \\includegraphics[width=0.8\\textwidth,height=0.45\\textheight,keepaspectratio]{" + filename + "}\n"
-        latex_code += "    \\end{center}\n"
-        latex_code += "    \\vspace{0.5em}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}"
-
-    elif layout == 'overlay':
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
-        latex_code += "        \\node[opacity=0.3] at (current page.center) {%\n"
-        latex_code += "            \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{" + filename + "}%\n"
-        latex_code += "        };\n"
-        latex_code += "        \\node[text width=0.8\\paperwidth,align=center,text=white] at (current page.center) {\n"
-        latex_code += "            \\begin{itemize}\n"
-        latex_code += "                " + generate_content_items(content, color='white') + "\n"
-        latex_code += "            \\end{itemize}\n"
-        latex_code += "        };\n"
-        latex_code += "    \\end{tikzpicture}"
-
-    elif layout == 'corner':
-        latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-        latex_code += "    \\begin{itemize}\n"
-        latex_code += "        " + generate_content_items(content) + "\n"
-        latex_code += "    \\end{itemize}\n"
-        latex_code += "    \\begin{tikzpicture}[remember picture,overlay]\n"
-        latex_code += "        \\node[anchor=south east] at (current page.south east) {%\n"
-        latex_code += "            \\includegraphics[width=0.2\\textwidth,keepaspectratio]{" + filename + "}%\n"
-        latex_code += "        };\n"
-        latex_code += "    \\end{tikzpicture}"
-
+        latex_code += "    \\end{columns}\n"
     else:
-        # Default side-by-side layout
-        if playable and first_frame_path:
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{" + first_frame_path + "}\n"
-            latex_code += "            \\begin{center}\n"
-            latex_code += "                \\vspace{0.3em}\n"
-            latex_code += "                \\footnotesize{Click to play}\\\\\n"
-            latex_code += "                \\movie[externalviewer]{\\textcolor{blue}{\\underline{Play}}}{" + filename + "}\n"
-            latex_code += "            \\end{center}\n"
-            latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\begin{itemize}\n"
-            latex_code += "                " + generate_content_items(content) + "\n"
-            latex_code += "            \\end{itemize}"
+        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{columns}[T]\n"
+        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{filename}}}\n"
+        latex_code += "        \\end{column}\n"
+        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+        content_items = generate_content_items(content)
+        if content_items:
+            latex_code += "        " + content_items + "\n"
 
-            if source_url:
-                latex_code = latex_code.rstrip() + format_url_footnote(source_url)
+        if source_url:
+            latex_code += "        " + format_url_footnote(source_url) + "\n"
 
-            latex_code += "\n        \\end{column}\n"
-            latex_code += "    \\end{columns}"
-        else:
-            latex_code = "\\begin{frame}{\\Large\\textbf{" + frame_title + "}}\n"
-            latex_code += "    \\begin{columns}[T]\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{" + filename + "}\n"
-            latex_code += "        \\end{column}\n"
-            latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-            latex_code += "            \\begin{itemize}\n"
-            latex_code += "                " + generate_content_items(content) + "\n"
-            latex_code += "            \\end{itemize}"
+        latex_code += "        \\end{column}\n"
+        latex_code += "    \\end{columns}\n"
 
-            if source_url:
-                latex_code = latex_code.rstrip() + format_url_footnote(source_url)
-
-            latex_code += "\n        \\end{column}\n"
-            latex_code += "    \\end{columns}"
-
-    latex_code += "\n\\end{frame}\n"
+    latex_code += "\\end{frame}\n"
     return latex_code
-#----------------------------------------------------------------------
+
+        #----------------------------------------------------------------------
 
 def generate_source_citation(source_url):
     """Generate LaTeX code for source citation"""
@@ -1587,21 +1506,46 @@ def generate_content_items(content, color=None):
     cnt = 1
     items = []
     pause_set = False
+    in_itemize = False
+    opened_environments = []
 
     # Check if any item has \pause
     for itemx in content:
-        if itemx.startswith('\\pause'):
+        if isinstance(itemx, str) and itemx.startswith('\\pause'):
             pause_set = True
 
     for item in content:
-        item_str = str(item).strip()
+        if not item:
+            continue
 
-        # Skip empty items
+        item_str = str(item).strip()
         if not item_str:
             continue
 
         # ====== SECTION 1: Pass-through LaTeX commands and environments ======
         # These should be passed through unchanged
+
+        # Handle environment begin/end markers
+        if item_str.startswith('\\begin{'):
+            # Track opened environments
+            opened_environments.append(item_str)
+            items.append(item_str)
+
+            # If starting itemize, mark as in itemize
+            if 'itemize' in item_str or 'enumerate' in item_str or 'description' in item_str:
+                in_itemize = True
+            continue
+
+        elif item_str.startswith('\\end{'):
+            # Close environment
+            if opened_environments:
+                opened_environments.pop()
+            items.append(item_str)
+
+            # If ending itemize, mark as not in itemize
+            if 'itemize' in item_str or 'enumerate' in item_str or 'description' in item_str:
+                in_itemize = False
+            continue
 
         # A) Graphics and media commands
         graphics_commands = [
@@ -1681,14 +1625,21 @@ def generate_content_items(content, color=None):
             items.append(item_str)
             continue
 
-        # H) List and description environments
-        list_envs = [
-            '\\begin{itemize}', '\\end{itemize}', '\\begin{enumerate}',
-            '\\end{enumerate}', '\\begin{description}', '\\end{description}',
-            '\\item[', '\\item ', '\\setlength{\\itemindent}', '\\setlength{\\itemsep}'
-        ]
-        if any(item_str.startswith(cmd) for cmd in list_envs):
-            items.append(item_str)
+        # H) List and description environments - already handled by begin/end logic
+        # Special handling for \item commands
+        if item_str.startswith('\\item'):
+            # Ensure we're in an itemize environment
+            if not in_itemize:
+                items.append('\\begin{itemize}')
+                opened_environments.append('\\begin{itemize}')
+                in_itemize = True
+
+            # Handle pause overlay if needed
+            if pause_set and not any(tag in item_str for tag in ['<', '>']):
+                items.append(f'\\item<{cnt}> {item_str[5:].strip()}')
+                cnt += 1
+            else:
+                items.append(item_str)
             continue
 
         # I) Special Beamer/BSG commands
@@ -1733,24 +1684,10 @@ def generate_content_items(content, color=None):
             items.append(item_str)
             continue
 
-        # L) Environment begin/end markers (catch-all for any environment)
-        if item_str.startswith(('\\begin{', '\\end{')):
-            items.append(item_str)
-            continue
-
-        # ====== SECTION 2: Original processing logic ======
-        # This handles items that aren't LaTeX commands
-
+        # ====== SECTION 2: Handle regular text content ======
         # Handle pause directives
-        if pause_set and not item_str.startswith(('\\pause','\\begin','\\end','\\item')):
-            item_str = f'\\item<{cnt}| alert@1>' + item_str
-        elif pause_set and item_str.startswith(('\\item')):
-            item_str = re.sub('item', f'item<{cnt}| alert@1>', item_str)
-        elif pause_set and item_str.startswith(('\\pause')):
+        if item_str.startswith('\\pause'):
             cnt += 1
-
-        # Pass through items that are already properly formatted
-        if item_str.startswith(('\\pause', '\\item', '\\begin{', '\\end{')):
             items.append(item_str)
             continue
 
@@ -1760,12 +1697,54 @@ def generate_content_items(content, color=None):
 
         # Process special effects if any
         processed_item = process_latex_content(item_str)
+
+        # Fix: Sanitize the processed item to prevent compilation errors
+        processed_item = sanitize_latex_content(processed_item)
+
         if color:
             processed_item = f"{{\\color{{{color}}}{processed_item}}}"
 
-        items.append(f"\\item {processed_item}")
+        # Add item with proper environment handling
+        if item_str and item_str.strip():
+            # Ensure we're in an itemize environment
+            if not in_itemize:
+                items.append('\\begin{itemize}')
+                opened_environments.append('\\begin{itemize}')
+                in_itemize = True
+
+            # Add text wrapping for long items to prevent overfull boxes
+            if len(processed_item) > 80 and not any(cmd in processed_item for cmd in ['\\begin{', '\\end{', '\\includegraphics']):
+                # Wrap long text to prevent overfull boxes
+                processed_item = f"\\parbox[t]{{0.9\\linewidth}}{{{processed_item}}}"
+
+            # Add pause overlay if needed
+            if pause_set:
+                items.append(f'\\item<{cnt}> {processed_item}')
+                cnt += 1
+            else:
+                items.append(f'\\item {processed_item}')
+
+    # CRITICAL FIX: Close any opened itemize environments
+    # This prevents the "File ended while scanning use of \frame" error
+    while in_itemize:
+        items.append('\\end{itemize}')
+        in_itemize = False
+        # Remove from opened environments if present
+        for i in range(len(opened_environments)-1, -1, -1):
+            if 'itemize' in opened_environments[i]:
+                opened_environments.pop(i)
+                break
 
     return '\n        '.join(items)
+
+def clean_frame_title(title):
+    """Clean frame titles to prevent brace issues"""
+    if not title:
+        return ""
+    # Remove excessive braces and escape special characters
+    title = title.replace('{{{', '{').replace('}}}', '}')
+    title = title.replace('{{', '{').replace('}}', '}')
+    return title
 
 def verify_media_file(filepath):
     """
@@ -2441,7 +2420,48 @@ def format_url_note(url):
 
 
 #------------------------------------------------------
-def process_input_file(file_path, output_filename='movie.tex', ide_callback=None):
+def sanitize_latex_content(content_line):
+    """Sanitize LaTeX content to prevent compilation errors"""
+    if not content_line:
+        return ""
+
+    # First, fix common issues
+    content_line = content_line.strip()
+
+    # Fix unbalanced braces - this is CRITICAL
+    open_braces = content_line.count('{')
+    close_braces = content_line.count('}')
+
+    if open_braces != close_braces:
+        # Count only non-escaped braces
+        import re
+        open_braces = len(re.findall(r'(?<!\\)\{', content_line))
+        close_braces = len(re.findall(r'(?<!\\)\}', content_line))
+
+        if open_braces > close_braces:
+            # Add missing closing braces
+            content_line += '}' * (open_braces - close_braces)
+        elif close_braces > open_braces:
+            # Add missing opening braces
+            content_line = '{' * (close_braces - open_braces) + content_line
+
+    # Fix excessive brace nesting
+    content_line = content_line.replace('{{{', '{').replace('}}}', '}')
+    content_line = content_line.replace('{{', '{').replace('}}', '}')
+
+    # Escape problematic characters if not already escaped
+    import re
+    # Only escape if not already escaped and not in math mode
+    if '$' not in content_line:
+        # Escape special LaTeX characters
+        special_chars = ['#', '$', '%', '&', '_', '{', '}']
+        for char in special_chars:
+            pattern = r'(?<!\\)' + re.escape(char)
+            content_line = re.sub(pattern, '\\' + char, content_line)
+
+    return content_line
+
+def process_input_file(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
     """Process input file to convert to TeX format with proper slide navigation"""
     processed = 0
     failed = 0
@@ -2455,9 +2475,19 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
         has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle = detect_preamble(lines)
 
         with open(output_filename, 'w') as outfile:
-            # Write preamble
+            # Write preamble with fixes
             if has_preamble:
                 outfile.writelines(preamble_lines)
+
+                # Add critical LaTeX commands to prevent compilation errors
+                outfile.write("\n% Critical fixes to prevent compilation errors\n")
+                outfile.write("\\overfullrule=0pt  % Don't show overfull box warnings\n")
+                outfile.write("\\sloppy  % Allow LaTeX to be more lenient with line breaks\n")
+                outfile.write("\\tolerance=9999  % Increase tolerance for line breaking\n")
+                outfile.write("\\emergencystretch=3em  % Allow extra stretch for emergency breaks\n")
+                outfile.write("\\hfuzz=2pt  % Increase horizontal fuzz tolerance\n")
+                outfile.write("\\raggedright  % Prevent overfull boxes by allowing ragged right margins\n")
+
                 if '\\newcommand{\\spotlight}' not in ''.join(preamble_lines):
                     outfile.write(generate_special_commands())
                 if not has_maketitle:
@@ -2465,12 +2495,42 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                 if not has_titlepage:
                     outfile.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
             else:
-                outfile.write("\\documentclass[12pt]{beamer}\n")
-                outfile.write("\\usepackage{graphicx}\n\\usepackage{multimedia}\n")
-                outfile.write("\\usepackage{tcolorbox}\n")
-                outfile.write(generate_special_commands())
-                outfile.write("\\begin{document}\n\n")
+                # USE get_beamer_preamble() INSTEAD OF HARDCODED PREAMBLE
+                if presentation_info is None:
+                    # Default presentation info
+                    presentation_info = {
+                        'title': 'Presentation',
+                        'subtitle': '',
+                        'author': 'Author',
+                        'institution': '',
+                        'short_institute': '',
+                        'date': r'\today'
+                    }
 
+                # Generate proper preamble using get_beamer_preamble()
+                from BeamerSlideGenerator import get_beamer_preamble
+                proper_preamble = get_beamer_preamble(
+                    title=presentation_info.get('title', 'Presentation'),
+                    subtitle=presentation_info.get('subtitle', ''),
+                    author=presentation_info.get('author', 'Author'),
+                    institution=presentation_info.get('institution', ''),
+                    short_institute=presentation_info.get('short_institute', ''),
+                    date=presentation_info.get('date', r'\today')
+                )
+
+                # Write the proper preamble
+                outfile.write(proper_preamble)
+
+                # Add the critical fixes after the preamble
+                outfile.write("\n% Critical fixes to prevent compilation errors\n")
+                outfile.write("\\overfullrule=0pt  % Don't show overfull box warnings\n")
+                outfile.write("\\sloppy  % Allow LaTeX to be more lenient with line breaks\n")
+                outfile.write("\\tolerance=9999  % Increase tolerance for line breaking\n")
+                outfile.write("\\emergencystretch=3em  % Allow extra stretch for emergency breaks\n")
+                outfile.write("\\hfuzz=2pt  % Increase horizontal fuzz tolerance\n")
+                outfile.write("\\raggedright  % Prevent overfull boxes by allowing ragged right margins\n")
+
+            # Rest of the function remains the same...
             i = 0
             current_frame_notes = []
             current_frame_content = []
@@ -2492,7 +2552,7 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                     outfile.write("\\end{document}\n")
                     break
 
-                # Handle new frame
+                # Handle new frame - FIXED: Clean the title properly
                 if line.startswith('\\title'):
                     # Process previous frame if exists
                     if should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
@@ -2500,8 +2560,19 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                                    current_frame_notes, current_media)
                         processed += 1
 
-                    # Start new frame
-                    current_frame_title = line[6:].strip()  # Remove '\title' prefix
+                    # Start new frame - FIX: Properly extract and clean title
+                    title_content = line[6:].strip()  # Remove '\title' prefix
+
+                    # CRITICAL FIX: Remove all braces from titles for LaTeX compilation
+                    if title_content:
+                        # Remove all { and } from titles
+                        title_content = title_content.replace('{', '').replace('}', '')
+                        # Also remove escaped braces
+                        title_content = title_content.replace('\\{', '').replace('\\}', '')
+                        # Remove any leading/trailing whitespace
+                        title_content = title_content.strip()
+
+                    current_frame_title = title_content
                     current_frame_content = []
                     current_frame_notes = []
                     current_media = None
@@ -2524,18 +2595,41 @@ def process_input_file(file_path, output_filename='movie.tex', ide_callback=None
                 # Process content
                 elif in_content_block:
                     if line.strip():  # Only add non-empty lines
-                        current_frame_content.append(line)
-                # Process notes
+                        # FIX: Clean the content line of problematic braces
+                        clean_line = line.strip()
+                        # Remove problematic braces from content items too
+                        if '- ' in clean_line[:2]:
+                            # For bullet points, clean after the dash
+                            prefix = clean_line[:2]
+                            content_part = clean_line[2:]
+                            # Remove braces from content
+                            content_part = content_part.replace('{', '').replace('}', '')
+                            clean_line = prefix + content_part
+                        current_frame_content.append(clean_line)
+
+                # Process notes - FIXED: Keep braces for LaTeX commands
                 elif in_notes_block:
                     if line.strip() and not line.startswith('%'):
-                        if line.startswith(('http://', 'https://','www')):
+                        clean_note = line.strip()
+                        # FIXED: Don't remove braces from notes - they're needed for LaTeX commands
+                        # Only remove braces if it's a URL to format it properly
+                        if clean_note.startswith(('http://', 'https://', 'www')):
+                            # For URLs, we need to remove braces to format them correctly
+                            clean_url = clean_note.replace('{', '').replace('}', '')
                             current_frame_notes.append('\\begin{itemize}')
-                            current_frame_notes.append(format_url_note(line.strip()))
+                            current_frame_notes.append(format_url_note(clean_url))
                             current_frame_notes.append('\\end{itemize}')
                         else:
-                            current_frame_notes.append(line.strip())
+                            # For regular notes, keep all braces to preserve LaTeX commands
+                            current_frame_notes.append(clean_note)
 
                 i += 1
+
+            # Process the last frame if it exists
+            if should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
+                process_frame(outfile, current_frame_title, current_frame_content,
+                           current_frame_notes, current_media)
+                processed += 1
 
         return processed, failed, errors
 

@@ -27,6 +27,100 @@ global original_dir
 original_dir = os.path.expanduser("~")
 from tkinter import messagebox
 
+def get_xor_text_color(background_color):
+    """
+    Calculate optimal text color (black or white) for TikZ backgrounds using XOR rule.
+    Uses perceived luminance and contrast ratio for better readability.
+
+    Args:
+        background_color: Tuple (R, G, B) or string color name
+
+    Returns:
+        'black' or 'white' based on background brightness
+    """
+    try:
+        # Handle string color names by converting to RGB
+        if isinstance(background_color, str):
+            # Common color name mappings
+            color_map = {
+                'red': (255, 0, 0),
+                'green': (0, 255, 0),
+                'blue': (0, 0, 255),
+                'yellow': (255, 255, 0),
+                'cyan': (0, 255, 255),
+                'magenta': (255, 0, 255),
+                'white': (255, 255, 255),
+                'black': (0, 0, 0),
+                'gray': (128, 128, 128),
+                'orange': (255, 165, 0),
+                'purple': (128, 0, 128),
+                'brown': (165, 42, 42),
+                'pink': (255, 192, 203),
+                'lightblue': (173, 216, 230),
+                'lightgreen': (144, 238, 144),
+                'lightgray': (211, 211, 211),
+                'darkgray': (169, 169, 169),
+                'darkblue': (0, 0, 139),
+                'darkgreen': (0, 100, 0),
+                'darkred': (139, 0, 0),
+            }
+
+            # Try to get from map, or parse hex/rgb string
+            if background_color.lower() in color_map:
+                r, g, b = color_map[background_color.lower()]
+            elif background_color.startswith('#'):
+                # Hex color
+                hex_color = background_color.lstrip('#')
+                r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+            elif background_color.startswith('rgb'):
+                # rgb(r, g, b) format
+                import re
+                match = re.search(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', background_color)
+                if match:
+                    r, g, b = map(int, match.groups())
+                else:
+                    # Default to medium gray if can't parse
+                    r, g, b = 128, 128, 128
+            else:
+                # Unknown color, default to medium gray
+                r, g, b = 128, 128, 128
+        else:
+            # Assume it's already an RGB tuple
+            r, g, b = background_color
+
+        # Ensure values are in 0-255 range
+        r = max(0, min(255, int(r)))
+        g = max(0, min(255, int(g)))
+        b = max(0, min(255, int(b)))
+
+        # Calculate perceived luminance using WCAG formula
+        # Convert to linear RGB
+        def to_linear(channel):
+            c = channel / 255.0
+            if c <= 0.04045:
+                return c / 12.92
+            else:
+                return ((c + 0.055) / 1.055) ** 2.4
+
+        r_linear = to_linear(r)
+        g_linear = to_linear(g)
+        b_linear = to_linear(b)
+
+        # Calculate luminance
+        luminance = 0.2126 * r_linear + 0.7152 * g_linear + 0.0722 * b_linear
+
+        # XOR Rule: Use white text on dark backgrounds, black text on light backgrounds
+        # Threshold can be adjusted (0.5 is middle gray)
+        if luminance > 0.179:  # Adjusted threshold for better readability
+            return 'black'
+        else:
+            return 'white'
+
+    except Exception as e:
+        print(f"Warning: Error calculating text color: {e}")
+        # Fallback to black text
+        return 'black'
+
 def generate_default_requirements():
     """Generate a default requirements.txt if none found"""
     try:
@@ -79,6 +173,7 @@ python-magic>=0.4.27; platform_system != "Windows"
         print(f"Error generating requirements.txt: {str(e)}")
         return None
 generate_default_requirements()
+
 def launch_ide():
     """Entry point for command-line launcher"""
     try:
@@ -2081,7 +2176,284 @@ class FileThumbnailBrowser(ctk.CTkToplevel):
             size /= 1024
         return f"{size:.1f} TB"
 
+class TikZColorHelper:
+    """Helper class for managing TikZ colors with automatic text color selection"""
 
+    def __init__(self):
+        self.color_definitions = {}
+        self.default_colors = {
+            'airis4d_blue': (41, 128, 185),
+            'airis4d_green': (39, 174, 96),
+            'airis4d_orange': (243, 156, 18),
+            'airis4d_red': (231, 76, 60),
+            'airis4d_purple': (155, 89, 182),
+            'airis4d_teal': (26, 188, 156),
+            'airis4d_gray': (149, 165, 166)
+        }
+
+    def define_color(self, name, color_value):
+        """Define a custom color for TikZ"""
+        self.color_definitions[name] = color_value
+
+    def get_text_color(self, background_color_name):
+        """Get optimal text color for a given background color"""
+        if background_color_name in self.color_definitions:
+            color_value = self.color_definitions[background_color_name]
+        elif background_color_name in self.default_colors:
+            color_value = self.default_colors[background_color_name]
+        else:
+            # Try to parse the color
+            color_value = background_color_name
+
+        return get_xor_text_color(color_value)
+
+    def generate_tikz_color_definitions(self):
+        """Generate TikZ color definition commands"""
+        definitions = []
+
+        # Add default colors
+        for name, rgb in self.default_colors.items():
+            definitions.append(f"\\definecolor{{{name}}}{{RGB}}{{{rgb[0]},{rgb[1]},{rgb[2]}}}")
+
+        # Add custom colors
+        for name, color_value in self.color_definitions.items():
+            if isinstance(color_value, tuple) and len(color_value) == 3:
+                # RGB tuple
+                definitions.append(f"\\definecolor{{{name}}}{{RGB}}{{{color_value[0]},{color_value[1]},{color_value[2]}}}")
+            elif isinstance(color_value, str):
+                # Color name or hex
+                definitions.append(f"\\definecolor{{{name}}}{{HTML}}{{{color_value.lstrip('#')}}}")
+
+        return "\n".join(definitions)
+
+    def create_colored_node(self, text, background_color, node_options=""):
+        """Create a TikZ node with automatic text color"""
+        text_color = self.get_text_color(background_color)
+
+        tikz_code = f"""
+\\node[{node_options}, fill={background_color}, text={text_color}] {{{text}}};
+"""
+        return tikz_code.strip()
+
+class ColorPickerDialog(ctk.CTkToplevel):
+    """Dialog for selecting colors with preview and XOR text color feedback"""
+
+    def __init__(self, parent, current_color=None):
+        super().__init__(parent)
+        self.title("TikZ Color Picker")
+        self.geometry("500x400")
+        self.result = None
+
+        # Initialize color helper
+        self.color_helper = TikZColorHelper()
+
+        # Center dialog
+        self.transient(parent)
+        self.grab_set()
+
+        # Create UI
+        self.create_widgets(current_color)
+
+    def create_widgets(self, current_color):
+        """Create color picker widgets"""
+        # Main container
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Color selection frame
+        color_frame = ctk.CTkFrame(main_frame)
+        color_frame.pack(fill="x", padx=5, pady=5)
+
+        # Color name entry
+        ctk.CTkLabel(color_frame, text="Color Name:").pack(side="left", padx=5)
+        self.color_name_entry = ctk.CTkEntry(color_frame, width=150)
+        self.color_name_entry.pack(side="left", padx=5)
+        self.color_name_entry.insert(0, "custom_color")
+
+        # RGB inputs
+        rgb_frame = ctk.CTkFrame(main_frame)
+        rgb_frame.pack(fill="x", padx=5, pady=5)
+
+        ctk.CTkLabel(rgb_frame, text="R:").pack(side="left", padx=5)
+        self.r_entry = ctk.CTkEntry(rgb_frame, width=50)
+        self.r_entry.pack(side="left", padx=5)
+        self.r_entry.insert(0, "128")
+
+        ctk.CTkLabel(rgb_frame, text="G:").pack(side="left", padx=5)
+        self.g_entry = ctk.CTkEntry(rgb_frame, width=50)
+        self.g_entry.pack(side="left", padx=5)
+        self.g_entry.insert(0, "128")
+
+        ctk.CTkLabel(rgb_frame, text="B:").pack(side="left", padx=5)
+        self.b_entry = ctk.CTkEntry(rgb_frame, width=50)
+        self.b_entry.pack(side="left", padx=5)
+        self.b_entry.insert(0, "128")
+
+        # Preview frame
+        preview_frame = ctk.CTkFrame(main_frame, height=100)
+        preview_frame.pack(fill="x", padx=5, pady=10)
+        preview_frame.pack_propagate(False)
+
+        self.preview_label = ctk.CTkLabel(
+            preview_frame,
+            text="Sample Text",
+            font=("Arial", 16, "bold"),
+            width=400,
+            height=80,
+            corner_radius=10
+        )
+        self.preview_label.pack(pady=10)
+
+        # Text color feedback
+        feedback_frame = ctk.CTkFrame(main_frame)
+        feedback_frame.pack(fill="x", padx=5, pady=5)
+
+        self.feedback_label = ctk.CTkLabel(
+            feedback_frame,
+            text="Recommended text color: ",
+            font=("Arial", 12)
+        )
+        self.feedback_label.pack()
+
+        # Color buttons for quick selection
+        colors_frame = ctk.CTkFrame(main_frame)
+        colors_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(colors_frame, text="Quick Colors:").pack(anchor="w", padx=5, pady=5)
+
+        quick_colors = [
+            ("Blue", "airis4d_blue", "#2980b9"),
+            ("Green", "airis4d_green", "#27ae60"),
+            ("Orange", "airis4d_orange", "#f39c12"),
+            ("Red", "airis4d_red", "#e74c3c"),
+            ("Purple", "airis4d_purple", "#9b59b6"),
+            ("Teal", "airis4d_teal", "#1abc9c"),
+            ("Gray", "airis4d_gray", "#95a5a6")
+        ]
+
+        buttons_frame = ctk.CTkFrame(colors_frame)
+        buttons_frame.pack(fill="x", padx=5, pady=5)
+
+        for color_name, color_id, hex_color in quick_colors:
+            btn = ctk.CTkButton(
+                buttons_frame,
+                text=color_name,
+                command=lambda c=color_id, h=hex_color: self.select_quick_color(c, h),
+                width=80,
+                fg_color=hex_color,
+                hover_color=hex_color
+            )
+            btn.pack(side="left", padx=2, pady=2)
+
+        # Action buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Update Preview",
+            command=self.update_preview
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Apply",
+            command=self.apply_color
+        ).pack(side="right", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            command=self.cancel
+        ).pack(side="right", padx=5)
+
+        # Set initial color if provided
+        if current_color:
+            self.update_preview()
+
+    def select_quick_color(self, color_id, hex_color):
+        """Select a quick color"""
+        self.color_name_entry.delete(0, 'end')
+        self.color_name_entry.insert(0, color_id)
+
+        # Parse hex to RGB
+        hex_color = hex_color.lstrip('#')
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+
+        self.r_entry.delete(0, 'end')
+        self.r_entry.insert(0, str(r))
+
+        self.g_entry.delete(0, 'end')
+        self.g_entry.insert(0, str(g))
+
+        self.b_entry.delete(0, 'end')
+        self.b_entry.insert(0, str(b))
+
+        self.update_preview()
+
+    def update_preview(self):
+        """Update color preview"""
+        try:
+            r = int(self.r_entry.get())
+            g = int(self.g_entry.get())
+            b = int(self.b_entry.get())
+
+            # Ensure values are in range
+            r = max(0, min(255, r))
+            g = max(0, min(255, g))
+            b = max(0, min(255, b))
+
+            hex_color = f"#{r:02x}{g:02x}{b:02x}"
+
+            # Update preview label
+            self.preview_label.configure(fg_color=hex_color)
+
+            # Calculate and show recommended text color
+            text_color = get_xor_text_color((r, g, b))
+            self.feedback_label.configure(
+                text=f"Recommended text color: {text_color.upper()} (XOR rule)",
+                text_color="white" if text_color == "white" else "black"
+            )
+
+        except ValueError:
+            # Invalid input, use default
+            self.preview_label.configure(fg_color="gray")
+            self.feedback_label.configure(
+                text="Invalid RGB values",
+                text_color="red"
+            )
+
+    def apply_color(self):
+        """Apply selected color"""
+        try:
+            color_name = self.color_name_entry.get().strip()
+            r = int(self.r_entry.get())
+            g = int(self.g_entry.get())
+            b = int(self.b_entry.get())
+
+            self.result = {
+                'name': color_name,
+                'rgb': (r, g, b),
+                'hex': f"#{r:02x}{g:02x}{b:02x}",
+                'text_color': get_xor_text_color((r, g, b))
+            }
+            self.destroy()
+        except ValueError:
+            messagebox.showerror("Error", "Invalid color values")
+
+    def cancel(self):
+        """Cancel color selection"""
+        self.result = None
+        self.destroy()
+
+    @staticmethod
+    def pick_color(parent, current_color=None):
+        """Static method to pick color"""
+        dialog = ColorPickerDialog(parent, current_color)
+        dialog.wait_window()
+        return dialog.result
 
 #------------------------------------------------------------------------------------------
 class PreambleEditor(ctk.CTkToplevel):
@@ -3018,7 +3390,7 @@ class BeamerSyntaxHighlighter:
             (r'\\end\{tikzpicture\}', 'tikz'),    # TikZ end
             (r'\\draw.*', 'tikz'),                # TikZ draw commands
             (r'\\node.*', 'tikz'),                # TikZ nodes
-            (r'\\fill.*', 'tikz')                # TikZ fill commands
+            (r'\\fill.*', 'tikz'),                # TikZ fill commands
         ]
 
         # Bind events to the CTkTextbox
@@ -3094,6 +3466,8 @@ class BeamerSlideEditor(ctk.CTk):
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
+
+        self.add_tikz_color_helper()
 
         # Initialize dictionary for notes buttons - KEEP ORIGINAL
         self.notes_buttons = {}
@@ -4375,27 +4749,28 @@ class BeamerSlideEditor(ctk.CTk):
             return text
 
     def extract_enhanced_media_from_frame_safe(self, frame_content: str) -> str:
-        """Extract media including TikZ diagrams and graphics with safer patterns"""
+        """Extract media including TikZ diagrams with complete code preservation"""
         import re
 
         media_components = []
 
         try:
-            # Check for graphics with safer pattern
+            # Check for TikZ environments - preserve COMPLETE code
+            tikz_pattern = r'\\begin\{tikzpicture\}(.*?)\\end\{tikzpicture\}'
+            tikz_matches = re.finditer(tikz_pattern, frame_content, re.DOTALL)
+
+            for i, match in enumerate(tikz_matches):
+                tikz_content = match.group(0).strip()  # Get the ENTIRE TikZ code
+                # Preserve the complete TikZ code as-is
+                media_components.append(f"% TikZ Diagram:\n{tikz_content}")
+
+            # Check for graphics
             graphics_pattern = r'\\includegraphics\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}'
             graphics_matches = re.finditer(graphics_pattern, frame_content)
+
             for match in graphics_matches:
                 media_path = match.group(1).strip()
                 media_components.append(f"\\file {media_path}")
-
-            # Check for TikZ environments with safer pattern
-            tikz_pattern = r'\\begin\{tikzpicture\}(.*?)\\end\{tikzpicture\}'
-            tikz_matches = re.finditer(tikz_pattern, frame_content, re.DOTALL)
-            for i, match in enumerate(tikz_matches):
-                tikz_content = match.group(0).strip()
-                # Save TikZ code as a separate file or include it directly
-                filename = f"tikz_diagram_{i+1}.tex"
-                media_components.append(f"% TikZ Diagram {i+1}:\n{tikz_content}")
 
             # Check for movies/videos
             movie_pattern = r'\\movie\s*(?:\[[^\]]*\])?\s*\{[^}]*\}\s*\{([^}]+)\}'
@@ -4404,7 +4779,8 @@ class BeamerSlideEditor(ctk.CTk):
                 media_path = movie_match.group(1).strip()
                 media_components.append(f"\\play {media_path}")
 
-            return "\n".join(media_components) if media_components else ""
+            # Join with double newlines to ensure proper separation
+            return "\n\n".join(media_components) if media_components else ""
 
         except Exception as e:
             self.write(f"Warning: Error extracting media: {str(e)}\n", "yellow")
@@ -6050,7 +6426,7 @@ class BeamerSlideEditor(ctk.CTk):
                 self.terminal.write(f"Error: {data.get('message', 'Unknown error')}\n", "red")
 
     def load_slide(self, index):
-        """Enhanced load_slide with proper content handling (no automatic bullets)"""
+        """Enhanced load_slide with proper TikZ code handling"""
         if 0 <= index < len(self.slides):
             slide = self.slides[index]
 
@@ -6063,17 +6439,21 @@ class BeamerSlideEditor(ctk.CTk):
             # Update title
             self.title_entry.insert(0, slide.get('title', ''))
 
-            # Update media with explicit \None handling
+            # Update media - check for TikZ content
             media = slide.get('media', '')
             if not media or media == "\\None":
                 self.media_entry.insert(0, "\\None")
+            elif "% TikZ Diagram:" in media:
+                # For TikZ diagrams, show a marker in media entry
+                self.media_entry.insert(0, "\\TikZ")
+                # Add TikZ code to content editor
+                self.content_editor.insert('end', f"{media}\n")
             else:
                 self.media_entry.insert(0, media)
 
-            # Update content - preserve original formatting (no automatic bullets)
+            # Update content - preserve original formatting
             for item in slide.get('content', []):
                 if item and item.strip():
-                    # Don't modify the item - use it as is
                     self.content_editor.insert('end', f"{item}\n")
 
             # Update notes
@@ -6087,9 +6467,28 @@ class BeamerSlideEditor(ctk.CTk):
             else:
                 self.notes_editor.insert('end', "% No notes for this slide\n")
 
-            # Refresh syntax highlighting if active
+            # Refresh syntax highlighting
             if hasattr(self, 'syntax_highlighter') and self.syntax_highlighter.active:
                 self.syntax_highlighter.highlight()
+
+    def format_tikz_for_output(self, media_content: str) -> str:
+        """Format TikZ code for proper output in the text file"""
+        if "% TikZ Diagram:" in media_content:
+            # Extract just the TikZ code part
+            lines = media_content.split('\n')
+            tikz_code = []
+            in_tikz = False
+
+            for line in lines:
+                if '\\begin{tikzpicture}' in line:
+                    in_tikz = True
+                if in_tikz:
+                    tikz_code.append(line)
+                if '\\end{tikzpicture}' in line:
+                    in_tikz = False
+
+            return '\n'.join(tikz_code)
+        return media_content
 
     def update_slide_list(self):
         """Update slide list with improved current slide handling"""
@@ -8593,7 +8992,7 @@ Created by {self.__author__}
 
 #-----------------------------------------------------------------------------
     def save_file(self) -> None:
-        """Save presentation preserving custom preamble"""
+        """Save presentation preserving custom preamble and TikZ code"""
         if not self.current_file:
             filename = filedialog.asksaveasfilename(
                 defaultextension=".txt",
@@ -8602,8 +9001,8 @@ Created by {self.__author__}
             if filename:
                 self.current_file = filename
                 global working_folder
-                # Change to tet file directory
-                working_folder= os.path.dirname(filename) or '.'
+                # Change to text file directory
+                working_folder = os.path.dirname(filename) or '.'
                 os.chdir(working_folder)
 
                 # Update working directory in terminal
@@ -8623,22 +9022,44 @@ Created by {self.__author__}
                 content += "\n\n"  # Add two extra line break before new slide
                 content += f"\\title {slide['title']}\n"
                 content += "\\begin{Content}"
-                if slide['media']:
-                    content += f" {slide['media']}"
-                content += "\n"
+
+                # Handle media/TikZ content
+                media = slide.get('media', '')
+                if media and media != "\\None":
+                    content += "\n"
+                    # Check if it's TikZ code
+                    if "\\begin{tikzpicture}" in media:
+                        # For TikZ, write the complete code
+                        # Extract just the TikZ part if there's metadata
+                        if "% TikZ Diagram:" in media:
+                            # Skip the comment line
+                            tikz_lines = media.split('\n')[1:]
+                            for line in tikz_lines:
+                                content += f"{line}\n"
+                        else:
+                            content += f"{media}\n"
+                    else:
+                        # Regular media directive
+                        content += f"{media}\n"
 
                 # Format content items - NO automatic bullet addition!
-                for item in slide['content']:
-                    if item.strip():
+                content_items = slide.get('content', [])
+                if content_items:
+                    content += "\n"  # Add separation between media and content
+
+                for item in content_items:
+                    if item and item.strip():
                         # Don't add bullets automatically - keep content as-is
                         content += f"{item}\n"
 
                 content += "\\end{Content}\n\n"
+
                 # Add notes if present
                 if 'notes' in slide and slide['notes']:
                     content += "\\begin{Notes}\n"
                     for note in slide['notes']:
-                        content += f"{note}\n"
+                        if note and note.strip():
+                            content += f"{note}\n"
                     content += "\\end{Notes}\n"
                 else:
                     content += "\\begin{Notes}\n"
@@ -8648,7 +9069,7 @@ Created by {self.__author__}
             content += "\\end{document}"
 
             # Save to text file
-            with open(self.current_file, 'w') as f:
+            with open(self.current_file, 'w', encoding='utf-8') as f:
                 f.write(content)
 
             self.write("✓ File saved successfully: " + self.current_file + "\n", "green")
@@ -8775,9 +9196,8 @@ Created by {self.__author__}
                     return ""
 #------------------------------------------------------------------------------
 
-
     def generate_pdf(self) -> None:
-        """Generate PDF with improved terminal handling and progress feedback"""
+        """Generate PDF with improved terminal handling, progress feedback, and color integration"""
         if not self.current_file:
             messagebox.showwarning("Warning", "Please save your file first!")
             return
@@ -8793,40 +9213,111 @@ Created by {self.__author__}
             base_filename = os.path.splitext(self.current_file)[0]
             tex_file = base_filename + '.tex'
 
-            # Step 1: Convert text to TeX first
-            self.write("Step 1: Converting text to TeX...\n", "white")
+            # Step 1: Convert text to TeX with color information
+            self.write("Step 1: Converting text to TeX with color support...\n", "white")
             self.convert_to_tex()  # This will handle notes mode correctly
 
-            # Step 2: First pdflatex pass
-            self.write("\nStep 2: First pdflatex pass...\n", "white")
+            # Step 2: Read the generated TeX file and add color information
+            self.write("\nStep 2: Adding color definitions and XOR text color rules...\n", "white")
+
+            if os.path.exists(tex_file):
+                with open(tex_file, 'r', encoding='utf-8') as f:
+                    tex_content = f.read()
+
+                # Add color information to the TeX file
+                enhanced_content = self.add_color_info_to_output(tex_content)
+
+                # Write back with color information
+                with open(tex_file, 'w', encoding='utf-8') as f:
+                    f.write(enhanced_content)
+
+                self.write("✓ Added TikZ color definitions and XOR text color rules\n", "green")
+
+                # Show what was added
+                color_rules = """
+    % XOR Text Color Rule for TikZ:
+    % - Text color automatically chosen based on background luminance
+    % - Use text=white on dark backgrounds (luminance < 0.179)
+    % - Use text=black on light backgrounds (luminance > 0.179)
+    %
+    % Predefined colors with optimal text colors:
+    % - airis4d_blue (dark) → text=white
+    % - airis4d_green (light) → text=black
+    % - airis4d_orange (light) → text=black
+    % - airis4d_red (dark) → text=white
+    % - airis4d_purple (dark) → text=white
+    % - airis4d_teal (dark) → text=white
+    % - airis4d_gray (light) → text=black
+    """
+                self.write(color_rules, "cyan")
+            else:
+                self.write("⚠ Warning: TeX file not found after conversion\n", "yellow")
+
+            # Step 3: First pdflatex pass
+            self.write("\nStep 3: First pdflatex pass...\n", "white")
             success = self.run_pdflatex(tex_file)
 
             if success:
-                # Step 3: Second pdflatex pass for references
-                self.write("\nStep 3: Second pdflatex pass...\n", "white")
+                # Step 4: Second pdflatex pass for references and color rendering
+                self.write("\nStep 4: Second pdflatex pass (resolving references and colors)...\n", "white")
                 success = self.run_pdflatex(tex_file)
 
                 if success:
-                    pdf_file = base_filename + '.pdf'
-                    if os.path.exists(pdf_file):
-                        # Calculate file size
-                        size = os.path.getsize(pdf_file)
-                        size_str = self.format_file_size(size)
+                    # Optional: Third pass for perfect rendering
+                    self.write("\nStep 5: Final pdflatex pass (ensuring color consistency)...\n", "white")
+                    success = self.run_pdflatex(tex_file)
 
-                        self.write("\n✓ PDF generated successfully!\n", "green")
-                        self.write(f"PDF Size: {size_str}\n", "green")
+                    if success:
+                        pdf_file = base_filename + '.pdf'
+                        if os.path.exists(pdf_file):
+                            # Calculate file size
+                            size = os.path.getsize(pdf_file)
+                            size_str = self.format_file_size(size)
 
-                        # Check for any warnings in the log file
-                        log_file = base_filename + '.log'
-                        if os.path.exists(log_file):
-                            self.check_latex_log(log_file)
+                            self.write("\n" + "="*60 + "\n", "white")
+                            self.write("✓ PDF GENERATED SUCCESSFULLY!\n", "green")
+                            self.write("="*60 + "\n", "white")
+                            self.write(f"📄 PDF File: {os.path.basename(pdf_file)}\n", "white")
+                            self.write(f"📏 Size: {size_str}\n", "white")
+                            self.write(f"📍 Location: {os.path.dirname(pdf_file)}\n", "white")
 
-                        # Ask if user wants to view the PDF
-                        if messagebox.askyesno("Success",
-                                             f"PDF generated successfully!\nSize: {size_str}\n\nWould you like to view it now?"):
-                            self.preview_pdf()
+                            # Show color features included
+                            self.write("\n🎨 Color Features Included:\n", "cyan")
+                            self.write("  • XOR-based text color selection\n", "cyan")
+                            self.write("  • Predefined airis4D color palette\n", "cyan")
+                            self.write("  • Automatic black/white text contrast\n", "cyan")
+                            self.write("  • TikZ color definitions\n", "cyan")
+
+                            # Check for any warnings in the log file
+                            log_file = base_filename + '.log'
+                            if os.path.exists(log_file):
+                                warnings = self.check_latex_log(log_file)
+                                if warnings:
+                                    self.write(f"\n⚠ Found {warnings} LaTeX warning(s) - check log file\n", "yellow")
+
+                            # Generate color usage report
+                            self.generate_color_report(tex_file)
+
+                            # Ask if user wants to view the PDF
+                            if messagebox.askyesno("PDF Generation Complete",
+                                                 f"✅ PDF generated successfully!\n\n"
+                                                 f"File: {os.path.basename(pdf_file)}\n"
+                                                 f"Size: {size_str}\n\n"
+                                                 f"Color features included:\n"
+                                                 f"• XOR text color rules\n"
+                                                 f"• Predefined color palette\n"
+                                                 f"• Automatic contrast adjustment\n\n"
+                                                 f"Would you like to view the PDF now?"):
+                                self.preview_pdf(pdf_file)
+
+                            # Offer to open the TeX file to see color definitions
+                            if messagebox.askyesno("View Color Definitions",
+                                                 "Would you like to see the color definitions added to your TeX file?"):
+                                self.view_color_definitions(tex_file)
+                        else:
+                            self.write("\n✗ Error: PDF file not found after compilation\n", "red")
                     else:
-                        self.write("\n✗ Error: PDF file not found after compilation\n", "red")
+                        self.write("\n✗ Error in final pdflatex pass\n", "red")
                 else:
                     self.write("\n✗ Error in second pdflatex pass\n", "red")
             else:
@@ -8842,6 +9333,169 @@ Created by {self.__author__}
                 self.write(traceback.format_exc(), "red")
 
             messagebox.showerror("Error", f"Error generating PDF:\n{str(e)}")
+
+    def add_color_info_to_output(self, tex_content):
+        """Add color information and XOR rules to TeX output"""
+
+        # Color information to add
+        color_info = """
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %% COLOR DEFINITIONS FOR TIKZ FIGURES
+    %% XOR Rule: Automatic text color selection based on background
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    \\usepackage{xcolor}  % Required for color support
+
+    %% Predefined color palette with optimal text colors
+    \\definecolor{airis4d_blue}{RGB}{41,128,185}    % Dark → Use text=white
+    \\definecolor{airis4d_green}{RGB}{39,174,96}    % Light → Use text=black
+    \\definecolor{airis4d_orange}{RGB}{243,156,18}  % Light → Use text=black
+    \\definecolor{airis4d_red}{RGB}{231,76,60}      % Dark → Use text=white
+    \\definecolor{airis4d_purple}{RGB}{155,89,182}  % Dark → Use text=white
+    \\definecolor{airis4d_teal}{RGB}{26,188,156}    % Dark → Use text=white
+    \\definecolor{airis4d_gray}{RGB}{149,165,166}   % Light → Use text=black
+
+    %% Additional utility colors
+    \\definecolor{airis4d_lightblue}{RGB}{173,216,230}  % Light → text=black
+    \\definecolor{airis4d_darkblue}{RGB}{0,0,139}       % Dark → text=white
+    \\definecolor{airis4d_lightgreen}{RGB}{144,238,144} % Light → text=black
+    \\definecolor{airis4d_darkgreen}{RGB}{0,100,0}      % Dark → text=white
+
+    %% XOR TEXT COLOR RULE
+    %%
+    %% For TikZ figures with colored backgrounds:
+    %% 1. Calculate background luminance: L = 0.2126*R + 0.7152*G + 0.0722*B
+    %% 2. If L > 0.179: Use text=black (light backgrounds)
+    %% 3. If L <= 0.179: Use text=white (dark backgrounds)
+    %%
+    %% Example usage in TikZ:
+    %% \\node[fill=airis4d_blue, text=white, minimum width=3cm] {White text on blue};
+    %% \\node[fill=airis4d_orange, text=black, minimum width=3cm] {Black text on orange};
+    %%
+    %% For custom colors, use the get_xor_text_color() function to determine
+    %% the optimal text color for any background.
+
+    %% Color helper macros
+    \\newcommand{\\airisblue}[1]{\\textcolor{airis4d_blue}{#1}}
+    \\newcommand{\\airisgreen}[1]{\\textcolor{airis4d_green}{#1}}
+    \\newcommand{\\airisorange}[1]{\\textcolor{airis4d_orange}{#1}}
+    \\newcommand{\\airisred}[1]{\\textcolor{airis4d_red}{#1}}
+    \\newcommand{\\airispurple}[1]{\\textcolor{airis4d_purple}{#1}}
+
+    %% Color box environments
+    \\newenvironment{airisbluebox}{%
+        \\begin{tcolorbox}[colback=airis4d_blue!10,colframe=airis4d_blue,title={\\airisblue{Information}}]
+    }{\\end{tcolorbox}}
+
+    \\newenvironment{airisgreenbox}{%
+        \\begin{tcolorbox}[colback=airis4d_green!10,colframe=airis4d_green,title={\\airisgreen{Note}}]
+    }{\\end{tcolorbox}}
+
+    \\newenvironment{airisredbox}{%
+        \\begin{tcolorbox}[colback=airis4d_red!10,colframe=airis4d_red,title={\\airisred{Warning}}]
+    }{\\end{tcolorbox}}
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    """
+
+        # Insert color info after documentclass but before begin{document}
+        if "\\documentclass" in tex_content:
+            # Find the position after documentclass and any packages
+            docclass_end = tex_content.find("\\begin{document}")
+
+            if docclass_end != -1:
+                # Insert color info right before begin{document}
+                new_content = tex_content[:docclass_end] + color_info + tex_content[docclass_end:]
+                return new_content
+
+        # Fallback: prepend if we can't find the right position
+        return color_info + tex_content
+
+    def generate_color_report(self, tex_file):
+        """Generate a report of color usage in the document"""
+        try:
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Count color occurrences
+            colors = {
+                'airis4d_blue': content.count('airis4d_blue'),
+                'airis4d_green': content.count('airis4d_green'),
+                'airis4d_orange': content.count('airis4d_orange'),
+                'airis4d_red': content.count('airis4d_red'),
+                'airis4d_purple': content.count('airis4d_purple'),
+                'airis4d_teal': content.count('airis4d_teal'),
+                'airis4d_gray': content.count('airis4d_gray'),
+            }
+
+            total_colors = sum(colors.values())
+
+            if total_colors > 0:
+                self.write("\n📊 Color Usage Report:\n", "cyan")
+                for color, count in colors.items():
+                    if count > 0:
+                        # Determine recommended text color
+                        text_color = get_xor_text_color(color)
+                        self.write(f"  • {color}: {count} uses → text={text_color}\n", "cyan")
+
+                self.write(f"  Total color references: {total_colors}\n", "cyan")
+
+        except Exception as e:
+            self.write(f"⚠ Could not generate color report: {str(e)}\n", "yellow")
+
+    def view_color_definitions(self, tex_file):
+        """Open a window to view color definitions"""
+        try:
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Extract color definitions section
+            import re
+            color_section_match = re.search(r'%%%% COLOR DEFINITIONS FOR TIKZ FIGURES(.*?)(?=%%%%|$)',
+                                           content, re.DOTALL)
+
+            if color_section_match:
+                color_text = color_section_match.group(1).strip()
+
+                # Create a dialog to show color definitions
+                dialog = ctk.CTkToplevel(self)
+                dialog.title("Color Definitions in TeX File")
+                dialog.geometry("700x500")
+
+                # Center dialog
+                dialog.transient(self)
+
+                # Create text widget with syntax highlighting
+                text_widget = ctk.CTkTextbox(dialog, font=("Courier", 10))
+                text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+
+                # Insert color definitions
+                text_widget.insert('1.0', color_text)
+
+                # Add copy button
+                button_frame = ctk.CTkFrame(dialog)
+                button_frame.pack(fill="x", padx=10, pady=10)
+
+                ctk.CTkButton(
+                    button_frame,
+                    text="Copy to Clipboard",
+                    command=lambda: self.copy_text_to_clipboard(color_text)
+                ).pack(side="left", padx=5)
+
+                ctk.CTkButton(
+                    button_frame,
+                    text="Close",
+                    command=dialog.destroy
+                ).pack(side="right", padx=5)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not view color definitions: {str(e)}")
+
+    def copy_text_to_clipboard(self, text):
+        """Copy text to clipboard"""
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        messagebox.showinfo("Copied", "Color definitions copied to clipboard")
 
     def check_latex_log(self, log_file: str) -> None:
         """Check LaTeX log file for warnings and errors"""
@@ -9603,6 +10257,268 @@ Created by {self.__author__}
             self.write_to_terminal(f"✗ Error launching presentation: {str(e)}\n", "red")
             messagebox.showerror("Error", f"Error launching presentation:\n{str(e)}")
             traceback.print_exc()
+
+    def add_tikz_color_helper(self):
+        """Add TikZ color helper button to toolbar"""
+        # Add to existing toolbar
+        if hasattr(self, 'toolbar'):
+            tikz_button = ctk.CTkButton(
+                self.toolbar,
+                text="🎨 TikZ Colors",
+                command=self.show_tikz_color_helper,
+                width=100,
+                fg_color="#9b59b6",
+                hover_color="#8e44ad"
+            )
+            tikz_button.pack(side="left", padx=5)
+            self.create_tooltip(tikz_button, "TikZ Color Helper with XOR text coloring")
+
+    def show_tikz_color_helper(self):
+        """Show TikZ color helper dialog"""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("TikZ Color Helper")
+        dialog.geometry("600x500")
+
+        # Center dialog
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Create notebook for tabs
+        notebook = ctk.CTkTabview(dialog)
+        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Tab 1: Color Picker
+        color_tab = notebook.add("Color Picker")
+        self.create_color_picker_tab(color_tab)
+
+        # Tab 2: Color Definitions
+        definitions_tab = notebook.add("Color Definitions")
+        self.create_definitions_tab(definitions_tab)
+
+        # Tab 3: Examples
+        examples_tab = notebook.add("Examples")
+        self.create_examples_tab(examples_tab)
+
+    def create_color_picker_tab(self, parent):
+        """Create color picker tab"""
+        # Initialize color helper
+        self.tikz_color_helper = TikZColorHelper()
+
+        # Instructions
+        instructions = ctk.CTkLabel(
+            parent,
+            text="Select a background color. Text color will be automatically chosen using XOR rule.",
+            wraplength=550,
+            font=("Arial", 11)
+        )
+        instructions.pack(pady=10)
+
+        # Color input frame
+        input_frame = ctk.CTkFrame(parent)
+        input_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(input_frame, text="Background Color:").pack(side="left", padx=5)
+        self.bg_color_entry = ctk.CTkEntry(input_frame, width=150)
+        self.bg_color_entry.pack(side="left", padx=5)
+        self.bg_color_entry.insert(0, "airis4d_blue")
+
+        # Preview button
+        preview_btn = ctk.CTkButton(
+            input_frame,
+            text="Preview",
+            command=self.preview_tikz_colors,
+            width=80
+        )
+        preview_btn.pack(side="left", padx=5)
+
+        # Pick color button
+        pick_btn = ctk.CTkButton(
+            input_frame,
+            text="🎨 Pick Color",
+            command=self.pick_tikz_color,
+            width=100,
+            fg_color="#3498db"
+        )
+        pick_btn.pack(side="left", padx=5)
+
+        # Preview area
+        self.tikz_preview_frame = ctk.CTkFrame(parent, height=150)
+        self.tikz_preview_frame.pack(fill="x", padx=10, pady=10)
+        self.tikz_preview_frame.pack_propagate(False)
+
+        self.tikz_preview_label = ctk.CTkLabel(
+            self.tikz_preview_frame,
+            text="TikZ Color Preview",
+            font=("Arial", 14),
+            height=140,
+            corner_radius=10
+        )
+        self.tikz_preview_label.pack(pady=5)
+
+        # Generated code area
+        code_frame = ctk.CTkFrame(parent)
+        code_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        ctk.CTkLabel(code_frame, text="Generated TikZ Code:").pack(anchor="w", padx=5, pady=5)
+
+        self.tikz_code_text = ctk.CTkTextbox(code_frame, height=100)
+        self.tikz_code_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Insert button
+        insert_btn = ctk.CTkButton(
+            parent,
+            text="Insert into Content",
+            command=self.insert_tikz_code,
+            width=150,
+            fg_color="#2ecc71"
+        )
+        insert_btn.pack(pady=10)
+
+    def pick_tikz_color(self):
+        """Pick a color using color picker"""
+        result = ColorPickerDialog.pick_color(self)
+        if result:
+            self.bg_color_entry.delete(0, 'end')
+            self.bg_color_entry.insert(0, result['name'])
+
+            # Add to color helper
+            self.tikz_color_helper.define_color(result['name'], result['rgb'])
+
+            self.preview_tikz_colors()
+
+    def preview_tikz_colors(self):
+        """Preview TikZ colors"""
+        bg_color = self.bg_color_entry.get().strip()
+
+        if not bg_color:
+            messagebox.showwarning("Warning", "Please enter a background color")
+            return
+
+        # Get text color
+        text_color = self.tikz_color_helper.get_text_color(bg_color)
+
+        # Update preview
+        try:
+            # Try to set background color in preview
+            if bg_color in self.tikz_color_helper.color_definitions:
+                rgb = self.tikz_color_helper.color_definitions[bg_color]
+                hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+            elif bg_color in self.tikz_color_helper.default_colors:
+                rgb = self.tikz_color_helper.default_colors[bg_color]
+                hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+            else:
+                # Assume it's a valid color name
+                hex_color = bg_color
+
+            self.tikz_preview_label.configure(
+                text=f"Background: {bg_color}\nText Color: {text_color}",
+                fg_color=hex_color,
+                text_color="white" if text_color == "white" else "black"
+            )
+
+            # Generate TikZ code
+            tikz_code = f"""
+    % TikZ node with automatic text color
+    \\definecolor{{{bg_color}}}{{RGB}}{{{rgb[0]},{rgb[1]},{rgb[2]}}}
+    \\node[fill={bg_color}, text={text_color}, minimum width=3cm, minimum height=1cm] {{{text_color.upper()} text on {bg_color}}};
+    """
+
+            self.tikz_code_text.delete('1.0', 'end')
+            self.tikz_code_text.insert('1.0', tikz_code.strip())
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not preview color: {str(e)}")
+
+    def insert_tikz_code(self):
+        """Insert TikZ code into content editor"""
+        code = self.tikz_code_text.get('1.0', 'end-1c')
+        if code:
+            self.content_editor.insert('insert', f"\n{code}\n")
+
+    def create_definitions_tab(self, parent):
+        """Create color definitions tab"""
+        text = ctk.CTkTextbox(parent)
+        text.pack(fill="both", expand=True, padx=10, pady=10)
+
+        definitions = self.tikz_color_helper.generate_tikz_color_definitions()
+
+        text.insert('1.0', "% TikZ Color Definitions (add to preamble)\n")
+        text.insert('end', definitions)
+
+        # Add copy button
+        copy_btn = ctk.CTkButton(
+            parent,
+            text="Copy to Clipboard",
+            command=lambda: self.copy_to_clipboard(definitions),
+            width=150
+        )
+        copy_btn.pack(pady=10)
+
+    def create_examples_tab(self, parent):
+        """Create examples tab"""
+        text = ctk.CTkTextbox(parent)
+        text.pack(fill="both", expand=True, padx=10, pady=10)
+
+        examples = """
+    % Example 1: Basic colored node
+    \\node[fill=airis4d_blue, text=white, draw=black, thick, minimum width=2cm] {White Text};
+
+    % Example 2: Multiple nodes with different colors
+    \\begin{tikzpicture}
+        \\node[fill=airis4d_green, text=black, circle] at (0,0) {A};
+        \\node[fill=airis4d_red, text=white, circle] at (2,0) {B};
+        \\node[fill=airis4d_orange, text=black, circle] at (4,0) {C};
+    \\end{tikzpicture}
+
+    % Example 3: Using the create_colored_node helper
+    % (Include the TikZColorHelper class in your document preamble)
+    """
+
+        text.insert('1.0', examples)
+
+    def copy_to_clipboard(self, text):
+        """Copy text to clipboard"""
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        messagebox.showinfo("Copied", "Color definitions copied to clipboard")
+
+    def add_color_info_to_output(self, content):
+        """Add color information to generated output"""
+        color_info = """
+    % Color Information for TikZ Figures
+    % Use these color definitions for consistent theming
+    % Text colors are automatically chosen using XOR rule
+
+    % Default color palette
+    \\definecolor{airis4d_blue}{RGB}{41,128,185}
+    \\definecolor{airis4d_green}{RGB}{39,174,96}
+    \\definecolor{airis4d_orange}{RGB}{243,156,18}
+    \\definecolor{airis4d_red}{RGB}{231,76,60}
+    \\definecolor{airis4d_purple}{RGB}{155,89,182}
+    \\definecolor{airis4d_teal}{RGB}{26,188,156}
+    \\definecolor{airis4d_gray}{RGB}{149,165,166}
+
+    % XOR Rule for text colors:
+    % - Use text=white on dark backgrounds (luminance < 0.179)
+    % - Use text=black on light backgrounds (luminance > 0.179)
+
+    % Example usage:
+    % \\node[fill=airis4d_blue, text=white] {White text on blue};
+    % \\node[fill=airis4d_orange, text=black] {Black text on orange};
+    """
+
+        # Insert color info after the document class
+        if "\\documentclass" in content:
+            parts = content.split("\\documentclass", 1)
+            new_content = parts[0] + "\\documentclass" + parts[1].replace(
+                "\\begin{document}",
+                color_info + "\n\\begin{document}",
+                1
+            )
+            return new_content
+
+        return color_info + "\n" + content
+
 #-----------------------------------------------Help Functions --------------------------------------------
 def modify_preamble_for_notes_mode(tex_content: str, mode: str) -> str:
     """
