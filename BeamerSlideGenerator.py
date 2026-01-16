@@ -1279,18 +1279,44 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\vspace{0.5em}\n"
 
-        # Add TikZ content directly
-        for item in content:
-            if isinstance(item, str):
-                if '\\begin{tikzpicture}' in item:
-                    latex_code += f"    {item}\n"
-                elif item.strip() and item.strip().startswith('-'):
-                    clean_item = item.strip()[1:].strip()
-                    processed_item = process_latex_content(clean_item)
-                    latex_code += f"    {processed_item}\n"
+        # Check if content contains TikZ
+        has_tikz = False
+        if content:
+            for item in content:
+                if isinstance(item, str) and '\\begin{tikzpicture}' in item:
+                    has_tikz = True
+                    break
 
-        latex_code += "\\end{frame}\n"
-        return latex_code
+        # Handle no media case with TikZ
+        if has_tikz and (not filename or filename == "\\None"):
+            latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+            latex_code += "    \\vspace{0.5em}\n"
+
+            # Add TikZ content directly - FIXED: Include all TikZ lines
+            in_tikz_environment = False
+            for item in content:
+                if isinstance(item, str):
+                    item_str = str(item)
+                    if '\\begin{tikzpicture}' in item_str:
+                        in_tikz_environment = True
+                        latex_code += f"    {item_str}\n"
+                    elif '\\end{tikzpicture}' in item_str:
+                        in_tikz_environment = False
+                        latex_code += f"    {item_str}\n"
+                    elif in_tikz_environment:
+                        # For TikZ drawing commands, preserve indentation
+                        # Add appropriate indentation (4 spaces) for LaTeX
+                        latex_code += f"    {item_str}\n"
+                    elif item_str.strip() and item_str.strip().startswith('-'):
+                        clean_item = item_str.strip()[1:].strip()
+                        processed_item = process_latex_content(clean_item)
+                        latex_code += f"    {processed_item}\n"
+                    elif item_str.strip():  # Add other non-empty content
+                        processed_item = process_latex_content(item_str.strip())
+                        latex_code += f"    {processed_item}\n"
+
+            latex_code += "\\end{frame}\n"
+            return latex_code
 
     # Handle no media case first
     if not filename or filename == "\\None":
@@ -1611,14 +1637,13 @@ def insert_speaker_notes(latex_code, notes):
         return latex_code  # No frame end found, return original
 
     # Format notes with proper indentation
-    notes_text = '\n'.join([f'    \\note{{{sanitize_latex_content(note)}}}'
+    notes_text = '\n'.join([f'    \\note{{{note}}}'
                            for note in notes if note.strip()])
 
     # Insert notes before \end{frame}
     return (latex_code[:frame_end_pos] +
             '\n' + notes_text + '\n' +
             latex_code[frame_end_pos:])
-
 
 def ensure_proper_environments(content_lines):
     """Ensure LaTeX environments are properly opened and closed.
@@ -2647,15 +2672,11 @@ def sanitize_latex_content(content_line):
     content_line = content_line.strip()
 
     # Fix unbalanced braces - this is CRITICAL
-    open_braces = content_line.count('{')
-    close_braces = content_line.count('}')
+    import re
+    open_braces = len(re.findall(r'(?<!\\)\{', content_line))
+    close_braces = len(re.findall(r'(?<!\\)\}', content_line))
 
     if open_braces != close_braces:
-        # Count only non-escaped braces
-        import re
-        open_braces = len(re.findall(r'(?<!\\)\{', content_line))
-        close_braces = len(re.findall(r'(?<!\\)\}', content_line))
-
         if open_braces > close_braces:
             # Add missing closing braces
             content_line += '}' * (open_braces - close_braces)
@@ -2663,16 +2684,17 @@ def sanitize_latex_content(content_line):
             # Add missing opening braces
             content_line = '{' * (close_braces - open_braces) + content_line
 
-    # Fix excessive brace nesting
-    content_line = content_line.replace('{{{', '{').replace('}}}', '}')
-    content_line = content_line.replace('{{', '{').replace('}}', '}')
+    # Fix excessive brace nesting (but not for LaTeX environments)
+    # We'll be more careful about this
+    if not any(env in content_line for env in ['\\begin{', '\\end{', '\\textbf{', '\\textit{']):
+        content_line = content_line.replace('{{{', '{').replace('}}}', '}')
+        content_line = content_line.replace('{{', '{').replace('}}', '}')
 
     # Escape problematic characters if not already escaped
-    import re
     # Only escape if not already escaped and not in math mode
     if '$' not in content_line:
-        # Escape special LaTeX characters
-        special_chars = ['#', '$', '%', '&', '_', '{', '}']
+        # Escape special LaTeX characters (but NOT braces anymore)
+        special_chars = ['#', '$', '%', '&', '_']
         for char in special_chars:
             pattern = r'(?<!\\)' + re.escape(char)
             content_line = re.sub(pattern, '\\' + char, content_line)
@@ -2810,35 +2832,34 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 elif line.startswith('\\end{Notes}'):
                     in_notes_block = False
 
-                # Process content
-                # Process content
+                # Process content - FIXED: Preserve TikZ indentation
                 elif in_content_block:
                     if line.strip():  # Only add non-empty lines
-                        clean_line = line.strip()
+                        # Check if this line is TikZ content
+                        is_tikz_line = ('\\begin{tikzpicture}' in line or
+                                       '\\end{tikzpicture}' in line or
+                                       '\\node[' in line or
+                                       '\\draw[' in line or
+                                       (current_frame_content and
+                                        any('tikzpicture' in str(item).lower() for item in current_frame_content[-3:])))
 
-                        # CRITICAL FIX: Don't remove braces from TikZ content
-                        # Check if this is TikZ content before processing
-                        if '\\begin{tikzpicture}' in clean_line or '\\end{tikzpicture}' in clean_line:
-                            # For TikZ content, keep all braces intact
-                            current_frame_content.append(clean_line)
-                        elif '- ' in clean_line[:2]:
-                            # For bullet points, only remove problematic brace patterns, not all braces
+                        if is_tikz_line:
+                            # For TikZ content, preserve the original line (with indentation)
+                            # But remove excessive leading/trailing whitespace
+                            current_frame_content.append(line.rstrip())
+                        elif '- ' in line[:2].lstrip():
+                            # For bullet points
+                            clean_line = line.strip()
                             prefix = clean_line[:2]
-                            content_part = clean_line[2:]
-
-                            # Only remove braces that would cause compilation errors in frame titles
-                            # But preserve braces for LaTeX commands and TikZ
-                            if not any(cmd in content_part for cmd in ['\\begin{tikzpicture}', '\\end{tikzpicture}', '\\tikz', '\\draw']):
-                                # For regular text, remove problematic brace patterns
-                                content_part = re.sub(r'^\{(.*)\}$', r'\1', content_part)  # Remove surrounding braces
-                                content_part = re.sub(r'\{\{(.*)\}\}', r'\1', content_part)  # Remove double braces
-                            clean_line = prefix + content_part
-                            current_frame_content.append(clean_line)
+                            content_part = clean_line[2:].strip()
+                            current_frame_content.append(prefix + sanitize_latex_content(content_part))
                         else:
-                            # For other content, keep braces for LaTeX commands
-                            current_frame_content.append(clean_line)
+                            # For other content, strip and sanitize
+                            clean_line = line.strip()
+                            if clean_line:  # Only add if not empty after stripping
+                                current_frame_content.append(sanitize_latex_content(clean_line))
 
-                # Process notes - FIXED: Keep braces for LaTeX commands
+                # Process notes - RESTORED TO ORIGINAL with targeted fix
                 elif in_notes_block:
                     if line.strip() and not line.startswith('%'):
                         clean_note = line.strip()
@@ -2852,7 +2873,10 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                             current_frame_notes.append('\\end{itemize}')
                         else:
                             # For regular notes, keep all braces to preserve LaTeX commands
-                            current_frame_notes.append(clean_note)
+                            # BUT we need to fix the escaping issue
+                            # The issue is in sanitize_latex_content() which escapes braces
+                            # Let's use a custom function for notes that preserves LaTeX environments
+                            current_frame_notes.append(sanitize_note_content(clean_note))
 
                 i += 1
 
@@ -2870,6 +2894,55 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         if ide_callback:
             ide_callback("error", {'message': error_msg})
         return processed, failed, errors
+
+
+def sanitize_note_content(note_line):
+    """Special sanitization for note content that preserves LaTeX environments"""
+    if not note_line:
+        return ""
+
+    # Check if this is a LaTeX environment command
+    latex_env_patterns = [
+        r'\\begin\{[^}]+\}',
+        r'\\end\{[^}]+\}',
+        r'\\textbf\{[^}]*\}',
+        r'\\textit\{[^}]*\}',
+        r'\\texttt\{[^}]*\}',
+        r'\\underline\{[^}]*\}',
+        r'\\emph\{[^}]*\}',
+        r'\\textsc\{[^}]*\}',
+        r'\\item\s*',
+    ]
+
+    # If it contains any of these patterns, we need to preserve the braces
+    contains_latex_env = any(re.search(pattern, note_line) for pattern in latex_env_patterns)
+
+    if contains_latex_env:
+        # For LaTeX environment content, fix unbalanced braces but don't escape them
+        open_braces = len(re.findall(r'(?<!\\)\{', note_line))
+        close_braces = len(re.findall(r'(?<!\\)\}', note_line))
+
+        if open_braces != close_braces:
+            if open_braces > close_braces:
+                note_line += '}' * (open_braces - close_braces)
+            elif close_braces > open_braces:
+                note_line = '{' * (close_braces - open_braces) + note_line
+
+        # Escape only the special characters that aren't part of LaTeX commands
+        # We'll be careful not to escape braces
+        special_chars = ['#', '$', '%', '&', '_']
+        for char in special_chars:
+            # Create a pattern that matches the char only when it's not inside {}
+            # This is complex, so we'll use a simpler approach
+            pattern = r'(?<!\\)' + re.escape(char)
+            # Only replace if not followed by a { (start of command)
+            if char != '{':
+                note_line = re.sub(pattern, '\\' + char, note_line)
+
+        return note_line
+    else:
+        # For regular note content, use the standard sanitization
+        return sanitize_latex_content(note_line)
 
 def should_process_frame(title, content, media, notes):
     """
