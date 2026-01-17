@@ -117,6 +117,8 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         text = text.replace('$', '\\$')
         text = text.replace('#', '\\#')
         text = text.replace('_', '\\_')
+        text = text.replace('{', '\\{')
+        text = text.replace('}', '\\}')
         text = text.replace('~', '\\textasciitilde')
         text = text.replace('^', '\\textasciicircum')
         return text
@@ -201,7 +203,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
         boxed title style={size=small,colback=#1!75!black}
     }
-}
+}{}
 
 % Define colors
 \definecolor{myred}{RGB}{255,50,50}
@@ -1225,7 +1227,7 @@ def process_latex_content(content_line: str) -> str:
 
 #----------------------------------------------------------------------
 def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
-    """Generate LaTeX code with support for all media layouts - FIXED"""
+    """Generate LaTeX code with support for all media layouts."""
 
     def clean_frame_title(title_text):
         """Clean frame title to prevent compilation errors - FIXED VERSION"""
@@ -1233,6 +1235,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
             return "Untitled"
 
         # CRITICAL FIX: Remove all braces from titles
+        # They cause LaTeX compilation errors in frame titles
         title_text = str(title_text)
 
         # First remove any existing escaped braces
@@ -1267,43 +1270,66 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     # Check if content contains TikZ
     has_tikz = False
+    has_bullet_points = False
+
     if content:
         for item in content:
-            if isinstance(item, str) and '\\begin{tikzpicture}' in item:
-                has_tikz = True
-                break
+            if isinstance(item, str):
+                if '\\begin{tikzpicture}' in item:
+                    has_tikz = True
+                elif item.strip().startswith('-'):
+                    has_bullet_points = True
 
     # Handle no media case with TikZ
     if has_tikz and (not filename or filename == "\\None"):
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\vspace{0.5em}\n"
 
-        # Add TikZ content directly - FIXED: Include all TikZ lines
-        in_tikz_environment = False
+        # Add TikZ content directly
+        in_itemize = False
+        itemize_started = False
+
         for item in content:
             if isinstance(item, str):
-                item_str = str(item)
+                item_str = item.strip()
+                if not item_str:
+                    continue
+
                 if '\\begin{tikzpicture}' in item_str:
-                    in_tikz_environment = True
+                    # If we're in an itemize environment, end it first
+                    if in_itemize:
+                        latex_code += "    \\end{itemize}\n"
+                        in_itemize = False
                     latex_code += f"    {item_str}\n"
-                elif '\\end{tikzpicture}' in item_str:
-                    in_tikz_environment = False
-                    latex_code += f"    {item_str}\n"
-                elif in_tikz_environment:
-                    # For TikZ drawing commands, preserve indentation
-                    latex_code += f"    {item_str}\n"
-                elif item_str.strip() and item_str.strip().startswith('-'):
-                    clean_item = item_str.strip()[1:].strip()
+                elif item_str.startswith('-'):
+                    # Start itemize environment if not already started
+                    if not in_itemize:
+                        latex_code += "    \\begin{itemize}\n"
+                        in_itemize = True
+                        itemize_started = True
+                    clean_item = item_str[1:].strip()
                     processed_item = process_latex_content(clean_item)
-                    latex_code += f"    \\item {processed_item}\n"
-                elif item_str.strip():  # Add other non-empty content
-                    processed_item = process_latex_content(item_str.strip())
-                    latex_code += f"    \\item {processed_item}\n"
+                    latex_code += f"        \\item {processed_item}\n"
+                elif in_itemize:
+                    # If we're in itemize and this isn't a bullet point, end itemize
+                    latex_code += "    \\end{itemize}\n"
+                    in_itemize = False
+                    # Add the non-bullet content
+                    processed_item = process_latex_content(item_str)
+                    latex_code += f"    {processed_item}\n"
+                else:
+                    # Regular content outside of itemize
+                    processed_item = process_latex_content(item_str)
+                    latex_code += f"    {processed_item}\n"
+
+        # Close itemize if it's still open
+        if in_itemize:
+            latex_code += "    \\end{itemize}\n"
 
         latex_code += "\\end{frame}\n"
         return latex_code
 
-    # Handle no media case first
+    # Handle no media case first (no TikZ)
     if not filename or filename == "\\None":
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\vspace{0.5em}\n"
@@ -1353,14 +1379,11 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        # Fix: Remove double backslashes in file paths
-        clean_first_frame = first_frame_path.replace('\\\\', '/').replace('\\', '/')
-        clean_filename = filename.replace('\\\\', '/').replace('\\', '/')
-        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{clean_first_frame}}}\n"
+        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{first_frame_path}}}\n"
         latex_code += "            \\begin{center}\n"
         latex_code += "                \\vspace{0.3em}\n"
         latex_code += "                \\footnotesize Click to play\\\\\n"
-        latex_code += f"                \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{clean_filename}}}\n"
+        latex_code += f"                \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{filename}}}\n"
         latex_code += "            \\end{center}\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
@@ -1377,9 +1400,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        # Fix: Remove double backslashes in file paths
-        clean_filename = filename.replace('\\\\', '/').replace('\\', '/')
-        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{clean_filename}}}\n"
+        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{filename}}}\n"
         latex_code += "        \\end{column}\n"
         latex_code += "        \\begin{column}{0.48\\textwidth}\n"
         content_items = generate_content_items(content)
@@ -1453,8 +1474,6 @@ def detect_tikz_content(content_lines):
         elif in_tikz and '\\end{tikzpicture}' in stripped:
             current_tikz.append(stripped)
             tikz_blocks.append('\n'.join(current_tikz))
-            # CRITICAL FIX: Add TikZ block to remaining_content
-            remaining_content.append('\n'.join(current_tikz))
             in_tikz = False
         # Inside TikZ environment
         elif in_tikz:
@@ -1468,267 +1487,51 @@ def detect_tikz_content(content_lines):
 
 # Update the process_frame function to handle TikZ content
 def process_frame(outfile, title, content, notes, media):
-    """Process a single frame and write it to the output file.
+    """Process a single frame and write it to the output file"""
 
-    Args:
-        outfile: File object to write LaTeX output to
-        title: Frame title (string)
-        content: List of content lines for the frame
-        notes: List of note lines for speaker notes
-        media: Media directive string or None
+    # Separate TikZ content from regular content
+    tikz_blocks, regular_content = detect_tikz_content(content if content else [])
 
-    Returns:
-        None (writes directly to outfile)
-    """
-    try:
-        # Validate and sanitize inputs
-        title = sanitize_frame_title(title) if title else "Untitled Frame"
-        content = content or []
-        notes = notes or []
+    # If we have TikZ content, handle it specially
+    if tikz_blocks:
+        # Create a combined content list with TikZ blocks properly formatted
+        combined_content = []
 
-        # Process content preserving all LaTeX environments including TikZ
-        processed_content = process_content_preserving_environments(content)
+        for tikz_block in tikz_blocks:
+            # Wrap TikZ block in appropriate LaTeX environment
+            wrapped_tikz = f"\\begin{{center}}\n\\scalebox{{0.8}}{{\n{tikz_block}\n}}\n\\end{{center}}"
+            combined_content.append(wrapped_tikz)
 
-        # Generate LaTeX code for the frame
+        # Add regular content items (bulleted lists, etc.)
+        for item in regular_content:
+            if item.strip() and item.strip().startswith('-'):
+                combined_content.append(item.strip())
+
+        # Generate LaTeX code with the combined content
         latex_code, directive = process_media(
-            media or "\\None",
-            processed_content,
+            media if media else "\\None",
+            combined_content,
+            title,
+            False  # playable flag
+        )
+    else:
+        # Original processing for non-TikZ content
+        latex_code, directive = process_media(
+            media if media else "\\None",
+            content if content else [],  # Pass empty list instead of None
             title,
             False  # playable flag
         )
 
-        # Add speaker notes if provided
-        if latex_code and notes:
-            latex_code = insert_speaker_notes(latex_code, notes)
-
-        # Write the processed frame to output
-        outfile.write(latex_code + '\n')
-
-    except Exception as e:
-        error_msg = f"Error processing frame '{title}': {str(e)}"
-        print(error_msg)
-        # Write an error frame instead of crashing
-        outfile.write(f"% ERROR: {error_msg}\n")
-        outfile.write(generate_error_frame(title, content))
-        raise  # Re-raise if you want the calling function to handle it
-
-
-def sanitize_frame_title(title):
-    """Sanitize frame title to prevent LaTeX compilation errors.
-
-    Args:
-        title: Raw frame title string
-
-    Returns:
-        Sanitized title safe for LaTeX frame titles
-    """
-    if not title:
-        return "Untitled Frame"
-
-    # Create a safe copy
-    safe_title = str(title)
-
-    # Remove problematic brace patterns that cause compilation errors
-    # Frame titles in LaTeX cannot contain {} braces
-    safe_title = re.sub(r'\{[^{}]*\}', '', safe_title)  # Remove simple braces
-    safe_title = safe_title.replace('{', '').replace('}', '')
-
-    # Escape special LaTeX characters (except braces which we removed)
-    special_chars = ['#', '$', '%', '&', '_', '~', '^']
-    for char in special_chars:
-        safe_title = safe_title.replace(char, f'\\{char}')
-
-    # Ensure title has reasonable length
-    if len(safe_title) > 100:
-        safe_title = safe_title[:97] + '...'
-
-    return safe_title.strip()
-
-
-def process_content_preserving_environments(content_lines):
-    """Process content while preserving LaTeX environments including TikZ."""
-    if not content_lines:
-        return []
-
-    processed_lines = []
-    in_tikz = False
-    in_other_env = False
-    current_env = None
-
-    for line in content_lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # Detect TikZ environment
-        if '\\begin{tikzpicture}' in line:
-            in_tikz = True
-            processed_lines.append(line)
-            continue
-        elif '\\end{tikzpicture}' in line:
-            in_tikz = False
-            processed_lines.append(line)
-            continue
-
-        # Detect other LaTeX environments
-        env_match = re.match(r'\\begin\{([^}]+)\}', line)
-        if env_match and not in_tikz:
-            env_name = env_match.group(1)
-            in_other_env = True
-            current_env = env_name
-            processed_lines.append(line)
-            continue
-
-        if line.startswith('\\end{') and not in_tikz:
-            in_other_env = False
-            current_env = None
-            processed_lines.append(line)
-            continue
-
-        # If inside TikZ or other environment, preserve line as-is
-        if in_tikz or in_other_env:
-            processed_lines.append(line)
-            continue
-
-        # For regular content outside environments, process normally
-        if line.startswith('-'):
-            bullet_content = line[1:].strip()
-            if bullet_content:
-                # Process special effects and sanitize
-                processed_bullet = process_special_effects(bullet_content)
-                processed_bullet = sanitize_latex_content(processed_bullet)
-                processed_lines.append(f"\\item {processed_bullet}")
-        elif line.startswith('\\'):
-            # Pass through LaTeX commands as-is
-            processed_lines.append(sanitize_latex_content(line))
-        else:
-            processed_line = process_special_effects(line)
-            processed_line = sanitize_latex_content(processed_line)
-            processed_lines.append(f"\\item {processed_line}")
-
-    return processed_lines
-
-def insert_speaker_notes(latex_code, notes):
-    """Insert speaker notes into LaTeX frame code.
-
-    Args:
-        latex_code: Complete LaTeX frame code
-        notes: List of note strings
-
-    Returns:
-        LaTeX code with notes inserted
-    """
-    if not notes or not latex_code:
-        return latex_code
-
-    # Find the \end{frame} position
-    frame_end_pos = latex_code.rfind('\\end{frame}')
-    if frame_end_pos == -1:
-        return latex_code  # No frame end found, return original
-
-    # Format notes with proper indentation
-    notes_text = '\n'.join([f'    \\note{{{note}}}'
-                           for note in notes if note.strip()])
-
     # Insert notes before \end{frame}
-    return (latex_code[:frame_end_pos] +
-            '\n' + notes_text + '\n' +
-            latex_code[frame_end_pos:])
+    if latex_code and notes:
+        frame_end = latex_code.rfind('\\end{frame}')
+        if frame_end != -1:
+            notes_text = '\n'.join(f'    \\note{{{note}}}' for note in notes)
+            latex_code = latex_code[:frame_end] + '\n' + notes_text + '\n' + latex_code[frame_end:]
 
-def ensure_proper_environments(content_lines):
-    """Ensure LaTeX environments are properly opened and closed.
+    outfile.write(latex_code + '\n')
 
-    Args:
-        content_lines: List of content lines
-
-    Returns:
-        List with properly nested environments
-    """
-    if not content_lines:
-        return []
-
-    # Track environments
-    env_stack = []
-    result = []
-
-    # First pass: detect environments and ensure itemize is wrapped
-    i = 0
-    while i < len(content_lines):
-        line = content_lines[i]
-
-        # Detect environment starts
-        env_match = re.match(r'\\begin\{([^}]+)\}', line)
-        if env_match:
-            env_name = env_match.group(1)
-            env_stack.append(env_name)
-            result.append(line)
-
-        # Detect environment ends
-        elif line.startswith('\\end{'):
-            if env_stack:
-                env_stack.pop()
-            result.append(line)
-
-        # Handle \item commands - ensure they're in itemize
-        elif line.startswith('\\item'):
-            # Check if we're in an itemize environment
-            if not any('itemize' in env for env in env_stack):
-                # Not in itemize, add it
-                result.append('\\begin{itemize}')
-                env_stack.append('itemize')
-                result.append(line)
-                # Look ahead to see if we need to close
-                j = i + 1
-                while j < len(content_lines):
-                    if content_lines[j].startswith('\\item'):
-                        j += 1
-                    else:
-                        break
-                # If no more items, close immediately
-                if j == len(content_lines) or not content_lines[j].startswith('\\item'):
-                    result.append('\\end{itemize}')
-                    env_stack.pop()
-            else:
-                result.append(line)
-
-        else:
-            result.append(line)
-
-        i += 1
-
-    # Close any unclosed environments
-    while env_stack:
-        env = env_stack.pop()
-        result.append(f'\\end{{{env}}}')
-
-    return result
-
-
-def generate_error_frame(title, content):
-    """Generate a simple error frame when processing fails.
-
-    Args:
-        title: Frame title
-        content: Original content
-
-    Returns:
-        Simple LaTeX frame code showing the error
-    """
-    safe_title = sanitize_frame_title(title)
-
-    error_frame = f"""\\begin{{frame}}{{{safe_title}}}
-    \\begin{{alertblock}}{{Frame Processing Error}}
-        There was an error processing this frame. The original content is shown below.
-    \\end{{alertblock}}
-
-    \\begin{{minipage}}{{\\textwidth}}
-    \\begin{{verbatim}}
-{chr(10).join(content if content else ['No content available'])}
-    \\end{{verbatim}}
-    \\end{{minipage}}
-\\end{{frame}}
-"""
-    return error_frame
 # Also need to update the generate_content_items function to pass through TikZ content
 def generate_content_items(content, color=None):
     """Generate formatted content items with optional color, handling TikZ separately."""
@@ -1779,11 +1582,10 @@ def generate_content_items(content, color=None):
                 in_itemize = False
             continue
 
-        # In generate_content_items function, ensure TikZ is in the pass-through list:
+        # A) Graphics and media commands
         graphics_commands = [
             '\\includegraphics', '\\movie', '\\animategraphics',
-            '\\sound', '\\hyperlinksound', '\\tikz', '\\begin{tikzpicture}',
-            '\\end{tikzpicture}'
+            '\\sound', '\\hyperlinksound'
         ]
         if any(cmd in item_str for cmd in graphics_commands):
             items.append(item_str)
@@ -2005,9 +1807,11 @@ def verify_media_file(filepath):
 
 
 def process_media(url, content=None, title=None, playable=False, slide_index=None, callback=None):
-    """Process media with graceful handling of missing files and URLs - FIXED"""
+    """Process media with graceful handling of missing files and URLs"""
+
 
     try:
+
         directive_type, media_source, is_playable, original_directive = parse_media_directive(url)
         playable = playable or is_playable
 
@@ -2018,74 +1822,52 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
         # Create a list to store footnotes
         footnotes = []
 
+
         # First collect any existing footnotes from content
         processed_content = []
-        i = 0
-        while i < len(content):
-            item = content[i]
-            if isinstance(item, str):
-                if '\\anbg' in item:
+        for item in content:
+            if '\\anbg' in item:
                     # Extract image name from \anbg command
                     match = re.search(r'\\anbg\{(.*?)\}', item)
                     if match:
                         image_name = match.group(1)
                         if image_name:
                             # Add background command before frame
-                            processed_content.append(f"\\anbg{{{image_name}}}")
+                           processed_content.append(f"\\anbg{{{image_name}}}")
                         else:
                             # Clear background if empty
                             processed_content.append("\\anbg{}")
                     # Remove \anbg line from content
-                    i += 1
-                    continue
-                elif '\\footnote{' in item:
-                    # Extract footnote text
-                    footnote_start = item.index('\\footnote{') + len('\\footnote{')
-                    footnote_end = item.rindex('}')
-                    footnote_text = item[footnote_start:footnote_end]
-                    footnotes.append(footnote_text)
+                    content.pop(i)
+            elif '\\footnote{' in item:
+                # Extract footnote text
+                footnote_start = item.index('\\footnote{') + len('\\footnote{')
+                footnote_end = item.rindex('}')
+                footnote_text = item[footnote_start:footnote_end]
+                footnotes.append(footnote_text)
 
-                    # Remove footnote from content item
-                    cleaned_item = item[:item.index('\\footnote{')] + item[item.rindex('}')+1:]
-                    if cleaned_item.strip():
-                        processed_content.append(cleaned_item)
-                    i += 1
-                    continue
-                elif '\\file{' in item:
-                    # Handle \file directive in content - convert to \includegraphics
-                    match = re.search(r'\\file\{([^}]*)\}', item)
-                    if match:
-                        file_path = match.group(1)
-                        # Fix double backslashes in file paths
-                        file_path = file_path.replace('\\\\', '/').replace('\\', '/')
-                        # Convert to proper graphics command
-                        processed_content.append(f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{file_path}}}")
-                    i += 1
-                    continue
-                else:
-                    processed_content.append(item)
+                # Remove footnote from content item
+                cleaned_item = item[:item.index('\\footnote{')] + item[item.rindex('}')+1:]
+                processed_content.append(cleaned_item)
             else:
                 processed_content.append(item)
-            i += 1
+
 
         # Now add all footnotes to the last content item or create a phantom item
-        if processed_content and footnotes:
+        if processed_content:
             last_item = processed_content[-1]
-            if isinstance(last_item, str):
-                for i, footnote in enumerate(footnotes):
-                    if i == 0:
-                        last_item = f"{last_item}\\footnote{{{footnote}}}"
-                    else:
-                        # Add subsequent footnotes with proper spacing
-                        last_item = f"{last_item}\\footnote{{{footnote}}}"
-                processed_content[-1] = last_item
+            for i, footnote in enumerate(footnotes):
+                if i == 0:
+                    last_item = f"{last_item}\\footnote{{{footnote}}}"
+                else:
+                    # Add subsequent footnotes with proper spacing
+                    last_item = f"{last_item}\\footnote{{{footnote}}}"
+            processed_content[-1] = last_item
         elif footnotes:
             # If no content but we have footnotes, create a phantom item
             combined_footnotes = ''.join([f"\\footnote{{{f}}}" for f in footnotes])
             processed_content.append(f"\\phantom{{.}}{combined_footnotes}")
 
-        # Use processed content
-        content = processed_content
 
         # Handle explicit \None directive
         if url.strip() == "\\None":
@@ -2124,7 +1906,7 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
                         ), f"\\play \\file media_files/{filename}"
 
         # Handle regular URLs
-        elif directive_type == 'url':
+        elif directive_type == 'url' :
             if media_source.startswith(('http://', 'https://')):
                 base_name, filename, first_frame_path = download_media(media_source)
                 if base_name and filename:
@@ -2140,8 +1922,6 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
 
         # Handle local files
         elif directive_type == 'file':
-            # Fix file path - remove any backslashes
-            media_source = media_source.replace('\\\\', '/').replace('\\', '/')
             media_path = media_source
             if not os.path.exists(media_path):
                 media_path = os.path.join('media_files', os.path.basename(media_path))
@@ -2673,75 +2453,10 @@ def format_url_note(url):
     else:
         return "\\textcolor{blue}{[%s]}" %(url)
 
-def fix_generated_latex_file(filepath):
-    """Fix common issues in generated LaTeX files - NEW FUNCTION"""
-    try:
-        with open(filepath, 'r') as f:
-            content = f.read()
-
-        # Fix 1: Replace double backslashes in file paths
-        content = content.replace('media\\\\_files', 'media_files')
-
-        # Fix 2: Fix broken \frac commands
-        content = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\$', r'\\frac{\1}{\2}$', content)
-
-        # Fix 3: Fix broken math formulas
-        content = re.sub(r'\$([^$]*)\$\}', r'$\1}$', content)  # Fix $...$}
-        content = re.sub(r'\{\$([^$]*)\$', r'{$\\1$', content)  # Fix {$...$
-
-        # Fix 4: Fix \item commands outside of itemize
-        # Find all \item commands and ensure they're in itemize environments
-        lines = content.split('\n')
-        fixed_lines = []
-        in_itemize = False
-
-        for line in lines:
-            stripped = line.strip()
-
-            # Check for \item commands
-            if stripped.startswith('\\item') and not in_itemize:
-                # Need to start itemize
-                fixed_lines.append('    \\begin{itemize}')
-                in_itemize = True
-                fixed_lines.append(line)
-            elif stripped.startswith('\\item') and in_itemize:
-                # Already in itemize
-                fixed_lines.append(line)
-            elif not stripped.startswith('\\item') and in_itemize and not stripped.startswith('\\begin{') and not stripped.startswith('\\end{'):
-                # End itemize if we're leaving item content
-                fixed_lines.append('    \\end{itemize}')
-                in_itemize = False
-                fixed_lines.append(line)
-            else:
-                fixed_lines.append(line)
-
-        # Close any open itemize
-        if in_itemize:
-            fixed_lines.append('    \\end{itemize}')
-
-        content = '\n'.join(fixed_lines)
-
-        # Fix 5: Remove stray \file commands
-        content = content.replace('\\file media_files/', '')
-        content = content.replace('\\file{', '')
-
-        # Fix 6: Fix scalebox syntax
-        content = re.sub(r'\\scalebox\{0\.\d+\}\{\}', '', content)
-
-        # Write fixed content back
-        with open(filepath, 'w') as f:
-            f.write(content)
-
-        print(f"Fixed LaTeX file: {filepath}")
-        return True
-
-    except Exception as e:
-        print(f"Error fixing LaTeX file: {str(e)}")
-        return False
 
 #------------------------------------------------------
 def sanitize_latex_content(content_line):
-    """Sanitize LaTeX content to prevent compilation errors - FIXED"""
+    """Sanitize LaTeX content to prevent compilation errors"""
     if not content_line:
         return ""
 
@@ -2749,11 +2464,15 @@ def sanitize_latex_content(content_line):
     content_line = content_line.strip()
 
     # Fix unbalanced braces - this is CRITICAL
-    import re
-    open_braces = len(re.findall(r'(?<!\\)\{', content_line))
-    close_braces = len(re.findall(r'(?<!\\)\}', content_line))
+    open_braces = content_line.count('{')
+    close_braces = content_line.count('}')
 
     if open_braces != close_braces:
+        # Count only non-escaped braces
+        import re
+        open_braces = len(re.findall(r'(?<!\\)\{', content_line))
+        close_braces = len(re.findall(r'(?<!\\)\}', content_line))
+
         if open_braces > close_braces:
             # Add missing closing braces
             content_line += '}' * (open_braces - close_braces)
@@ -2761,54 +2480,16 @@ def sanitize_latex_content(content_line):
             # Add missing opening braces
             content_line = '{' * (close_braces - open_braces) + content_line
 
-    # Fix broken math formulas
-    # Check for patterns like: \frac{1}{1+e^{-(\beta_0+\beta_1x)}$}
-    if '$' in content_line:
-        # Count $ pairs
-        dollar_count = content_line.count('$')
-        if dollar_count % 2 != 0:
-            # Add missing $
-            content_line += '$'
-
-        # Fix common math pattern errors
-        # Fix: \frac{}{}$ should be $\frac{}{}$
-        if content_line.startswith('\\frac{') and not content_line.startswith('$\\frac{'):
-            content_line = '$' + content_line
-        if content_line.endswith('}$') and not content_line.endswith('}}$'):
-            content_line = content_line[:-2] + '}$'
-
-    # Fix excessive brace nesting (but not for LaTeX environments)
-    # We'll be more careful about this
-    if not any(env in content_line for env in ['\\begin{', '\\end{', '\\textbf{', '\\textit{', '\\frac{']):
-        content_line = content_line.replace('{{{', '{').replace('}}}', '}')
-        content_line = content_line.replace('{{', '{').replace('}}', '}')
-
-    # Fix specific broken patterns from the error log
-    # Fix: \sigma(z)_j = \frac{e^{z_j{\sum_k e^{z_k$}};
-    if '\\sigma(z)_j = \\frac{e^{z_j{\\sum_k e^{z_k$}};' in content_line:
-        content_line = content_line.replace('\\sigma(z)_j = \\frac{e^{z_j{\\sum_k e^{z_k$}};',
-                                          '$\\sigma(z)_j = \\frac{e^{z_j}}{\\sum_k e^{z_k}}$;')
-
-    # Fix: $(x) = 1{1+e^{-x$ itemize
-    if '$(x) = 1{1+e^{-x$ itemize' in content_line:
-        content_line = content_line.replace('$(x) = 1{1+e^{-x$ itemize',
-                                          '$\\sigma(x) = \\frac{1}{1+e^{-x}}$')
-
-    # Fix: $P(y=1|x) = \frac{1}{1+e^{-(\beta_0+\beta_1x)}$}
-    if '$P(y=1|x) = \\frac{1}{1+e^{-(\\beta_0+\\beta_1x)}$}' in content_line:
-        content_line = content_line.replace('$P(y=1|x) = \\frac{1}{1+e^{-(\\beta_0+\\beta_1x)}$}',
-                                          '$P(y=1|x) = \\frac{1}{1+e^{-(\\beta_0+\\beta_1x)}}$')
-
-    # Fix: $L = - y_i (y_i)$ itemize
-    if '$L = - y_i (y_i)$ itemize' in content_line:
-        content_line = content_line.replace('$L = - y_i (y_i)$ itemize',
-                                          '$L = -\\sum y_i \\log(\\hat{y}_i)$')
+    # Fix excessive brace nesting
+    content_line = content_line.replace('{{{', '{').replace('}}}', '}')
+    content_line = content_line.replace('{{', '{').replace('}}', '}')
 
     # Escape problematic characters if not already escaped
+    import re
     # Only escape if not already escaped and not in math mode
     if '$' not in content_line:
-        # Escape special LaTeX characters (but NOT braces anymore)
-        special_chars = ['#', '$', '%', '&', '_']
+        # Escape special LaTeX characters
+        special_chars = ['#', '$', '%', '&', '_', '{', '}']
         for char in special_chars:
             pattern = r'(?<!\\)' + re.escape(char)
             content_line = re.sub(pattern, '\\' + char, content_line)
@@ -2816,7 +2497,7 @@ def sanitize_latex_content(content_line):
     return content_line
 
 def process_input_file(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
-    """Process input file to convert to TeX format with proper slide navigation - FIXED"""
+    """Process input file to convert to TeX format with proper slide navigation"""
     processed = 0
     failed = 0
     errors = []
@@ -2884,7 +2565,7 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 outfile.write("\\hfuzz=2pt  % Increase horizontal fuzz tolerance\n")
                 outfile.write("\\raggedright  % Prevent overfull boxes by allowing ragged right margins\n")
 
-            # Process the content lines
+            # Rest of the function remains the same...
             i = 0
             current_frame_notes = []
             current_frame_content = []
@@ -2892,21 +2573,20 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             current_media = None
             in_content_block = False
             in_notes_block = False
+            end_document_seen = False  # NEW: Track if we've seen \end{document}
+            media_directive_extracted = False  # NEW: Track if we've extracted media directive
 
             while i < len(content_lines):
                 line = content_lines[i].strip()
 
-                # Handle document end
+                # Handle document end - CHANGED: Don't write it yet, just mark that we've seen it
                 if line.startswith('\\end{document}'):
-                    if should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
-                        # Process last frame
-                        process_frame(outfile, current_frame_title, current_frame_content,
-                                   current_frame_notes, current_media)
-                        processed += 1
-                    outfile.write("\\end{document}\n")
-                    break
+                    # Just mark that we've seen it and skip it
+                    end_document_seen = True
+                    i += 1
+                    continue  # Skip to next line
 
-                # Handle new frame
+                # Handle new frame - FIXED: Clean the title properly
                 if line.startswith('\\title'):
                     # Process previous frame if exists
                     if should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
@@ -2914,30 +2594,33 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                                    current_frame_notes, current_media)
                         processed += 1
 
-                    # Start new frame
-                    title_content = line[6:].strip()
+                    # Start new frame - FIX: Properly extract and clean title
+                    title_content = line[6:].strip()  # Remove '\title' prefix
 
-                    # Clean title for LaTeX
+                    # CRITICAL FIX: Remove all braces from titles for LaTeX compilation
                     if title_content:
-                        # Remove braces from titles
+                        # Remove all { and } from titles
                         title_content = title_content.replace('{', '').replace('}', '')
+                        # Also remove escaped braces
                         title_content = title_content.replace('\\{', '').replace('\\}', '')
+                        # Remove any leading/trailing whitespace
                         title_content = title_content.strip()
 
                     current_frame_title = title_content
                     current_frame_content = []
                     current_frame_notes = []
                     current_media = None
+                    media_directive_extracted = False  # Reset for new frame
 
                 # Handle Content blocks
                 elif line.startswith('\\begin{Content}'):
                     in_content_block = True
-                    # Extract media directive if present
-                    media_part = line[len('\\begin{Content}'):].strip()
-                    if media_part:
-                        # Clean media path - remove backslashes
-                        media_part = media_part.replace('\\\\', '/').replace('\\', '/')
-                        current_media = media_part
+                    media_directive_extracted = False  # Reset extraction flag
+                    if len(line) > len('\\begin{Content}'):
+                        media_part = line[len('\\begin{Content}'):].strip()
+                        if media_part:
+                            current_media = media_part
+                            media_directive_extracted = True
 
                 elif line.startswith('\\end{Content}'):
                     in_content_block = False
@@ -2948,39 +2631,52 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 elif line.startswith('\\end{Notes}'):
                     in_notes_block = False
 
-                # Process content
+                # Process content - FIXED: Handle media directives on separate lines
                 elif in_content_block:
-                    if line.strip():
-                        # Handle \file directives in content
-                        if line.strip().startswith('\\file'):
-                            match = re.search(r'\\file\{([^}]*)\}', line)
-                            if match:
-                                file_path = match.group(1)
-                                # Clean file path
-                                file_path = file_path.replace('\\\\', '/').replace('\\', '/')
-                                current_frame_content.append(f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{file_path}}}")
-                            else:
-                                current_frame_content.append(line)
-                        elif line.strip().startswith('-'):
-                            # Bullet point
-                            bullet_content = line.strip()[1:].strip()
-                            if bullet_content:
-                                current_frame_content.append(f"- {sanitize_latex_content(bullet_content)}")
-                        else:
-                            # Regular content
-                            clean_line = line.strip()
-                            if clean_line:
-                                # Don't sanitize TikZ content
-                                if '\\begin{tikzpicture}' in clean_line or '\\end{tikzpicture}' in clean_line:
-                                    current_frame_content.append(clean_line)
-                                else:
-                                    current_frame_content.append(sanitize_latex_content(clean_line))
+                    if line.strip():  # Only add non-empty lines
+                        # FIXED: Check if this line is a media directive
+                        # Look for layout directives like \ff, \pip, \split, etc.
+                        layout_directives = [
+                            '\\ff', '\\wm', '\\pip', '\\split', '\\hl',
+                            '\\bg', '\\tb', '\\ol', '\\corner', '\\mosaic',
+                            '\\play', '\\file', '\\None'
+                        ]
 
-                # Process notes
+                        # Check if line starts with any media directive
+                        is_media_directive = any(line.strip().startswith(directive) for directive in layout_directives)
+
+                        if is_media_directive and not media_directive_extracted:
+                            # This is a media directive on its own line
+                            current_media = line.strip()
+                            media_directive_extracted = True
+                        else:
+                            # FIX: Clean the content line of problematic braces
+                            clean_line = line.strip()
+                            # Remove problematic braces from content items too
+                            if '- ' in clean_line[:2]:
+                                # For bullet points, clean after the dash
+                                prefix = clean_line[:2]
+                                content_part = clean_line[2:]
+                                # Remove braces from content
+                                content_part = content_part.replace('{', '').replace('}', '')
+                                clean_line = prefix + content_part
+                            current_frame_content.append(clean_line)
+
+                # Process notes - FIXED: Keep braces for LaTeX commands
                 elif in_notes_block:
                     if line.strip() and not line.startswith('%'):
                         clean_note = line.strip()
-                        current_frame_notes.append(sanitize_note_content(clean_note))
+                        # FIXED: Don't remove braces from notes - they're needed for LaTeX commands
+                        # Only remove braces if it's a URL to format it properly
+                        if clean_note.startswith(('http://', 'https://', 'www')):
+                            # For URLs, we need to remove braces to format them correctly
+                            clean_url = clean_note.replace('{', '').replace('}', '')
+                            current_frame_notes.append('\\begin{itemize}')
+                            current_frame_notes.append(format_url_note(clean_url))
+                            current_frame_notes.append('\\end{itemize}')
+                        else:
+                            # For regular notes, keep all braces to preserve LaTeX commands
+                            current_frame_notes.append(clean_note)
 
                 i += 1
 
@@ -2990,8 +2686,12 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                            current_frame_notes, current_media)
                 processed += 1
 
-        # Post-process the generated file to fix common issues
-        fix_generated_latex_file(output_filename)
+            # NEW: Write \end{document} only at the very end
+            if end_document_seen:
+                outfile.write("\\end{document}\n")
+            else:
+                # If no \end{document} was found in the input, add it
+                outfile.write("\\end{document}\n")
 
         return processed, failed, errors
 
@@ -3002,80 +2702,15 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             ide_callback("error", {'message': error_msg})
         return processed, failed, errors
 
-
-def sanitize_note_content(note_line):
-    """Special sanitization for note content that preserves LaTeX environments"""
-    if not note_line:
-        return ""
-
-    # Check if this is a LaTeX environment command
-    latex_env_patterns = [
-        r'\\begin\{[^}]+\}',
-        r'\\end\{[^}]+\}',
-        r'\\textbf\{[^}]*\}',
-        r'\\textit\{[^}]*\}',
-        r'\\texttt\{[^}]*\}',
-        r'\\underline\{[^}]*\}',
-        r'\\emph\{[^}]*\}',
-        r'\\textsc\{[^}]*\}',
-        r'\\item\s*',
-    ]
-
-    # If it contains any of these patterns, we need to preserve the braces
-    contains_latex_env = any(re.search(pattern, note_line) for pattern in latex_env_patterns)
-
-    if contains_latex_env:
-        # For LaTeX environment content, fix unbalanced braces but don't escape them
-        open_braces = len(re.findall(r'(?<!\\)\{', note_line))
-        close_braces = len(re.findall(r'(?<!\\)\}', note_line))
-
-        if open_braces != close_braces:
-            if open_braces > close_braces:
-                note_line += '}' * (open_braces - close_braces)
-            elif close_braces > open_braces:
-                note_line = '{' * (close_braces - open_braces) + note_line
-
-        # Escape only the special characters that aren't part of LaTeX commands
-        # We'll be careful not to escape braces
-        special_chars = ['#', '$', '%', '&', '_']
-        for char in special_chars:
-            # Create a pattern that matches the char only when it's not inside {}
-            # This is complex, so we'll use a simpler approach
-            pattern = r'(?<!\\)' + re.escape(char)
-            # Only replace if not followed by a { (start of command)
-            if char != '{':
-                note_line = re.sub(pattern, '\\' + char, note_line)
-
-        return note_line
-    else:
-        # For regular note content, use the standard sanitization
-        return sanitize_latex_content(note_line)
-
 def should_process_frame(title, content, media, notes):
     """
     Determine if a frame should be processed based on its components.
-    Special handling for TikZ content.
+    A frame should be processed if it has any of: title, content, media, or notes.
     """
-    has_content = content is not None and len(content) > 0
-
-    # Check if content contains TikZ
-    has_tikz = False
-    if has_content:
-        for item in content:
-            if isinstance(item, str) and '\\begin{tikzpicture}' in item:
-                has_tikz = True
-                break
-
-    # A frame should be processed if:
-    # 1. It has a title, OR
-    # 2. It has media, OR
-    # 3. It has notes, OR
-    # 4. It has content (including TikZ)
     return (title is not None or
             media is not None or
-            (notes is not None and len(notes) > 0) or
-            (has_content and not has_tikz) or  # Regular content
-            has_tikz)  # TikZ content
+            (content is not None and len(content) > 0) or
+            (notes is not None and len(notes) > 0))
 
 
 #------------------------------------------------------
