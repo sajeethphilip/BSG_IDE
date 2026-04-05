@@ -184,10 +184,11 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 
 % Conditional definitions based on package availability
+% CRITICAL: Use ##1 instead of #1 inside \IfFileExists
 \IfFileExists{tcolorbox.sty}{%
     \newtcolorbox{alertbox}[1][red]{%
-        colback=#1!5!white,
-        colframe=#1!75!black,
+        colback=##1!5!white,
+        colframe=##1!75!black,
         fonttitle=\bfseries,
         boxrule=0.5pt,
         rounded corners
@@ -195,13 +196,13 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 
     \newtcolorbox{infobox}[1][blue]{%
         enhanced,
-        colback=#1!5!white,
-        colframe=#1!75!black,
+        colback=##1!5!white,
+        colframe=##1!75!black,
         arc=4mm,
         boxrule=0.5pt,
         fonttitle=\bfseries,
         attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
-        boxed title style={size=small,colback=#1!75!black}
+        boxed title style={size=small,colback=##1!75!black}
     }
 }{}
 
@@ -303,7 +304,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \makeatother"""
 
     # Institution setup
-    inst_setup = rf"\makeatletter{chr(10)}\def\insertshortinstitute{{{short_institute}}}{chr(10)}\makeatother"
+    inst_setup = rf"\makeatletter\def\insertshortinstitute{{{short_institute}}}\makeatother"
 
     # Footline template
     footline_template = r"""

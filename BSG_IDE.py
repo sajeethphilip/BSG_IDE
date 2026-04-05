@@ -859,7 +859,7 @@ def check_and_install_dependencies():
             return False
 
         # Setup virtual environment
-        python_path, pip_path, venv_created = setup_virtual_env()
+        #python_path, pip_path, venv_created = setup_virtual_env()
 
         # Phase 1: Install base packages (no GUI feedback)
         base_packages = {
@@ -1124,7 +1124,7 @@ def install_remaining_packages(pip_path):
 
 
 
-check_and_install_dependencies()
+#check_and_install_dependencies()
 
 
 import atexit
@@ -2785,64 +2785,31 @@ class InstallationManager:
             return False
 
     def _create_linux_launcher(self):
-        """Create Linux launcher script and desktop entry"""
+        """Create Linux launcher script"""
         try:
-            # Create launcher script
             launcher_path = self.install_paths['bin'] / 'bsg-ide'
             launcher_content = f"""#!/usr/bin/env python3
-import sys
-import os
-from pathlib import Path
+    import sys
+    import os
+    from pathlib import Path
 
-# Add installation directory to Python path
-sys.path.insert(0, "{self.install_paths['base']}")
+    # Add installation directory to Python path
+    sys.path.insert(0, "{self.install_paths['base']}")
 
-# Import and run main program
-try:
-    from BSG_IDE import main
-    main()
-except Exception as e:
-    print(f"Error starting BSG-IDE: {{str(e)}}")
-    import traceback
-    traceback.print_exc()
-"""
-            # Write launcher script
+    # Import and run main program
+    try:
+        from BSG_IDE import main
+        main()
+    except Exception as e:
+        print(f"Error starting BSG-IDE: {{str(e)}}")
+        import traceback
+        traceback.print_exc()
+    """
             launcher_path.write_text(launcher_content)
-            launcher_path.chmod(0o755)  # Make executable
-
-            if self.dialog:
-                self.dialog.write(f"✓ Created launcher script: {launcher_path}", "green")
-            else:
-                print(f"✓ Created launcher script: {launcher_path}")
-
-            # Create desktop entry
-            desktop_entry_content = f"""[Desktop Entry]
-Version=4.0
-Type=Application
-Name=BSG-IDE
-Comment=Beamer Slide Generator IDE
-Exec={launcher_path}
-Icon=bsg-ide
-Terminal=false
-Categories=Office;Development;Education;
-Keywords=presentation;latex;beamer;slides;
-"""
-            desktop_path = self.install_paths['applications'] / 'bsg-ide.desktop'
-            desktop_path.write_text(desktop_entry_content)
-            desktop_path.chmod(0o755)
-
-            if self.dialog:
-                self.dialog.write("✓ Created desktop entry", "green")
-            else:
-                print("✓ Created desktop entry")
-
+            launcher_path.chmod(0o755)
             return True
-
         except Exception as e:
-            if self.dialog:
-                self.dialog.write(f"✗ Error creating Linux launcher: {str(e)}", "red")
-            else:
-                print(f"✗ Error creating Linux launcher: {str(e)}")
+            print(f"Error creating launcher: {e}")
             return False
 
     def _create_windows_launcher(self):
@@ -10158,7 +10125,6 @@ Created by {self.__author__}
             self.custom_preamble = new_preamble
             messagebox.showinfo("Success", "Preamble updated successfully!")
 
-
     def present_with_notes(self) -> None:
         """Present PDF using pympress for dual-screen display with notes"""
         if not self.current_file:
@@ -10180,56 +10146,33 @@ Created by {self.__author__}
                     messagebox.showerror("Error", "Failed to generate PDF presentation.")
                     return
 
-            # Get virtual environment path
-            venv_path = Path.home() / 'my_python'
-            if platform.system() == "Windows":
-                pympress_path = venv_path / "Scripts" / "pympress.exe"
-                python_path = venv_path / "Scripts" / "python.exe"
-            else:
-                pympress_path = venv_path / "bin" / "pympress"
-                python_path = venv_path / "bin" / "python"
-
-            # Setup environment variables
-            env = os.environ.copy()
-
-            # Add virtual environment to PATH
-            if platform.system() == "Windows":
-                env["PATH"] = f"{venv_path / 'Scripts'};{env.get('PATH', '')}"
-            else:
-                env["PATH"] = f"{venv_path / 'bin'}:{env.get('PATH', '')}"
-
-            # Add virtual environment's site-packages to PYTHONPATH
-            site_packages = venv_path / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-            env["PYTHONPATH"] = f"{site_packages}{os.pathsep}{env.get('PYTHONPATH', '')}"
-
-            # Launch presentation with pympress using absolute path
+            # Use system pympress
             self.write_to_terminal("Launching pympress presentation viewer...")
-            try:
-                if platform.system() == "Windows":
-                    if pympress_path.exists():
-                        subprocess.Popen([str(pympress_path), abs_pdf_path], env=env)
-                    else:
-                        # Fall back to using python to run pympress module
-                        subprocess.Popen([str(python_path), "-m", "pympress", abs_pdf_path], env=env)
-                else:
-                    if pympress_path.exists():
-                        subprocess.Popen([str(pympress_path), abs_pdf_path], env=env)
-                    else:
-                        # Try alternative locations while maintaining venv context
-                        possible_paths = [
-                            venv_path / "bin" / "pympress",
-                            Path("/usr/local/bin/pympress"),
-                            Path("/usr/bin/pympress"),
-                            Path.home() / '.local/bin/pympress'
-                        ]
-                        for path in possible_paths:
-                            if path.exists():
-                                subprocess.Popen([str(path), abs_pdf_path], env=env)
-                                break
-                        else:
-                            # If no pympress found, try using python -m pympress
-                            subprocess.Popen([str(python_path), "-m", "pympress", abs_pdf_path], env=env)
 
+            # Try different possible pympress locations
+            pympress_paths = [
+                shutil.which('pympress'),
+                '/usr/local/bin/pympress',
+                '/usr/bin/pympress',
+                os.path.expanduser('~/.local/bin/pympress')
+            ]
+
+            launched = False
+            for path in pympress_paths:
+                if path and os.path.exists(path):
+                    subprocess.Popen([path, abs_pdf_path])
+                    launched = True
+                    break
+
+            if not launched:
+                # Try using python -m pympress
+                try:
+                    subprocess.Popen([sys.executable, "-m", "pympress", abs_pdf_path])
+                    launched = True
+                except:
+                    pass
+
+            if launched:
                 self.write_to_terminal("✓ Presentation launched successfully\n", "green")
                 self.write_to_terminal("\nPympress Controls:\n")
                 self.write_to_terminal("- Right Arrow/Space/Page Down: Next slide\n")
@@ -10238,23 +10181,13 @@ Created by {self.__author__}
                 self.write_to_terminal("- F11: Toggle fullscreen\n")
                 self.write_to_terminal("- N: Toggle notes\n")
                 self.write_to_terminal("- P: Pause/unpause timer\n")
-
-            except Exception as e:
-                error_msg = f"Error launching pympress: {str(e)}\n"
-                self.write_to_terminal(error_msg, "red")
-                self.write_to_terminal("\nTrying to locate pympress...\n")
-
-                # Check pympress in virtual environment
-                self.write_to_terminal(f"Checking virtual environment: {venv_path}\n")
-                if pympress_path.exists():
-                    self.write_to_terminal(f"✓ Found pympress at: {pympress_path}\n", "green")
-                else:
-                    self.write_to_terminal("✗ pympress not found in virtual environment\n", "red")
+            else:
+                self.write_to_terminal("✗ pympress not found. Please install it:\n", "red")
+                self.write_to_terminal("  pip install pympress\n", "yellow")
 
         except Exception as e:
             self.write_to_terminal(f"✗ Error launching presentation: {str(e)}\n", "red")
             messagebox.showerror("Error", f"Error launching presentation:\n{str(e)}")
-            traceback.print_exc()
 
     def add_tikz_color_helper(self):
         """Add TikZ color helper button to toolbar"""
@@ -11169,7 +11102,7 @@ def verify_desktop_entry():
 
 #-------------------------------------------------pympress installation -----------------------------
 def setup_pympress():
-    """Verify pympress installation and setup with all required dependencies"""
+    """Verify pympress installation using system packages"""
     try:
         # Check if pympress works by importing required modules
         def check_pympress_deps():
@@ -11187,81 +11120,18 @@ def setup_pympress():
             print("✓ Pympress and dependencies already installed")
             return True
 
-        print("Installing pympress and dependencies...")
+        print("Installing pympress and dependencies using pip...")
 
-        # Install system dependencies first
-        if sys.platform.startswith('linux'):
-            dependencies = [
-                'python3-gi',
-                'python3-gi-cairo',
-                'gir1.2-gtk-3.0',
-                'python3-cairo',
-                'libgtk-3-0',
-                'librsvg2-common',
-                'poppler-utils',
-                'libgirepository1.0-dev',  # Required for PyGObject
-                'gcc',                     # Required for compilation
-                'python3-dev',             # Python development files
-                'pkg-config',              # Required for build process
-                'cairo-dev',               # Cairo development files
-                'libcairo2-dev',          # Cairo development files
-                'gobject-introspection'    # GObject introspection
-            ]
-
-            # Detect package manager and set appropriate commands
-            if shutil.which('apt'):
-                install_cmd = ['sudo', 'apt', 'install', '-y']
-                deps = dependencies + ['libgirepository1.0-dev', 'python3-gi-dev']
-            elif shutil.which('dnf'):
-                install_cmd = ['sudo', 'dnf', 'install', '-y']
-                deps = dependencies + ['gobject-introspection-devel', 'python3-gobject-devel']
-            elif shutil.which('pacman'):
-                install_cmd = ['sudo', 'pacman', '-S', '--noconfirm']
-                deps = dependencies + ['gobject-introspection', 'python-gobject']
-            else:
-                print("Could not detect package manager. Please install dependencies manually.")
-                print("Required packages:", " ".join(dependencies))
-                return False
-
-            # Install system dependencies
-            print("\nInstalling system dependencies...")
-            for dep in deps:
-                try:
-                    subprocess.check_call(install_cmd + [dep])
-                    print(f"✓ Installed {dep}")
-                except subprocess.CalledProcessError:
-                    print(f"✗ Failed to install {dep}")
-                    continue
-
-        # Install Python packages
-        print("\nInstalling Python packages...")
-        packages = [
-            'pycairo',
-            'PyGObject',
-            'pympress'
-        ]
-
-        for package in packages:
-            try:
-                # Try installing in user space first
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install",
-                    "--user", "--no-cache-dir", package
-                ])
-                print(f"✓ Installed {package}")
-            except subprocess.CalledProcessError:
-                print(f"✗ Failed to install {package}")
-                continue
-
-        # Verify installation
-        if check_pympress_deps():
-            print("\n✓ Pympress and all dependencies installed successfully")
+        # Install using pip (system level)
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install",
+                "--user", "pympress"
+            ])
+            print("✓ pympress installed")
             return True
-        else:
-            print("\n✗ Installation completed but verification failed")
-            print("Please try installing manually:")
-            print("sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0")
-            print("pip install --user pycairo PyGObject pympress")
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Failed to install pympress: {e}")
             return False
 
     except Exception as e:
