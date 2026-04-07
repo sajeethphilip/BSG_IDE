@@ -1,20 +1,27 @@
-# BeamerSlide Generator IDE
+# BSG-IDE - Beamer Slide Generator IDE
 
-An integrated development environment for creating LaTeX Beamer presentations with a modern GUI interface.
+[![PyPI version](https://badge.fury.io/py/bsg-ide.svg)](https://badge.fury.io/py/bsg-ide)
+[![Python Version](https://img.shields.io/pypi/pyversions/bsg-ide.svg)](https://pypi.org/project/bsg-ide/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**BSG-IDE** is a professional Integrated Development Environment for creating LaTeX Beamer presentations with multimedia support, TikZ diagrams, and speaker notes.
 
 ## Features
 
-- **Visual Slide Editor**: Create and manage presentation slides with a user-friendly interface
-- **Real-time Preview**: See your changes instantly
-- **Syntax Highlighting**: LaTeX syntax highlighting with intelligent autocomplete
-- **Media Integration**: Support for images, videos, YouTube links, and screen capture
-- **Spell Checking**: Built-in spell checking with multiple language support
-- **Cross-platform**: Works on Windows, macOS, and Linux
-- **Grammarly Integration**: Optional Grammarly integration for enhanced grammar checking
+- 🎨 **Rich LaTeX Editor** with syntax highlighting
+- 🖼️ **Multimedia Support** - Images, videos, animations
+- 📝 **Speaker Notes** with dual-screen presentation
+- 🎯 **TikZ Support** with interactive color picker
+- 🔍 **Spell Checking** with multiple languages
+- 📹 **Screen Capture** - Screenshots and animations
+- 🎥 **Camera Capture** - Photos and videos
+- 📊 **Grammarly Integration** - Grammar checking
+- 🚀 **One-click PDF Generation**
+- 📦 **Overleaf Export** - Create zip files for Overleaf
 
 ## Installation
 
-### From PyPI (Recommended)
+### Quick Install
 
 ```bash
 pip install bsg-ide

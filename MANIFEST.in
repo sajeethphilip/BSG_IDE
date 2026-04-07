@@ -1,9 +1,29 @@
-include *.py
-include *.png
-include *.txt
-include *.md
-include requirements.txt
+# Include package data
+include README.md
 include LICENSE
-recursive-include icons *
-recursive-include resources *
-recursive-include examples *
+include requirements.txt
+include pyproject.toml
+include setup.py
+include setup.cfg
+
+# Include resources
+recursive-include bsg_ide/resources *.png *.jpg *.jpeg *.gif *.ico *.icns
+recursive-include bsg_ide/templates *.txt *.tex
+
+# Include scripts
+recursive-include scripts *
+
+# Exclude development files
+exclude .gitignore
+exclude .travis.yml
+exclude .coveragerc
+exclude .flake8
+exclude .mypy.ini
+
+# Exclude test files
+prune tests
+prune docs
+prune __pycache__
+prune *.pyc
+prune *.pyo
+prune *.pyd

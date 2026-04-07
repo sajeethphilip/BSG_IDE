@@ -5,6 +5,119 @@ An integrated development environment for BeamerSlideGenerator
 Combines GUI editing, syntax highlighting, and presentation generation.
 
 """
+import os
+import sys
+from pathlib import Path
+
+def setup_package_paths():
+    """Setup Python paths for both source and installed runs"""
+    try:
+        # Get the directory where this file is located
+        current_file = Path(__file__).resolve()
+        current_dir = current_file.parent
+
+        # Check if we're in source directory (look for key files)
+        is_source = (current_dir / 'BeamerSlideGenerator.py').exists()
+
+        if is_source:
+            # Running from source - add current directory to path
+            if str(current_dir) not in sys.path:
+                sys.path.insert(0, str(current_dir))
+            print(f"Running from source: {current_dir}")
+            return current_dir, current_dir / 'resources'
+
+        # Check if we're in a pip installed package
+        try:
+            import bsg_ide
+            package_dir = Path(bsg_ide.__file__).parent
+            if str(package_dir) not in sys.path:
+                sys.path.insert(0, str(package_dir))
+            resources_dir = package_dir / 'resources'
+            if not resources_dir.exists():
+                resources_dir = package_dir
+            print(f"Running from installed package: {package_dir}")
+            return package_dir, resources_dir
+        except ImportError:
+            pass
+
+        # Check common installation locations
+        common_locations = [
+            Path.home() / '.local/lib/bsg-ide',
+            Path.home() / '.local/share/bsg-ide',
+            Path('/usr/local/share/bsg-ide'),
+            Path(sys.prefix) / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages' / 'bsg_ide',
+        ]
+
+        for loc in common_locations:
+            if (loc / 'BeamerSlideGenerator.py').exists():
+                if str(loc) not in sys.path:
+                    sys.path.insert(0, str(loc))
+                resources_dir = loc / 'resources'
+                if not resources_dir.exists():
+                    resources_dir = loc
+                print(f"Found installation at: {loc}")
+                return loc, resources_dir
+
+        # Fallback to current directory
+        print(f"Using current directory as fallback: {current_dir}")
+        return current_dir, current_dir / 'resources'
+
+    except Exception as e:
+        print(f"Warning: Error setting up paths: {e}")
+        return Path.cwd(), Path.cwd() / 'resources'
+
+# Run path setup immediately
+PACKAGE_ROOT, RESOURCES_DIR = setup_package_paths()
+
+# Now try to import BeamerSlideGenerator
+try:
+    from BeamerSlideGenerator import (
+        get_beamer_preamble,
+        process_media,
+        generate_latex_code,
+        download_youtube_video,
+        construct_search_query,
+        open_google_image_search,
+        process_input_file,
+        set_terminal_io,
+        convert_media,
+        download_media
+    )
+    print("✓ Successfully imported BeamerSlideGenerator")
+except ImportError as e:
+    print(f"Error importing BeamerSlideGenerator: {e}")
+    print(f"Python path: {sys.path}")
+    print(f"Looking for BeamerSlideGenerator.py in: {PACKAGE_ROOT}")
+
+    # Try alternative import
+    try:
+        from bsg_ide.BeamerSlideGenerator import (
+            get_beamer_preamble,
+            process_media,
+            generate_latex_code,
+            download_youtube_video,
+            construct_search_query,
+            open_google_image_search,
+            process_input_file,
+            set_terminal_io,
+            convert_media,
+            download_media
+        )
+        print("✓ Successfully imported BeamerSlideGenerator via bsg_ide")
+    except ImportError as e2:
+        print(f"Alternative import also failed: {e2}")
+        print("\n" + "="*60)
+        print("ERROR: BeamerSlideGenerator module not found!")
+        print("="*60)
+        print("\nPlease ensure one of the following:")
+        print("1. BeamerSlideGenerator.py is in the same directory as BSG_IDE.py")
+        print("2. The package is properly installed via: pip install bsg-ide")
+        print("3. Reinstall the package: pip install --force-reinstall bsg-ide")
+        print("\nCurrent Python path:")
+        for p in sys.path:
+            print(f"  {p}")
+        sys.exit(1)
+
 #------------------------------Check and install ----------------------------------------------
 import os,re
 import sys
@@ -744,7 +857,71 @@ def verify_installation():
         traceback.print_exc()
         return False
 
+"""
+Path utilities for BSG-IDE to properly locate resources when installed via pip
+"""
 
+import os
+import sys
+from pathlib import Path
+from importlib import resources
+
+def get_package_root():
+    """Get the root directory of the installed package"""
+    try:
+        # Try to get from module
+        import bsg_ide
+        return Path(bsg_ide.__file__).parent
+    except ImportError:
+        # Fallback to current file location
+        return Path(__file__).parent.parent
+
+def get_resource_path(filename):
+    """Get path to a resource file in the package"""
+    package_root = get_package_root()
+
+    # Check various possible locations
+    possible_paths = [
+        package_root / filename,
+        package_root / "resources" / filename,
+        package_root.parent / filename,
+        Path.cwd() / filename,
+    ]
+
+    for path in possible_paths:
+        if path.exists():
+            return str(path)
+
+    # If not found, return the package path as default
+    return str(package_root / filename)
+
+def ensure_bsg_file():
+    """
+    Ensure BeamerSlideGenerator.py is available by adding the package
+    directory to Python path if needed
+    """
+    package_root = get_package_root()
+
+    # Add package root to Python path if not already there
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+
+    # Also add the parent directory
+    parent_dir = package_root.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+
+    # Check if we can import BeamerSlideGenerator
+    try:
+        import BeamerSlideGenerator
+        return True
+    except ImportError:
+        # Try direct import from package
+        try:
+            from bsg_ide import BeamerSlideGenerator
+            return True
+        except ImportError:
+            return False
 
 
 def get_package_root():
@@ -1154,18 +1331,21 @@ import threading
 from pathlib import Path
 from PIL import Image
 #from BSE_ITR import InteractiveTerminal
-
+ENHANCED_FEATURES_AVAILABLE = False
 try:
-    from EnhancedCommandDialog import EnhancedCommandIndexDialog, IntelligentAutocomplete, LatexCommandHelper, CommandTooltip
+    from .EnhancedCommandDialog import EnhancedCommandIndexDialog, IntelligentAutocomplete, LatexCommandHelper, CommandTooltip
     ENHANCED_FEATURES_AVAILABLE = True
+    from .Grammarly import  GrammarlyIntegration,GrammarlySetupDialog,AutomatedGrammarlyIntegration
+    from .InteractiveTerminal import InteractiveTerminal
     print("✓ Enhanced command features loaded")
 except ImportError as e:
     print(f"Enhanced features not available: {e}")
-    ENHANCED_FEATURES_AVAILABLE = False
+    from EnhancedCommandDialog import EnhancedCommandIndexDialog, IntelligentAutocomplete, LatexCommandHelper, CommandTooltip
+    ENHANCED_FEATURES_AVAILABLE = True
+    from Grammarly import  GrammarlyIntegration,GrammarlySetupDialog,AutomatedGrammarlyIntegration
+    from InteractiveTerminal import InteractiveTerminal
 
-from Grammarly import  GrammarlyIntegration,GrammarlySetupDialog,AutomatedGrammarlyIntegration
 
-from InteractiveTerminal import InteractiveTerminal
 
 #---------------Helper Utils ------------------------------
 class SessionManager:
