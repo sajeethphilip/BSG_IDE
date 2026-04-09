@@ -10891,8 +10891,9 @@ Created by {self.__author__}
             self.write(f"✗ Error in conversion: {str(e)}\n", "red")
             messagebox.showerror("Error", f"Error converting to TeX:\n{str(e)}")
 
-    def generate_tex_with_preserved_masking_old(self):
-        """Generate TeX content - remove masked content, preserve ALL layout directives"""
+
+    def generate_tex_with_preserved_masking(self):
+        """Generate TeX content - remove masked content, preserve original styling and layout directives"""
         try:
             # Get the original custom preamble (with all styling)
             full_tex_content = self.get_custom_preamble()
@@ -10921,441 +10922,67 @@ Created by {self.__author__}
             total_visible_slides = 0
             total_skipped_slides = 0
 
-            # COMPLETE list of ALL layout directives
+            # COMPLETE list of ALL layout directives (these are special, not regular LaTeX)
             ALL_LAYOUT_DIRECTIVES = [
                 '\\mosaic', '\\wm', '\\ff', '\\pip', '\\split',
                 '\\hl', '\\bg', '\\tb', '\\ol', '\\corner'
             ]
 
             def is_layout_directive(line):
-                """Check if line contains a layout directive"""
+                """Check if line contains a layout directive (NOT regular LaTeX commands)"""
                 if not line or not line.strip():
                     return False
                 stripped = line.strip()
-                for directive in ALL_LAYOUT_DIRECTIVES:
+
+                # IMPORTANT: Only check against specific layout directives
+                # Do NOT match standard LaTeX environments
+                layout_directives = [
+                    '\\mosaic', '\\wm', '\\ff', '\\pip', '\\split',
+                    '\\hl', '\\bg', '\\tb', '\\ol', '\\corner'
+                ]
+
+                for directive in layout_directives:
                     if stripped.startswith(directive):
                         return True
+
+                # Explicitly exclude standard LaTeX environments
+                if stripped.startswith('\\begin{') or stripped.startswith('\\end{'):
+                    return False
+
                 return False
 
-            def is_media_directive(line):
-                """Check if line contains a non-layout media directive"""
-                if not line or not line.strip():
-                    return False
-                stripped = line.strip()
-                if is_layout_directive(stripped):
-                    return False
-                for directive in ['\\file', '\\play', '\\url', '\\movie', '\\sound',
-                                 '\\includegraphics', '\\href', '\\None']:
-                    if stripped.startswith(directive):
-                        return True
-                return False
+            def find_layout_in_content(content_list):
+                """
+                Find layout directive anywhere in content.
+                Returns (layout_type, layout_params, line_index) or (None, None, -1)
+                NOTE: This only detects explicit layout directives, NOT regular LaTeX environments
+                """
+                layout_directives = ['\\mosaic', '\\wm', '\\ff', '\\pip', '\\split',
+                                     '\\hl', '\\bg', '\\tb', '\\ol', '\\corner']
 
-            def convert_file_to_includegraphics(line):
-                """Convert \file to \includegraphics for regular images only"""
-                if '\\file' in line and not is_layout_directive(line):
-                    file_path = line.replace('\\file', '').strip()
-                    file_path = file_path.strip('{}')
-
-                    actual_path = None
-                    if os.path.exists(file_path):
-                        actual_path = file_path
-                    elif os.path.exists(f"media_files/{file_path}"):
-                        actual_path = f"media_files/{file_path}"
-                    else:
-                        return f"\\textcolor{{gray}}{{[Image not found: {os.path.basename(file_path)}]}}"
-
-                    return f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{actual_path}}}"
-                return line
-
-            def clean_frame_title(title_text):
-                """Clean frame title to prevent LaTeX compilation errors"""
-                if not title_text:
-                    return "Untitled"
-                title_text = str(title_text)
-                title_text = title_text.replace('\\{', '').replace('\\}', '')
-                title_text = title_text.replace('{', '').replace('}', '')
-                title_text = title_text.replace('&', '\\&')
-                title_text = title_text.replace('%', '\\%')
-                title_text = title_text.replace('#', '\\#')
-                title_text = title_text.replace('_', '\\_')
-                title_text = title_text.replace('$', '\\$')
-                return title_text.strip() or "Untitled"
-
-            def format_content_items(content_list):
-                """Format content items into proper LaTeX structure"""
-                if not content_list:
-                    return ""
-
-                result = []
-                in_list = False
-                list_type = None
-
-                for item in content_list:
-                    if not item or not item.strip():
+                for i, line in enumerate(content_list):
+                    if not line or not line.strip():
                         continue
-
-                    stripped = item.strip()
-
-                    # Handle environment starts
-                    if stripped.startswith('\\begin{enumerate}'):
-                        in_list = True
-                        list_type = 'enumerate'
-                        result.append(stripped)
-                        continue
-                    elif stripped.startswith('\\begin{itemize}'):
-                        in_list = True
-                        list_type = 'itemize'
-                        result.append(stripped)
-                        continue
-                    elif stripped.startswith('\\begin{'):
-                        result.append(stripped)
-                        continue
-
-                    # Handle environment ends
-                    if stripped.startswith('\\end{enumerate}'):
-                        in_list = False
-                        list_type = None
-                        result.append(stripped)
-                        continue
-                    elif stripped.startswith('\\end{itemize}'):
-                        in_list = False
-                        list_type = None
-                        result.append(stripped)
-                        continue
-                    elif stripped.startswith('\\end{'):
-                        result.append(stripped)
-                        continue
-
-                    # Handle bullet points
-                    if stripped.startswith(('- ', '• ')):
-                        bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                        if not in_list:
-                            # Start a new list
-                            result.append("\\begin{itemize}")
-                            result.append(f"\\item {bullet_content}")
-                            result.append("\\end{itemize}")
-                        else:
-                            result.append(f"\\item {bullet_content}")
-                        continue
-
-                    # Handle standalone \item commands
-                    if stripped.startswith('\\item'):
-                        if not in_list:
-                            result.append("\\begin{itemize}")
-                            result.append(stripped)
-                            # Check if we need to close
-                            has_more_items = False
-                            for next_item in content_list[content_list.index(item)+1:]:
-                                if next_item.strip().startswith('\\item'):
-                                    has_more_items = True
-                                else:
-                                    break
-                            if not has_more_items:
-                                result.append("\\end{itemize}")
-                        else:
-                            result.append(stripped)
-                        continue
-
-                    # Handle \pause commands
-                    if stripped.startswith('\\pause'):
-                        result.append(stripped)
-                        continue
-
-                    # Regular text
-                    if stripped:
-                        # Escape special characters
-                        escaped = stripped.replace('_', '\\_').replace('&', '\\&')
-                        result.append(escaped)
-
-                return '\n'.join(result)
-
-            # Process each slide
-            for idx, slide in enumerate(self.slides):
-                is_fully_masked = slide.get('_fully_masked', False)
-
-                if is_fully_masked:
-                    total_skipped_slides += 1
-                    continue
-
-                hidden_content_indices = set(slide.get('_hidden_content_indices', []))
-                hidden_note_indices = set(slide.get('_hidden_note_indices', []))
-                media_masked = slide.get('_media_masked', False)
-
-                # Get media from slide
-                media = slide.get('media', '')
-                if media_masked:
-                    media = ""
-
-                raw_content = slide.get('content', [])
-
-                # Preserve ALL content lines exactly as they are
-                visible_content = []
-                for i, line in enumerate(raw_content):
-                    if i not in hidden_content_indices:
-                        visible_content.append(line)
-
-                visible_notes = []
-                for i, note in enumerate(slide.get('notes', [])):
-                    if note.strip() and i not in hidden_note_indices:
-                        visible_notes.append(note)
-
-                # Check if slide has a valid image
-                has_valid_image = False
-                image_path = None
-
-                if media and media != "\\None" and not media_masked:
-                    if media.startswith('\\file') and not is_layout_directive(media):
-                        file_path = media.replace('\\file', '').strip()
-                        file_path = file_path.strip('{}')
-                        if file_path and 'example-image' not in file_path.lower():
-                            if os.path.exists(file_path):
-                                has_valid_image = True
-                                image_path = file_path
-                            elif os.path.exists(f"media_files/{file_path}"):
-                                has_valid_image = True
-                                image_path = f"media_files/{file_path}"
-
-                if not visible_content and not visible_notes and not has_valid_image:
-                    total_skipped_slides += 1
-                    continue
-
-                total_visible_slides += 1
-
-                slide_title = slide.get('title', 'Untitled')
-                clean_title = re.sub(r'^\[DELETED\]\s*', '', slide_title)
-                clean_title = clean_frame_title(clean_title)
-
-                # ============================================================
-                # CHECK FOR LAYOUT DIRECTIVES
-                # ============================================================
-                has_layout = False
-                layout_type = None
-                layout_params = None
-                layout_line_index = -1
-
-                for i, line in enumerate(visible_content):
                     stripped = line.strip()
-                    if stripped.startswith('\\mosaic'):
-                        has_layout = True
-                        layout_type = 'mosaic'
-                        layout_params = stripped[7:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\split'):
-                        has_layout = True
-                        layout_type = 'split'
-                        layout_params = stripped[6:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\pip'):
-                        has_layout = True
-                        layout_type = 'pip'
-                        layout_params = stripped[4:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\wm'):
-                        has_layout = True
-                        layout_type = 'watermark'
-                        layout_params = stripped[3:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\ff'):
-                        has_layout = True
-                        layout_type = 'fullframe'
-                        layout_params = stripped[3:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\hl'):
-                        has_layout = True
-                        layout_type = 'highlight'
-                        layout_params = stripped[3:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\bg'):
-                        has_layout = True
-                        layout_type = 'background'
-                        layout_params = stripped[3:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\tb'):
-                        has_layout = True
-                        layout_type = 'topbottom'
-                        layout_params = stripped[3:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\ol'):
-                        has_layout = True
-                        layout_type = 'overlay'
-                        layout_params = stripped[3:].strip()
-                        layout_line_index = i
-                        break
-                    elif stripped.startswith('\\corner'):
-                        has_layout = True
-                        layout_type = 'corner'
-                        layout_params = stripped[7:].strip()
-                        layout_line_index = i
-                        break
 
-                # ============================================================
-                # CASE 1: Layout directive found - use specialized handler
-                # ============================================================
-                if has_layout:
-                    # Remove the layout directive line from visible_content
-                    content_without_layout = [line for j, line in enumerate(visible_content) if j != layout_line_index]
+                    # Skip standard LaTeX environments
+                    if stripped.startswith('\\begin{') or stripped.startswith('\\end{'):
+                        continue
 
-                    self.write(f"  ✓ Processing {layout_type} layout in slide {idx + 1}\n", "green")
-
-                    # Generate the frame using the layout handler
-                    frame_latex = self._generate_layout_latex(
-                        layout_type, layout_params, content_without_layout, clean_title
-                    )
-
-                    # Add notes if any (but don't modify frame_latex string in place)
-                    if visible_notes:
-                        real_notes = []
-                        for note in visible_notes:
-                            clean_note = re.sub(r'^[-•]\s*', '', note.strip())
-                            if clean_note and clean_note.lower() not in ["no notes for this slide", "no notes", "none"]:
-                                real_notes.append(clean_note)
-
-                        if real_notes:
-                            notes_latex = "\n\\note{\n\\begin{itemize}\n"
-                            for note in real_notes:
-                                notes_latex += f"    \\item {note}\n"
-                            notes_latex += "\\end{itemize}\n}\n"
-                            # Insert notes before \end{frame}
-                            frame_end = frame_latex.rfind('\\end{frame}')
-                            if frame_end != -1:
-                                frame_latex = frame_latex[:frame_end] + notes_latex + frame_latex[frame_end:]
-
-                    new_document_body += frame_latex + "\n\n"
-                    continue
-
-                # ============================================================
-                # CASE 2: No layout directive - use standard processing
-                # ============================================================
-                frame_lines = []
-                frame_lines.append(f"\\begin{{frame}}{{{clean_title}}}")
-                frame_lines.append(f"\\frametitle{{{clean_title}}}")
-                frame_lines.append("")
-
-                # Check if content already has columns
-                has_existing_columns = any('\\begin{columns}' in line for line in visible_content)
-
-                # Subcase 2a: Has valid image and no existing columns - create two-column layout
-                if has_valid_image and not has_existing_columns and visible_content:
-                    frame_lines.append("\\begin{columns}[T]")
-                    frame_lines.append("\\column{0.45\\textwidth}")
-                    frame_lines.append(f"\\begin{{center}}")
-                    frame_lines.append(f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}")
-                    frame_lines.append(f"\\end{{center}}")
-                    frame_lines.append("")
-                    frame_lines.append("\\column{0.5\\textwidth}")
-
-                    # Format content properly
-                    formatted_content = format_content_items(visible_content)
-                    if formatted_content:
-                        frame_lines.append(formatted_content)
-
-                    frame_lines.append("\\end{columns}")
-
-                # Subcase 2b: Has existing columns - preserve as-is
-                elif has_existing_columns:
-                    for line in visible_content:
-                        if line.strip() and not is_media_directive(line):
-                            frame_lines.append(line)
-
-                # Subcase 2c: Normal full-width content
-                else:
-                    # Format content properly
-                    formatted_content = format_content_items(visible_content)
-                    if formatted_content:
-                        frame_lines.append(formatted_content)
-
-                    # Handle media if present and no layout
-                    if has_valid_image and image_path:
-                        # Insert image at appropriate place
-                        image_latex = f"\\begin{{center}}\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{image_path}}}\\end{center}"
-                        # Insert after frametitle
-                        frame_lines.insert(2, image_latex)
-                        frame_lines.insert(3, "")
-
-                # Add notes
-                if visible_notes:
-                    real_notes = []
-                    for note in visible_notes:
-                        clean_note = re.sub(r'^[-•]\s*', '', note.strip())
-                        if clean_note and clean_note.lower() not in ["no notes for this slide", "no notes", "none"]:
-                            real_notes.append(clean_note)
-
-                    if real_notes:
-                        frame_lines.append("")
-                        frame_lines.append("\\note{")
-                        frame_lines.append("\\begin{itemize}")
-                        for note in real_notes:
-                            frame_lines.append(f"    \\item {note}")
-                        frame_lines.append("\\end{itemize}")
-                        frame_lines.append("}")
-
-                frame_lines.append("\\end{frame}")
-                frame_lines.append("")
-
-                # Only add if there's actual content
-                if len(frame_lines) > 3:  # More than just begin/end frame and frametitle
-                    new_document_body += "\n".join(frame_lines) + "\n\n"
-
-            new_document_body += "\\end{document}\n"
-            full_tex = preamble + "\n" + new_document_body
-
-            # Write debug file
-            debug_file = "debug_output.tex"
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write(full_tex)
-            self.write(f"  📝 Debug TeX saved to: {debug_file}\n", "cyan")
-
-            self.write(f"\n📊 TeX Generation Statistics:\n", "cyan")
-            self.write(f"  • Title page included\n", "green")
-            self.write(f"  • Visible slides included: {total_visible_slides}\n", "green")
-            if total_skipped_slides > 0:
-                self.write(f"  • Masked slides skipped: {total_skipped_slides}\n", "yellow")
-
-            return full_tex
-
-        except Exception as e:
-            self.write(f"Error generating TeX: {str(e)}\n", "red")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def generate_tex_with_preserved_masking(self):
-        """Generate TeX content - remove masked content, preserve original styling"""
-        try:
-            # Get the original custom preamble (with all styling)
-            full_tex_content = self.get_custom_preamble()
-
-            # Find the exact position of \begin{document}
-            doc_pos = full_tex_content.find("\\begin{document}")
-            if doc_pos == -1:
-                self.write("Error: Could not find \\begin{document} in preamble\n", "red")
-                return None
-
-            # Extract preamble (everything before \begin{document})
-            preamble = full_tex_content[:doc_pos].strip()
-
-            if not preamble.endswith('\n'):
-                preamble += '\n'
-
-            # Start building new document body
-            new_document_body = "\\begin{document}\n\n"
-
-            # Create title page slide
-            new_document_body += "\\begin{frame}[plain]\n"
-            new_document_body += "\\titlepage\n"
-            new_document_body += "\\end{frame}\n\n"
-
-            # Track statistics
-            total_visible_slides = 0
-            total_skipped_slides = 0
+                    for directive in layout_directives:
+                        if stripped.startswith(directive):
+                            # Extract directive type and params
+                            if directive == '\\mosaic':
+                                import re
+                                match = re.search(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', stripped)
+                                if match:
+                                    return ('mosaic', stripped, i)
+                                else:
+                                    return ('mosaic', stripped, i)
+                            else:
+                                params = stripped[len(directive):].strip()
+                                return (directive[1:], params, i)
+                return (None, None, -1)
 
             # Valid media directives
             valid_media_directives = ['\\file', '\\play', '\\url', '\\movie', '\\sound',
@@ -11365,13 +10992,15 @@ Created by {self.__author__}
                 if not line or not line.strip():
                     return False
                 stripped = line.strip()
+                if is_layout_directive(stripped):
+                    return False
                 for directive in valid_media_directives:
                     if stripped.startswith(directive):
                         return True
                 return False
 
             def convert_file_to_includegraphics(line):
-                if '\\file' in line:
+                if '\\file' in line and not is_layout_directive(line):
                     file_path = line.replace('\\file', '').strip()
                     file_path = file_path.strip('{}')
 
@@ -11420,7 +11049,7 @@ Created by {self.__author__}
                 image_path = None
 
                 if media and media != "\\None" and not media_masked:
-                    if media.startswith('\\file'):
+                    if media.startswith('\\file') and not is_layout_directive(media):
                         file_path = media.replace('\\file', '').strip()
                         file_path = file_path.strip('{}')
                         if file_path and 'example-image' not in file_path.lower():
@@ -11431,7 +11060,7 @@ Created by {self.__author__}
                                 has_valid_image = True
                                 image_path = f"media_files/{file_path}"
 
-                # Check if content already has columns
+                # Check if content already has columns (regular LaTeX, NOT a layout directive)
                 has_existing_columns = any('\\begin{columns}' in line for line in visible_content)
 
                 if not visible_content and not visible_notes and not has_valid_image:
@@ -11443,6 +11072,58 @@ Created by {self.__author__}
                 slide_title = slide.get('title', 'Untitled')
                 clean_title = re.sub(r'^\[DELETED\]\s*', '', slide_title)
 
+                # ============================================================
+                # CHECK FOR LAYOUT DIRECTIVES ANYWHERE IN CONTENT
+                # IMPORTANT: This ONLY detects explicit layout directives like \mosaic, \wm, etc.
+                # NOT regular LaTeX environments like \begin{columns}
+                # ============================================================
+                layout_type, layout_params, layout_line_index = find_layout_in_content(visible_content)
+                has_layout = layout_type is not None
+
+                # ============================================================
+                # CASE 1: Layout directive found - use specialized handler
+                # ============================================================
+                if has_layout:
+                    # Remove the layout directive line from visible_content
+                    content_without_layout = [line for j, line in enumerate(visible_content) if j != layout_line_index]
+
+                    self.write(f"  ✓ Processing {layout_type} layout in slide {idx + 1}\n", "green")
+
+                    # Generate the frame using the layout handler
+                    if layout_type == 'mosaic':
+                        frame_latex = self._generate_mosaic_layout(
+                            layout_params, content_without_layout, clean_title
+                        )
+                    else:
+                        frame_latex = self._generate_layout_latex(
+                            layout_type, layout_params, content_without_layout, clean_title
+                        )
+
+                    # Add notes if any
+                    if visible_notes:
+                        real_notes = []
+                        for note in visible_notes:
+                            clean_note = re.sub(r'^[-•]\s*', '', note.strip())
+                            if clean_note and clean_note.lower() not in ["no notes for this slide", "no notes", "none"]:
+                                real_notes.append(clean_note)
+
+                        if real_notes:
+                            notes_latex = "\n\\note{\n\\begin{itemize}\n"
+                            for note in real_notes:
+                                notes_latex += f"    \\item {note}\n"
+                            notes_latex += "\\end{itemize}\n}\n"
+                            # Insert notes before \end{frame}
+                            frame_end = frame_latex.rfind('\\end{frame}')
+                            if frame_end != -1:
+                                frame_latex = frame_latex[:frame_end] + notes_latex + frame_latex[frame_end:]
+
+                    new_document_body += frame_latex + "\n\n"
+                    continue
+
+                # ============================================================
+                # CASE 2: No layout directive - use standard processing
+                # This handles regular slides with or without \begin{columns}
+                # ============================================================
                 frame_lines = []
                 frame_lines.append(f"\\begin{{frame}}{{{clean_title}}}")
                 frame_lines.append(f"\\frametitle{{{clean_title}}}")
@@ -13991,30 +13672,261 @@ Created by {self.__author__}
         return title.strip() or "Untitled"
 
     def _generate_mosaic_layout(self, params: str, content: list, frame_title: str) -> str:
-        """Generate mosaic layout: \mosaic{rows,cols}{image1, image2, ...}"""
+        """Generate mosaic layout with dynamic grid sizing and proper scaling"""
         import re
 
-        # Parse mosaic parameters
+        # Clean the frame title
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        # Parse mosaic parameters: \mosaic{rows,cols}{image1, image2, ...}
         mosaic_match = re.search(r'\{(\d+),(\d+)\}\{(.*?)\}', params)
+
         if not mosaic_match:
             # Try to fix malformed mosaic (missing braces)
             if params.strip() and not params.startswith('{'):
                 # Assume it's just a list of images, use auto-layout
                 images = [img.strip() for img in params.split(',') if img.strip()]
                 if images:
-                    # Auto-calculate grid (prefer 3 columns)
-                    cols = 3
+                    # Auto-calculate grid (prefer 3 columns, max 4)
+                    cols = min(4, max(2, (len(images) + 2) // 3))
                     rows = (len(images) + cols - 1) // cols
                     self.write(f"  ℹ Auto-detected mosaic: {rows}x{cols} for {len(images)} images\n", "cyan")
-                    return self._generate_mosaic_from_list(images, rows, cols, content, frame_title)
+                    # Pass empty content to avoid duplication
+                    return self._render_mosaic_grid(images, rows, cols, [], clean_title)
             self.write("  ⚠ Invalid mosaic format, using default layout\n", "yellow")
-            return self._generate_default_layout(params, content, frame_title)
+            return self._generate_default_layout(params, content, clean_title)
 
         rows = int(mosaic_match.group(1))
         cols = int(mosaic_match.group(2))
         images = [img.strip() for img in mosaic_match.group(3).split(',') if img.strip()]
 
-        return self._generate_mosaic_from_list(images, rows, cols, content, frame_title)
+        # Remove any 'media_files/' prefix that might be duplicated
+        cleaned_images = []
+        for img in images:
+            if img.startswith('media_files/media_files/'):
+                img = img.replace('media_files/media_files/', 'media_files/')
+            cleaned_images.append(img)
+
+        # CRITICAL FIX: Extract text content that is NOT part of the mosaic
+        # The content list contains everything, including the text that should stay
+        # in the left column. We need to separate it.
+
+        # When mosaic is inside columns, the content list contains:
+        # - Text content for left column (should be preserved)
+        # - The mosaic directive (should be removed from text processing)
+        # So we should pass the original content to be placed BEFORE the mosaic
+        # NOT as content to be formatted inside the mosaic
+
+        return self._render_mosaic_grid(cleaned_images, rows, cols, content, clean_title)
+
+
+    def _extract_and_format_content_from_columns(self, content: list) -> str:
+        """
+        Extract content from inside columns environment and format it properly.
+        Preserves itemize environments and converts bullet points to \item commands.
+        """
+        if not content:
+            return ""
+
+        result = []
+        in_columns = False
+        in_itemize = False
+        current_column_content = []
+        current_column = 0
+
+        for line in content:
+            stripped = line.strip()
+
+            # Track columns environment boundaries
+            if '\\begin{columns}' in stripped:
+                in_columns = True
+                current_column_content = [[], []]
+                current_column = 0
+                continue
+            elif '\\end{columns}' in stripped:
+                in_columns = False
+                # Add content from both columns
+                for col_idx, col_items in enumerate(current_column_content):
+                    if col_items:
+                        result.append(f"\\column{{{0.48 if col_idx == 0 else 0.48}\\textwidth}}")
+                        for col_item in col_items:
+                            if col_item.strip():
+                                result.append(col_item)
+                continue
+
+            # Handle column separators
+            if in_columns and stripped.startswith('\\column'):
+                current_column = 0 if '0.5' in stripped else 1
+                continue
+
+            # Handle itemize environment boundaries
+            if '\\begin{itemize}' in stripped:
+                in_itemize = True
+                if in_columns:
+                    current_column_content[current_column].append(stripped)
+                else:
+                    result.append(stripped)
+                continue
+            elif '\\end{itemize}' in stripped:
+                in_itemize = False
+                if in_columns:
+                    current_column_content[current_column].append(stripped)
+                else:
+                    result.append(stripped)
+                continue
+
+            # Handle bullet points inside columns
+            if in_columns and stripped.startswith('-'):
+                bullet_content = stripped[1:].strip()
+                if in_itemize:
+                    current_column_content[current_column].append(f"\\item {bullet_content}")
+                else:
+                    current_column_content[current_column].append(f"\\begin{{itemize}}\n\\item {bullet_content}\n\\end{{itemize}}")
+                continue
+
+            # Regular content
+            if in_columns and stripped:
+                current_column_content[current_column].append(stripped)
+            elif stripped:
+                result.append(stripped)
+
+        return '\n'.join(result)
+
+    def _format_content_items(self, content_list):
+        """Format content items into proper LaTeX structure with tabular preservation"""
+        if not content_list:
+            return ""
+
+        result = []
+        in_list = False
+        in_tabular = False
+        tabular_buffer = []
+        brace_depth = 0
+
+        for item in content_list:
+            if not item or not item.strip():
+                continue
+
+            # Track tabular environment boundaries - do this FIRST
+            if '\\begin{tabular}' in item:
+                in_tabular = True
+                tabular_buffer = [item]
+                continue
+            elif '\\end{tabular}' in item:
+                in_tabular = False
+                tabular_buffer.append(item)
+                # Add the complete preserved tabular
+                result.append('\n'.join(tabular_buffer))
+                tabular_buffer = []
+                continue
+
+            if in_tabular:
+                tabular_buffer.append(item)
+                continue
+
+            # Track brace depth to detect unbalanced braces
+            brace_depth += item.count('{')
+            brace_depth -= item.count('}')
+
+            stripped = item.strip()
+
+            # Skip layout directives
+            if hasattr(self, 'is_layout_directive') and self.is_layout_directive(stripped):
+                continue
+
+            # Handle environment starts
+            if stripped.startswith('\\begin{enumerate}'):
+                in_list = True
+                result.append(stripped)
+                continue
+            elif stripped.startswith('\\begin{itemize}'):
+                in_list = True
+                result.append(stripped)
+                continue
+            elif stripped.startswith('\\begin{'):
+                result.append(stripped)
+                continue
+
+            # Handle environment ends
+            if stripped.startswith('\\end{enumerate}'):
+                in_list = False
+                result.append(stripped)
+                continue
+            elif stripped.startswith('\\end{itemize}'):
+                in_list = False
+                result.append(stripped)
+                continue
+            elif stripped.startswith('\\end{'):
+                result.append(stripped)
+                continue
+
+            # Handle bullet points
+            if stripped.startswith(('- ', '• ')):
+                bullet_content = re.sub(r'^[-•]\s*', '', stripped)
+                if not in_list:
+                    # Single bullet point - create temporary list
+                    result.append("\\begin{itemize}")
+                    result.append(f"\\item {bullet_content}")
+                    result.append("\\end{itemize}")
+                else:
+                    result.append(f"\\item {bullet_content}")
+                continue
+
+            # Handle standalone \item commands
+            if stripped.startswith('\\item'):
+                if not in_list:
+                    result.append("\\begin{itemize}")
+                    result.append(stripped)
+                    # Check if more items follow
+                    idx = content_list.index(item)
+                    has_more_items = False
+                    for j in range(idx + 1, len(content_list)):
+                        if content_list[j].strip().startswith('\\item'):
+                            has_more_items = True
+                        elif content_list[j].strip() and not content_list[j].strip().startswith('\\end{'):
+                            break
+                    if not has_more_items:
+                        result.append("\\end{itemize}")
+                else:
+                    result.append(stripped)
+                continue
+
+            # Handle \pause commands
+            if stripped.startswith('\\pause'):
+                result.append(stripped)
+                continue
+
+            # Handle column commands - preserve them exactly
+            if stripped.startswith('\\column'):
+                result.append(stripped)
+                continue
+
+            # Handle \hline commands (tabular row separators)
+            if stripped == '\\hline':
+                result.append(stripped)
+                continue
+
+            # Handle tabular cell separators (preserve & as is)
+            if '&' in stripped:
+                # This is tabular content - preserve it exactly
+                result.append(stripped)
+                continue
+
+            # Regular text - escape special characters
+            if stripped:
+                escaped = stripped
+                # Don't escape within math mode
+                if '$' not in escaped:
+                    escaped = escaped.replace('_', '\\_')
+                result.append(escaped)
+
+        # Fix unbalanced braces at the end
+        if brace_depth > 0:
+            result.append('}' * brace_depth)
+        elif brace_depth < 0:
+            result.insert(0, '{' * (-brace_depth))
+
+        return '\n'.join(result)
 
     def _generate_mosaic_from_list(self, images: list, rows: int, cols: int, content: list, frame_title: str) -> str:
         """Generate mosaic from a list of images with specified grid dimensions"""
@@ -14167,19 +14079,39 @@ Created by {self.__author__}
         return extracted
 
     def _format_content_items(self, content_list):
-        """Format content items into proper LaTeX structure"""
+        """Format content items into proper LaTeX structure with tabular preservation"""
         if not content_list:
             return ""
 
         result = []
         in_list = False
+        in_tabular = False
+        tabular_buffer = []
         brace_depth = 0
 
         for item in content_list:
             if not item or not item.strip():
                 continue
 
-            # Track brace depth to detect unbalanced braces
+            # Track tabular environment boundaries - do this FIRST before any processing
+            if '\\begin{tabular}' in item:
+                in_tabular = True
+                tabular_buffer = [item]
+                continue
+            elif '\\end{tabular}' in item:
+                in_tabular = False
+                tabular_buffer.append(item)
+                # Add the complete preserved tabular WITHOUT any modifications
+                result.append('\n'.join(tabular_buffer))
+                tabular_buffer = []
+                continue
+
+            if in_tabular:
+                # Preserve tabular content exactly as is - NO modifications
+                tabular_buffer.append(item)
+                continue
+
+            # Track brace depth
             brace_depth += item.count('{')
             brace_depth -= item.count('}')
 
@@ -14219,7 +14151,6 @@ Created by {self.__author__}
             if stripped.startswith(('- ', '• ')):
                 bullet_content = re.sub(r'^[-•]\s*', '', stripped)
                 if not in_list:
-                    # Single bullet point - create temporary list
                     result.append("\\begin{itemize}")
                     result.append(f"\\item {bullet_content}")
                     result.append("\\end{itemize}")
@@ -14232,7 +14163,6 @@ Created by {self.__author__}
                 if not in_list:
                     result.append("\\begin{itemize}")
                     result.append(stripped)
-                    # Check if more items follow
                     idx = content_list.index(item)
                     has_more_items = False
                     for j in range(idx + 1, len(content_list)):
@@ -14251,20 +14181,30 @@ Created by {self.__author__}
                 result.append(stripped)
                 continue
 
-            # Handle column commands - preserve them exactly
+            # Handle column commands
             if stripped.startswith('\\column'):
                 result.append(stripped)
                 continue
 
-            # Regular text - escape special characters
+            # Handle \hline commands
+            if stripped == '\\hline':
+                result.append(stripped)
+                continue
+
+            # Regular text - but preserve & for tabular (though we shouldn't get here for tabular)
             if stripped:
+                # Don't escape & - they should remain as column separators
+                # But since we've already handled tabular above, this is for regular text
                 escaped = stripped
-                # Don't escape within math mode
                 if '$' not in escaped:
-                    escaped = escaped.replace('_', '\\_').replace('&', '\\&')
+                    escaped = escaped.replace('_', '\\_')
+                # Only escape & if it's NOT in a tabular context (but we shouldn't get tabular here)
+                if '&' in escaped and not in_tabular:
+                    # This might be standalone & that needs escaping
+                    escaped = escaped.replace('&', '\\&')
                 result.append(escaped)
 
-        # Fix unbalanced braces at the end
+        # Fix unbalanced braces
         if brace_depth > 0:
             result.append('}' * brace_depth)
         elif brace_depth < 0:
@@ -14524,45 +14464,136 @@ Created by {self.__author__}
         latex += "\\end{frame}\n"
         return latex
 
-    def _render_mosaic_grid(self, images: list, rows: int, cols: int, use_placeholder: bool = False) -> str:
-        """Render the mosaic grid as LaTeX with proper empty cell handling"""
-        col_width = 0.95 / cols
+    def _render_mosaic_grid(self, images: list, rows: int, cols: int, content: list, frame_title: str) -> str:
+        """Render the mosaic grid with proper scaling, blank cells, and auto-expansion"""
+
+        # Clean the frame title for LaTeX
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        # Calculate optimal grid if needed
+        total_images = len(images)
+        total_cells = rows * cols
+
+        # Auto-expand if more images than cells
+        if total_images > total_cells:
+            new_rows = (total_images + cols - 1) // cols
+            self.write(f"  ℹ Expanding mosaic: {rows}x{cols} → {new_rows}x{cols} for {total_images} images\n", "cyan")
+            rows = new_rows
+            total_cells = rows * cols
+
+        # Pad images list with empty strings to fill the grid
+        padded_images = images + [''] * (total_cells - len(images))
+
+        # Calculate available width per column
+        col_width = 0.94 / cols
+
+        latex = f"\\begin{{frame}}{{{clean_title}}}\n"
+        latex += f"\\frametitle{{{clean_title}}}\n"
+
+        # Check if we're inside a columns environment (content contains column markers)
+        has_existing_columns = any('\\begin{columns}' in line for line in content) if content else False
+
+        if has_existing_columns:
+            # Extract left column content and right column content separately
+            left_content = []
+            right_content = []
+            in_columns = False
+            in_left = False
+            in_right = False
+
+            for line in content:
+                if '\\begin{columns}' in line:
+                    in_columns = True
+                    continue
+                elif '\\end{columns}' in line:
+                    in_columns = False
+                    continue
+                elif in_columns and '\\column' in line:
+                    # Determine which column
+                    if '0.5' in line or '0.48' in line:
+                        # First column (left)
+                        in_left = True
+                        in_right = False
+                    else:
+                        # Second column (right)
+                        in_left = False
+                        in_right = True
+                    continue
+                elif in_columns and in_left:
+                    left_content.append(line)
+                elif in_columns and in_right:
+                    right_content.append(line)
+
+            # Build the columns structure
+            latex += "\\begin{columns}[T]\n"
+
+            # Left column - original text content
+            latex += "\\column{0.48\\textwidth}\n"
+            for line in left_content:
+                if line.strip():
+                    # Process bullet points
+                    if line.strip().startswith('-') or line.strip().startswith('•'):
+                        bullet_content = re.sub(r'^[-•]\s*', '', line.strip())
+                        latex += f"\\item {bullet_content}\n"
+                    else:
+                        latex += line + "\n"
+
+            # Right column - mosaic grid
+            latex += "\\column{0.48\\textwidth}\n"
+            latex += self._generate_mosaic_grid_only(images, rows, cols)
+
+            latex += "\\end{columns}\n"
+
+        else:
+            # No existing columns - just add content then mosaic
+            if content:
+                content_items = self._format_content_items(content)
+                if content_items:
+                    latex += content_items + "\n"
+                    latex += "\\vspace{0.5em}\n"
+
+            # Add the mosaic grid
+            latex += self._generate_mosaic_grid_only(images, rows, cols)
+
+        latex += "\\end{frame}\n"
+        return latex
+
+    def _generate_mosaic_grid_only(self, images: list, rows: int, cols: int) -> str:
+        """Generate just the mosaic grid table (without frame wrapper)"""
+
+        total_cells = rows * cols
+        padded_images = images + [''] * (total_cells - len(images))
+
+        # Calculate available width per column
+        col_width = 0.94 / cols
 
         latex = "\\begin{center}\n"
         latex += f"\\begin{{tabular}}{{{'c' * cols}}}\n"
         latex += "\\hline\n"
 
-        # Calculate total cells needed
-        total_cells = rows * cols
-
-        # Pad images list with empty strings to fill the grid
-        padded_images = images + [''] * (total_cells - len(images))
-
-        # Render the grid
         for idx, img_path in enumerate(padded_images):
-            # Add row separator at the start of each row (except first)
             if idx > 0 and idx % cols == 0:
                 latex = latex.rstrip('& ') + "\\\\ \\hline\n"
 
             if img_path:
-                # Valid image - add includegraphics
                 clean_path = img_path
                 if not clean_path.startswith(('media_files/', './', '/')):
                     clean_path = f"media_files/{clean_path}"
-                latex += f"\\includegraphics[width={col_width}\\textwidth,keepaspectratio]{{{clean_path}}} & "
-            else:
-                # Empty cell - add a blank space or subtle placeholder
-                if use_placeholder:
-                    # Add a subtle placeholder (light gray box)
-                    latex += f"\\textcolor{{gray}}{{\\rule{{{col_width}\\textwidth}}{{0.7\\textwidth}}}} & "
-                else:
-                    # Just an empty cell
-                    latex += " & "
 
-        # Close the last row
+                # Simplified: no minipage wrapper, just the includegraphics
+                latex += f"\\includegraphics[width={col_width}\\textwidth,height=0.25\\textheight,keepaspectratio]{{{clean_path}}} & "
+            else:
+                # Empty cell placeholder
+                latex += f"\\textcolor{{gray}}{{\\rule{{{col_width}\\textwidth}}{{0.2\\textheight}}}} & "
+
         latex = latex.rstrip('& ') + "\\\\ \\hline\n"
         latex += "\\end{tabular}\n"
         latex += "\\end{center}\n"
+
+        blank_count = padded_images.count('')
+        if blank_count > 0:
+            latex += "\n\\vspace{0.3em}\n"
+            latex += f"\\begin{{center}}\\textcolor{{gray}}{{\\footnotesize {blank_count} placeholder(s) for missing images}}\\end{{center}}\n"
 
         return latex
 
