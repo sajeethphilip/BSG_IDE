@@ -3612,10 +3612,8 @@ class BeamerSyntaxHighlighter:
 class LaTeXErrorEditor(ctk.CTkToplevel):
     """Interactive editor for fixing LaTeX compilation errors"""
 
-    def __init__(self, parent, tex_file_path, error_line_num, error_message, error_context, log_content=None):
+    def __init__(self, parent, tex_file_path, error_line_num, error_message, error_context, log_content=None, exact_line_content=None):
         # Handle different parent types gracefully
-        # If parent is a CTk window with 'root' attribute, use that
-        # Otherwise use parent directly
         if hasattr(parent, 'root') and isinstance(parent.root, (ctk.CTk, tk.Tk)):
             actual_parent = parent.root
         elif hasattr(parent, 'winfo_toplevel'):
@@ -3625,12 +3623,15 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
 
         super().__init__(actual_parent)
 
+        # Store parent reference
+        self.parent_editor = parent  # Store the parent editor reference
         self.tex_file_path = tex_file_path
         self.error_line_num = error_line_num
         self.error_message = error_message
         self.error_context = error_context
         self.log_content = log_content
-        self.result = None  # 'fixed', 'skip', 'abort'
+        self.exact_line_content = exact_line_content
+        self.result = None
         self.fixed_content = None
         self.modified = False
         self.original_content = None
@@ -3638,7 +3639,7 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.title(f"LaTeX Error Editor - Line {error_line_num}")
         self.geometry("1000x700")
 
-        # Make dialog modal - safe handling
+        # Make dialog modal
         try:
             self.transient(actual_parent)
             self.grab_set()
@@ -3654,9 +3655,219 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.create_widgets()
         self.load_file_at_error_line()
 
+        # Highlight exact error if provided
+        if self.exact_line_content and self.error_line_num:
+            self.highlight_exact_error()
+
+    def load_file_at_error_line(self):
+        """Load the tex file and highlight the error line"""
+        try:
+            # Check if file exists
+            if not os.path.exists(self.tex_file_path):
+                self.editor.insert("1.0", f"% ERROR: File not found: {self.tex_file_path}\n")
+                self.status_label.configure(text=f"File not found: {self.tex_file_path}", text_color="#dc3545")
+                return
+
+            with open(self.tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+
+            if not lines:
+                self.editor.insert("1.0", "% File is empty\n")
+                return
+
+            self.original_content = ''.join(lines)
+
+            # Insert into editor
+            for i, line in enumerate(lines, 1):
+                self.editor.insert("end", line)
+                self.update_line_numbers()
+
+            # Highlight the error line
+            if self.error_line_num and 1 <= self.error_line_num <= len(lines):
+                error_start = f"{self.error_line_num}.0"
+                error_end = f"{self.error_line_num}.end"
+                self.editor.tag_add("error_line", error_start, error_end)
+                self.editor.see(error_start)
+
+                # Show context in status
+                self.status_label.configure(
+                    text=f"Error at line {self.error_line_num}. Edit the code, then click 'Apply Fix & Recompile'",
+                    text_color="#FFB86C"
+                )
+            else:
+                # If line number is out of range, scroll to end and show warning
+                self.editor.see("end")
+                self.status_label.configure(
+                    text=f"Warning: Line {self.error_line_num} not found (file has {len(lines)} lines). Check the error context.",
+                    text_color="#dc3545"
+                )
+
+        except Exception as e:
+            self.editor.insert("1.0", f"% Error loading file: {e}\n")
+            import traceback
+            traceback.print_exc()
+            self.status_label.configure(text=f"Error loading file: {str(e)}", text_color="#dc3545")
+
+    def save_changes(self):
+        """Save changes to file and update main IDE if needed"""
+        try:
+            content = self.editor.get("1.0", "end-1c")
+
+            # Debug: Print the file path being saved
+            print(f"Saving to: {self.tex_file_path}")
+
+            # Write to the tex file
+            with open(self.tex_file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            # Verify the save was successful
+            if os.path.exists(self.tex_file_path) and os.path.getsize(self.tex_file_path) > 0:
+                self.status_label.configure(text="✓ Changes saved successfully!", text_color="#28a745")
+                self.modified = False
+                return True
+            else:
+                raise Exception("File was not saved properly (empty or missing)")
+
+        except PermissionError as e:
+            error_msg = f"Permission denied: {str(e)}\nYou may not have write access to this file."
+            self.status_label.configure(text=error_msg, text_color="#dc3545")
+            messagebox.showerror("Permission Error", error_msg)
+            return False
+        except Exception as e:
+            error_msg = f"Error saving: {str(e)}"
+            self.status_label.configure(text=error_msg, text_color="#dc3545")
+            messagebox.showerror("Save Error", f"Failed to save changes to file.\n\nError: {str(e)}\n\nFile: {self.tex_file_path}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def apply_and_recompile(self):
+        """Apply changes and signal recompile"""
+        if self.save_changes():
+            self.result = 'fixed'
+            self.destroy()
+
+    def abort_compilation(self):
+        """Abort compilation - signal to stop and return to IDE"""
+        self.result = 'abort'
+        self.destroy()
+
+    def skip_error(self):
+        """Skip this error by commenting out the line"""
+        if self.error_line_num:
+            if self.comment_out_line_in_file(self.tex_file_path, self.error_line_num):
+                self.result = 'skip'
+                self.destroy()
+            else:
+                messagebox.showerror("Skip Failed",
+                                    f"Could not automatically skip the error at line {self.error_line_num}.\n"
+                                    "Please fix it manually.")
+        else:
+            self.result = 'skip'
+            self.destroy()
+
+    def comment_out_line_in_file(self, file_path, line_num):
+        """Comment out a specific line in the file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+
+            if 1 <= line_num <= len(lines):
+                original_line = lines[line_num - 1]
+                if not original_line.strip().startswith('%'):
+                    lines[line_num - 1] = f'% {original_line.rstrip()}\n'
+
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.writelines(lines)
+                    return True
+            return False
+        except Exception as e:
+            print(f"Error commenting line: {e}")
+            return False
+
+    def restore_original(self):
+        """Restore original content"""
+        if self.original_content:
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", self.original_content)
+            self.modified = True
+            self.status_label.configure(text="Restored original content", text_color="#ffc107")
+            self.update_line_numbers()
+            if self.error_line_num:
+                self.editor.tag_add("error_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
+
+    def highlight_exact_error(self):
+        """Highlight the exact problematic part of the error line"""
+        if not self.error_line_num or not self.exact_line_content:
+            return
+
+        # Highlight the entire line
+        self.editor.tag_add("error_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
+
+        # Look for specific error patterns
+        error_patterns = [
+            (r'\\begin{itemize}[^\\]*$', 'Missing \\item after \\begin{itemize}'),
+            (r'\\begin{enumerate}[^\\]*$', 'Missing \\item after \\begin{enumerate}'),
+            (r'\\item\s*$', 'Empty \\item command'),
+            (r'\\end{itemize}[^\\]*$', 'Unmatched \\end{itemize}'),
+            (r'\\end{enumerate}[^\\]*$', 'Unmatched \\end{enumerate}'),
+            (r'[^\\]#', 'Unescaped # character'),
+            (r'[^\\]&', 'Unescaped & character (use \\& in text)'),
+        ]
+
+        for pattern, description in error_patterns:
+            match = re.search(pattern, self.exact_line_content)
+            if match:
+                start_col = match.start()
+                end_col = match.end()
+                error_start = f"{self.error_line_num}.{start_col}"
+                error_end = f"{self.error_line_num}.{end_col}"
+                self.editor.tag_add("error_highlight", error_start, error_end)
+                self.status_label.configure(text=f"Error: {description}")
+                break
+
+        # Scroll to the error line
+        self.editor.see(f"{self.error_line_num}.0")
+
+    def update_error_info_display(self):
+        """Update the error info display with exact error location"""
+        # Find and highlight the exact error line in the editor
+        if self.error_line_num and self.exact_line_content:
+            # Scroll to the error line
+            self.editor.see(f"{self.error_line_num}.0")
+
+            # Highlight the entire error line
+            self.editor.tag_add("error_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
+
+            # Try to highlight the exact problematic part
+            if self.exact_line_content:
+                # Look for common error patterns in the line
+                error_patterns = [
+                    (r'\\begin\{[^}]+\}[^\\]*$', 'Missing \\end'),
+                    (r'[^\\]#', 'Unescaped #'),
+                    (r'[^\\]&', 'Unescaped &'),
+                    (r'\\item[^\\]*$', 'Item outside list'),
+                    (r'\{[^}]*$', 'Unclosed brace'),
+                    (r'\}[^{]*$', 'Unopened brace'),
+                ]
+
+                for pattern, desc in error_patterns:
+                    match = re.search(pattern, self.exact_line_content)
+                    if match:
+                        start_col = match.start()
+                        end_col = match.end()
+                        error_start = f"{self.error_line_num}.{start_col}"
+                        error_end = f"{self.error_line_num}.{end_col}"
+                        self.editor.tag_add("error_highlight", error_start, error_end)
+                        break
+
+            # Update the status to show exact error location
+            self.status_label.configure(
+                text=f"Error at line {self.error_line_num}: {self.error_message[:100]}"
+            )
+
     def create_widgets(self):
         """Create the editor UI"""
-
         # Main container
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -3750,6 +3961,7 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.editor.bind("<MouseWheel>", self.on_mousewheel)
         self.editor.bind("<Button-4>", self.on_mousewheel)
         self.editor.bind("<Button-5>", self.on_mousewheel)
+        self.editor.bind("<Control-s>", lambda e: self.save_changes() or "break")  # Ctrl+S to save
 
         # Right side - Error context and suggestions
         right_frame = ctk.CTkFrame(paned)
@@ -3780,26 +3992,68 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         suggestions_text.insert("1.0", self.suggestions)
         suggestions_text.configure(state="disabled")
 
-        # Quick fix buttons
+        # Quick fix buttons - Two rows for better organization
         quick_fix_frame = ctk.CTkFrame(right_frame)
         quick_fix_frame.pack(fill="x", padx=10, pady=10)
 
-        quick_fixes = [
+        # Row 1 buttons
+        row1_frame = ctk.CTkFrame(quick_fix_frame)
+        row1_frame.pack(fill="x", pady=2)
+
+        quick_fixes_row1 = [
+            ("Fix Missing \\item", self.fix_missing_item),
+            ("Mask/Unmask Line", self.toggle_mask_line),
             ("Remove Empty []", self.remove_empty_brackets),
+        ]
+
+        for text, command in quick_fixes_row1:
+            btn = ctk.CTkButton(
+                row1_frame,
+                text=text,
+                command=command,
+                width=120,
+                height=30
+            )
+            btn.pack(side="left", padx=2, pady=2)
+
+        # Row 2 buttons
+        row2_frame = ctk.CTkFrame(quick_fix_frame)
+        row2_frame.pack(fill="x", pady=2)
+
+        quick_fixes_row2 = [
             ("Escape # as \\#", self.escape_hash),
             ("Fix Itemize", self.fix_itemize),
             ("Comment Out Line", self.comment_out_line),
-            ("Restore Original", self.restore_original)
         ]
 
-        for text, command in quick_fixes:
-            ctk.CTkButton(
-                quick_fix_frame,
+        for text, command in quick_fixes_row2:
+            btn = ctk.CTkButton(
+                row2_frame,
                 text=text,
                 command=command,
-                width=110,
+                width=120,
                 height=30
-            ).pack(side="left", padx=2, pady=5)
+            )
+            btn.pack(side="left", padx=2, pady=2)
+
+        # Row 3 buttons
+        row3_frame = ctk.CTkFrame(quick_fix_frame)
+        row3_frame.pack(fill="x", pady=2)
+
+        quick_fixes_row3 = [
+            ("Restore Original", self.restore_original),
+            ("Save Only", self.save_changes),
+        ]
+
+        for text, command in quick_fixes_row3:
+            btn = ctk.CTkButton(
+                row3_frame,
+                text=text,
+                command=command,
+                width=120,
+                height=30
+            )
+            btn.pack(side="left", padx=2, pady=2)
 
         # Bottom buttons
         button_frame = ctk.CTkFrame(main_frame)
@@ -3849,29 +4103,6 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         )
         self.status_label.pack(fill="x", padx=5, pady=5)
 
-    def load_file_at_error_line(self):
-        """Load the tex file and highlight the error line"""
-        try:
-            with open(self.tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-
-            self.original_content = ''.join(lines)
-
-            # Insert into editor
-            for i, line in enumerate(lines, 1):
-                self.editor.insert("end", line)
-                self.update_line_numbers()
-
-            # Highlight the error line
-            if self.error_line_num and 1 <= self.error_line_num <= len(lines):
-                error_start = f"{self.error_line_num}.0"
-                error_end = f"{self.error_line_num}.end"
-                self.editor.tag_add("error_line", error_start, error_end)
-                self.editor.see(error_start)
-
-        except Exception as e:
-            self.editor.insert("1.0", f"% Error loading file: {e}\n")
-
     def update_line_numbers(self):
         """Update line number display"""
         lines = self.editor.get("1.0", "end-1c").split('\n')
@@ -3905,7 +4136,7 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.modified = True
         self.editor.tag_remove("error_line", "1.0", "end")
         self.editor.tag_remove("error_highlight", "1.0", "end")
-        self.status_label.configure(text="Changes made - Click 'Apply Fix & Recompile' to save")
+        self.status_label.configure(text="Changes made - Click 'Apply Fix & Recompile' to save", text_color="#FFB86C")
 
     def generate_suggestions(self):
         """Generate suggested fixes based on error message"""
@@ -4003,53 +4234,155 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             self.status_label.configure(text="Line already commented out")
         self.update_line_numbers()
 
-    def restore_original(self):
-        """Restore original content"""
-        if self.original_content:
-            self.editor.delete("1.0", "end")
-            self.editor.insert("1.0", self.original_content)
-            self.modified = True
-            self.status_label.configure(text="Restored original content")
-            self.update_line_numbers()
-            if self.error_line_num:
-                self.editor.tag_add("error_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-
     def copy_error(self):
         """Copy error to clipboard"""
         self.clipboard_clear()
         self.clipboard_append(self.error_message)
         self.status_label.configure(text="Error copied to clipboard")
 
-    def save_changes(self):
-        """Save changes to file"""
-        try:
+    def convert_tex_to_txt(self, tex_content):
+        """Convert tex content back to txt format"""
+        import re
+        txt_lines = []
+
+        # Extract frames
+        frames = re.findall(r'\\begin{frame}(.*?)\\end{frame}', tex_content, re.DOTALL)
+
+        for i, frame in enumerate(frames):
+            # Extract title
+            title_match = re.search(r'\\frametitle{(.*?)}', frame)
+            title = title_match.group(1) if title_match else f"Slide {i+1}"
+
+            txt_lines.append(f"\\title {title}")
+            txt_lines.append("\\begin{Content}")
+
+            # Extract content (items, etc.)
+            items = re.findall(r'\\item\s*(.*?)(?=\\item|\\end|$)', frame, re.DOTALL)
+            for item in items:
+                txt_lines.append(f"- {item.strip()}")
+
+            txt_lines.append("\\end{Content}")
+            txt_lines.append("\\begin{Notes}")
+            txt_lines.append("\\end{Notes}")
+            txt_lines.append("")
+
+        return "\n".join(txt_lines)
+
+    def fix_missing_item(self):
+        """Fix missing \item error by adding \item commands"""
+        if not self.error_line_num:
+            # Try to find the problematic frame
             content = self.editor.get("1.0", "end-1c")
-            temp_file = self.tex_file_path + ".tmp"
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                f.write(content)
-            shutil.move(temp_file, self.tex_file_path)
-            self.fixed_content = content
-            self.status_label.configure(text="✓ Changes saved successfully!")
-            return True
+            if '\\end{frame}' in content:
+                # Find the last \end{frame}
+                lines = content.split('\n')
+                for i in range(len(lines) - 1, -1, -1):
+                    if '\\end{frame}' in lines[i]:
+                        # Check the line before
+                        if i > 0 and lines[i-1].strip() and not lines[i-1].strip().startswith('\\item'):
+                            # Add \item before this line
+                            indent = re.match(r'^\s*', lines[i-1]).group(0)
+                            lines.insert(i, f"{indent}\\item ")
+                            self.editor.delete("1.0", "end")
+                            self.editor.insert("1.0", '\n'.join(lines))
+                            self.modified = True
+                            self.status_label.configure(text="Added missing \\item before \\end{frame}", text_color="#28a745")
+                            self.update_line_numbers()
+                            return
+            return
+
+        # Get the problematic environment
+        content = self.editor.get("1.0", "end-1c")
+        lines = content.split('\n')
+
+        if self.error_line_num <= len(lines):
+            current_line = self.error_line_num - 1
+            found_begin = False
+            env_type = None
+            begin_line = -1
+
+            # Look for \begin{itemize} or \begin{enumerate}
+            for i in range(current_line, max(0, current_line - 30), -1):
+                if '\\begin{itemize}' in lines[i]:
+                    found_begin = True
+                    env_type = 'itemize'
+                    begin_line = i
+                    break
+                elif '\\begin{enumerate}' in lines[i]:
+                    found_begin = True
+                    env_type = 'enumerate'
+                    begin_line = i
+                    break
+
+            if found_begin:
+                # Insert \item right after begin
+                indent = "    "
+                if begin_line + 1 < len(lines):
+                    indent = re.match(r'^\s*', lines[begin_line + 1]).group(0) if lines[begin_line + 1].strip() else "    "
+
+                lines.insert(begin_line + 1, f"{indent}\\item ")
+
+                # Update the editor
+                self.editor.delete("1.0", "end")
+                self.editor.insert("1.0", '\n'.join(lines))
+                self.modified = True
+                self.status_label.configure(text=f"Added \\item to {env_type} environment", text_color="#28a745")
+                self.update_line_numbers()
+                return
+
+        # If no \begin found, add \item at the cursor position
+        cursor_pos = self.editor.index("insert")
+        self.editor.insert(cursor_pos, "\\item ")
+        self.modified = True
+        self.status_label.configure(text="Added \\item at cursor position", text_color="#28a745")
+        self.update_line_numbers()
+
+    def toggle_mask_line(self):
+        """Mask or unmask the current line where cursor is positioned"""
+        try:
+            # Get current cursor position
+            current_pos = self.editor.index("insert")
+            line_num = int(current_pos.split('.')[0])
+
+            # Get the line content
+            line_start = self.editor.index(f"{line_num}.0")
+            line_end = self.editor.index(f"{line_num}.end")
+            line_content = self.editor.get(line_start, line_end)
+
+            if not line_content.strip():
+                self.status_label.configure(text="Cannot mask empty line", text_color="#dc3545")
+                return
+
+            # Check if line is already masked
+            is_masked = line_content.lstrip().startswith('%')
+
+            if is_masked:
+                # Unmask: remove the % prefix
+                clean_line = re.sub(r'^\s*%\s*', '', line_content)
+                self.editor.delete(line_start, line_end)
+                self.editor.insert(line_start, clean_line)
+                self.status_label.configure(text=f"✓ Unmasked line {line_num}", text_color="#28a745")
+            else:
+                # Mask: add % at beginning
+                indent_match = re.match(r'^(\s*)', line_content)
+                indent = indent_match.group(1) if indent_match else ""
+                rest = line_content[len(indent):]
+                masked_line = f"{indent}% {rest}"
+                self.editor.delete(line_start, line_end)
+                self.editor.insert(line_start, masked_line)
+                self.status_label.configure(text=f"✓ Masked line {line_num}", text_color="#ffc107")
+
+            self.modified = True
+            self.update_line_numbers()
+
+            # Re-highlight error line if needed
+            if self.error_line_num and line_num == self.error_line_num:
+                self.editor.tag_add("error_line", line_start, line_end)
+
         except Exception as e:
-            self.status_label.configure(text=f"✗ Error saving: {e}")
-            return False
-
-    def apply_and_recompile(self):
-        """Apply changes and recompile"""
-        if self.save_changes():
-            self.result = 'fixed'
-            self.destroy()
-
-    def skip_error(self):
-        """Skip this error"""
-        self.result = 'skip'
-        self.destroy()
-
-    def abort_compilation(self):
-        """Abort compilation"""
-        self.result = 'abort'
-        self.destroy()
+            self.status_label.configure(text=f"Error toggling mask: {str(e)}", text_color="#dc3545")
+            import traceback
+            traceback.print_exc()
 
 
 class BeamerSlideEditor(ctk.CTk):
@@ -11618,9 +11951,14 @@ Created by {self.__author__}
 
             # Step 3: First pdflatex pass
             self.write("\nStep 3: First pdflatex pass...\n", "white")
-            success = self.run_pdflatex(tex_file)
+            result = self.run_pdflatex(tex_file)
 
-            if success:
+            # Check if compilation was aborted
+            if result.get('aborted', False):
+                self.write("\n✗ Compilation aborted by user\n", "red")
+                return
+
+            if result['success']:
                 # Step 4: Second pdflatex pass for references and color rendering
                 self.write("\nStep 4: Second pdflatex pass (resolving references and colors)...\n", "white")
                 success = self.run_pdflatex(tex_file)
@@ -11914,17 +12252,17 @@ Created by {self.__author__}
         except Exception as e:
             print(f"Error writing to terminal: {str(e)}", file=sys.__stdout__)
 
-
     def run_pdflatex(self, tex_file: str, timeout: int = 60) -> dict:
         """
-        Run pdflatex with interactive error editor.
+        Run pdflatex with interactive error editor that pinpoints exact errors.
         """
         result = {
             'success': False,
             'errors': [],
             'warnings': [],
             'pdf_path': None,
-            'fatal_error': False
+            'fatal_error': False,
+            'aborted': False
         }
 
         original_dir = os.getcwd()
@@ -11936,14 +12274,20 @@ Created by {self.__author__}
             tex_dir = os.path.dirname(tex_file) or '.'
             os.chdir(tex_dir)
 
-            while attempt < max_attempts:
+            # Make sure tex_file is absolute path
+            tex_file_abs = os.path.abspath(tex_file)
+
+            while attempt < max_attempts and not result['aborted']:
                 attempt += 1
 
                 self.write("\n" + "="*60 + "\n", "cyan")
                 self.write(f"RUNNING PDFLATEX (Attempt {attempt})\n", "cyan")
+                self.write(f"File: {tex_file_abs}\n", "cyan")
                 self.write("="*60 + "\n\n", "cyan")
 
-                cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error', tex_file]
+                # Use -file-line-error to get precise line numbers
+                cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+                       '-file-line-error', tex_file_abs]
 
                 process = subprocess.Popen(
                     cmd,
@@ -11960,7 +12304,6 @@ Created by {self.__author__}
                 error_line_num = None
                 error_message = ""
                 error_context = []
-                in_error = False
 
                 while True:
                     line = process.stdout.readline()
@@ -11971,70 +12314,60 @@ Created by {self.__author__}
                         output_lines.append(line.rstrip())
 
                         if line.startswith('!'):
+                            self.write(line, "red")
                             error_found = True
-                            error_message = line.strip()
-                            error_context = [line.strip()]
-                            in_error = True
-                            self.write(f"\n⚠ Error detected: {error_message[:100]}\n", "red")
-                            continue
-
-                        if in_error:
-                            error_context.append(line.rstrip())
-
-                            if re.search(r'l\.\d+', line):
-                                match = re.search(r'l\.(\d+)', line)
-                                if match:
-                                    error_line_num = int(match.group(1))
-
-                            if re.search(r'line\s+\d+', line.lower()):
-                                match = re.search(r'line\s+(\d+)', line.lower())
-                                if match:
-                                    error_line_num = int(match.group(1))
-
-                            if len(error_context) >= 8 or (line.strip() == '' and len(error_context) > 2):
-                                in_error = False
-
+                            # Try to extract line number from the error line
+                            line_match = re.search(r'l\.(\d+)', line)
+                            if line_match:
+                                error_line_num = int(line_match.group(1))
                         elif 'Warning' in line:
-                            self.write(line, "yellow")
                             result['warnings'].append(line)
-                        elif not any(ignore in line for ignore in ['Overfull', 'Underfull', 'pdfTeX warning']):
-                            self.write(line, "white")
+                        elif not error_found:
+                            if not any(ignore in line for ignore in ['Overfull', 'Underfull', 'pdfTeX warning']):
+                                self.write(line, "white")
 
-                        # Use a safe way to update UI
-                        try:
-                            if hasattr(self, 'root'):
-                                self.root.update_idletasks()
-                            elif hasattr(self, 'update_idletasks'):
-                                self.update_idletasks()
-                        except:
-                            pass
-
-                if error_found and error_line_num is None:
-                    log_file = tex_file.replace('.tex', '.log')
+                # Check if compilation was successful
+                pdf_file = tex_file_abs.replace('.tex', '.pdf')
+                if os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0:
+                    log_file = tex_file_abs.replace('.tex', '.log')
                     if os.path.exists(log_file):
-                        try:
-                            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                                log_content = f.read()
-                            match = re.search(r'l\.(\d+)', log_content)
-                            if match:
-                                error_line_num = int(match.group(1))
-                        except:
-                            pass
-
-                if not error_found:
-                    pdf_file = tex_file.replace('.tex', '.pdf')
-                    if os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0:
+                        with open(log_file, 'r') as f:
+                            log_content = f.read()
+                            if 'Fatal error' not in log_content:
+                                result['success'] = True
+                                result['pdf_path'] = pdf_file
+                                size = os.path.getsize(pdf_file)
+                                self.write(f"\n✓ PDF generated: {os.path.basename(pdf_file)} ({self.format_file_size(size)})\n", "green")
+                                return result
+                    else:
                         result['success'] = True
                         result['pdf_path'] = pdf_file
                         size = os.path.getsize(pdf_file)
                         self.write(f"\n✓ PDF generated: {os.path.basename(pdf_file)} ({self.format_file_size(size)})\n", "green")
                         return result
-                    else:
-                        self.write("\n✗ No PDF file generated\n", "red")
-                        return result
 
+                # If no error detected but PDF not created, check log file
+                if not error_found:
+                    log_file = tex_file_abs.replace('.tex', '.log')
+                    if os.path.exists(log_file):
+                        exact_error_line, error_message, error_context = self.parse_latex_log(log_file)
+                        if exact_error_line:
+                            error_line_num = exact_error_line
+                            error_found = True
+                            self.write(f"\n⚠ Found error in log at line {error_line_num}: {error_message}\n", "red")
+                        else:
+                            self.write("\n✗ Compilation failed but no specific error found.\n", "red")
+                            self.write("Check the log file for details.\n", "yellow")
+                            result['fatal_error'] = True
+                            return result
+
+                if not error_found:
+                    self.write("\n✗ Compilation failed with unknown error.\n", "red")
+                    result['fatal_error'] = True
+                    return result
+
+                # Check for repeated error
                 error_key = f"{error_message[:50]}_{error_line_num}"
-
                 if last_error_key == error_key:
                     self.write(f"\n⚠ Same error persists after fix attempt.\n", "red")
                     self.write(f"  Error: {error_message[:200]}\n", "yellow")
@@ -12052,13 +12385,29 @@ Created by {self.__author__}
 
                 last_error_key = error_key
 
+                # Get the exact line content for context
+                line_content = ""
+                if error_line_num:
+                    try:
+                        with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
+                            lines = f.readlines()
+                            if 1 <= error_line_num <= len(lines):
+                                line_content = lines[error_line_num - 1].strip()
+                                self.write(f"Error line content: {line_content}\n", "yellow")
+                            else:
+                                self.write(f"Warning: Line {error_line_num} not in file (file has {len(lines)} lines)\n", "yellow")
+                    except Exception as e:
+                        self.write(f"Could not read line {error_line_num}: {e}\n", "yellow")
+
+                # Launch error editor
                 self.write("\n" + "="*60 + "\n", "yellow")
                 self.write("LAUNCHING ERROR EDITOR\n", "yellow")
                 self.write("="*60 + "\n", "yellow")
+                self.write(f"Error at line {error_line_num if error_line_num else 'unknown'}\n", "white")
                 self.write("The error editor will open. Fix the issue, save, and close.\n", "white")
                 self.write("Options: Fix & Recompile | Skip Error | Abort\n\n", "white")
 
-                # Get the parent window safely - try multiple approaches
+                # Get the parent window safely
                 parent_window = None
                 if hasattr(self, 'root') and self.root:
                     parent_window = self.root
@@ -12067,18 +12416,18 @@ Created by {self.__author__}
                 elif hasattr(self, 'winfo_toplevel'):
                     parent_window = self
                 else:
-                    # Create a temporary root if needed
                     parent_window = tk.Tk()
                     parent_window.withdraw()
 
-                # Create and show editor dialog
+                # Create and show editor dialog with exact error location
                 editor = LaTeXErrorEditor(
                     parent_window,
-                    tex_file,
+                    tex_file_abs,
                     error_line_num or 1,
                     error_message,
                     '\n'.join(error_context),
-                    '\n'.join(output_lines[-50:])
+                    '\n'.join(output_lines[-100:]),
+                    exact_line_content=line_content
                 )
 
                 # Wait for editor to close
@@ -12090,23 +12439,18 @@ Created by {self.__author__}
                 except:
                     pass
 
+                # Handle editor result
                 if editor.result == 'fixed':
                     self.write("\n✓ User fixed the file. Recompiling...\n", "green")
                     continue
 
                 elif editor.result == 'skip':
-                    self.write("\n⚠ Skipping error...\n", "yellow")
-                    if error_line_num:
-                        success = self.comment_out_line_in_file(tex_file, error_line_num)
-                        if success:
-                            self.write(f"✓ Auto-commented line {error_line_num}\n", "green")
-                            continue
-                    self.write("✗ Could not auto-comment - aborting\n", "red")
-                    result['fatal_error'] = True
-                    return result
+                    self.write("\n⚠ Skipping error by commenting out line...\n", "yellow")
+                    continue
 
                 elif editor.result == 'abort':
                     self.write("\n✗ Compilation aborted by user\n", "red")
+                    result['aborted'] = True
                     result['fatal_error'] = True
                     return result
 
@@ -12128,6 +12472,32 @@ Created by {self.__author__}
             except:
                 pass
 
+    def find_error_line_in_log(self, tex_file: str, error_message: str) -> int:
+        """
+        Find the error line number by examining the LaTeX log file.
+        """
+        log_file = tex_file.replace('.tex', '.log')
+        if not os.path.exists(log_file):
+            return None
+
+        try:
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                log_content = f.read()
+
+            # Look for line number markers
+            line_matches = re.findall(r'l\.(\d+)', log_content)
+            if line_matches:
+                return int(line_matches[0])
+
+            # Look for file:line format
+            file_line_matches = re.findall(r'\./(?:[^:]+):(\d+):', log_content)
+            if file_line_matches:
+                return int(file_line_matches[0])
+
+            return None
+
+        except Exception:
+            return None
 
     def comment_out_line_in_file(self, tex_file_path, line_num):
         """
@@ -12159,7 +12529,6 @@ Created by {self.__author__}
             self.write(f"  Error commenting line: {e}\n", "red")
             return False
 
-
     def handle_pdf_completion(self, pdf_file: str, size_str: str) -> None:
         """Handle successful PDF generation"""
         if messagebox.askyesno("Success",
@@ -12177,6 +12546,7 @@ Created by {self.__author__}
             self.write_to_terminal(traceback.format_exc(), "red")
 
         messagebox.showerror("Error", f"Error generating PDF:\n{str(error)}")
+
 #------------------------------------------------------------------------------------------------------------------
     def compile_presentation(self, mode: str = "both") -> None:
         """
@@ -12707,19 +13077,85 @@ Created by {self.__author__}
 
     def save_file(self) -> None:
         """Save presentation preserving custom preamble and line-level masking"""
-        if not self.current_file:
+
+        # Declare global at the beginning
+        global working_folder
+
+        # Determine the filename to save
+        filename = None
+
+        # Case 1: We have a current_file (file was loaded or previously saved)
+        if self.current_file and os.path.exists(self.current_file):
+            # Ask if user wants to overwrite or save as new
+            response = messagebox.askyesno(
+                "Save File",
+                f"File: {os.path.basename(self.current_file)}\n\n"
+                "Do you want to overwrite this file?\n"
+                "Click 'Yes' to overwrite, 'No' to save as a new file."
+            )
+            if response:
+                # Overwrite existing file
+                filename = self.current_file
+            else:
+                # Save as new file - use the current filename as base
+                base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+                save_dir = os.path.dirname(self.current_file) or working_folder
+
+                filename = filedialog.asksaveasfilename(
+                    defaultextension=".txt",
+                    initialfile=f"{base_name}.txt",
+                    initialdir=save_dir,
+                    filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+                )
+                if not filename:
+                    return
+                self.current_file = filename
+        else:
+            # Case 2: No current_file (brand new unsaved document)
+            # Use the title as default filename, but don't force it
+            default_name = "presentation"
+
+            # Only use title if it's not the default placeholder
+            if hasattr(self, 'title_entry') and self.title_entry.get():
+                title_text = self.title_entry.get().strip()
+                if title_text and title_text != "Presentation Title":
+                    # Sanitize title for filename
+                    default_name = re.sub(r'[<>:"/\\|?*]', '', title_text)
+                    default_name = default_name.replace(' ', '_')
+                    if not default_name:
+                        default_name = "presentation"
+
+            # Use the last working directory or Documents folder
+            save_dir = working_folder
+            if save_dir == "~" or not os.path.exists(save_dir):
+                # Try to find Documents folder
+                possible_docs = [
+                    Path.home() / 'Documents',
+                    Path.home() / 'documents',
+                    Path(os.path.expandvars('%USERPROFILE%\\Documents'))
+                ]
+                for doc_path in possible_docs:
+                    if doc_path.exists() and doc_path.is_dir():
+                        save_dir = str(doc_path)
+                        break
+                else:
+                    save_dir = str(Path.home())
+
             filename = filedialog.asksaveasfilename(
                 defaultextension=".txt",
+                initialfile=f"{default_name}.txt",
+                initialdir=save_dir,
                 filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
             )
-            if filename:
-                self.current_file = filename
-                global working_folder
-                working_folder = os.path.dirname(filename) or '.'
-                os.chdir(working_folder)
-                self.terminal.set_working_directory(working_folder)
-            else:
+            if not filename:
                 return
+            self.current_file = filename
+
+        # Update global working folder and terminal
+        working_folder = os.path.dirname(filename) or '.'
+        os.chdir(working_folder)
+        if hasattr(self, 'terminal'):
+            self.terminal.set_working_directory(working_folder)
 
         # Save current slide before generating content
         self.save_current_slide()
@@ -12732,7 +13168,7 @@ Created by {self.__author__}
             masked_count = 0
             total_hidden_lines = 0
 
-            # Define layout directives that should trigger \None insertion
+            # Define layout directives
             layout_directives = [
                 '\\begin{columns}', '\\end{columns}', '\\column',
                 '\\begin{itemize}', '\\end{itemize}', '\\begin{enumerate}', '\\end{enumerate}',
@@ -12743,15 +13179,9 @@ Created by {self.__author__}
                 '\\ff', '\\wm', '\\pip', '\\split', '\\hl', '\\bg', '\\tb', '\\ol', '\\corner', '\\mosaic'
             ]
 
-            # Define valid media directives (these are the only ones that should be in the media line)
-            valid_media_directives = ['\\file', '\\play', '\\url', '\\movie', '\\sound', '\\None']
-
-            # Add slides in BeamerSlideGenerator's expected format
+            # Add slides
             for idx, slide in enumerate(self.slides):
-                # Check if this slide is masked (deleted)
                 is_fully_masked = slide.get('_fully_masked', False) or self.is_slide_masked(idx)
-
-                # Get hidden line indices
                 hidden_content_indices = set(slide.get('_hidden_content_indices', []))
                 hidden_note_indices = set(slide.get('_hidden_note_indices', []))
                 media_masked = slide.get('_media_masked', False)
@@ -12773,46 +13203,23 @@ Created by {self.__author__}
                     content += f"\\title {clean_title}\n"
                     content += "\\begin{Content}\n"
 
-                # Handle media - determine if we need \None
+                # Handle media
                 media = slide.get('media', '')
                 content_items = slide.get('content', [])
 
-                # Check if the first non-empty content line starts with a layout directive
-                first_content_line = None
-                for item in content_items:
-                    if item and item.strip():
-                        first_content_line = item.strip()
-                        break
-
-                # Determine if we need to force \None
-                needs_none = False
-                if first_content_line:
-                    # Check if first content line starts with any layout directive
-                    needs_none = any(first_content_line.startswith(directive) for directive in layout_directives)
-
-                    # Also check if media is empty or None
-                    if not media or media == "\\None":
-                        needs_none = True
-
                 # Write media line
                 if is_fully_masked or media_masked:
-                    if needs_none:
-                        content += "% \\None\n"
-                    elif media:
+                    if media:
                         content += f"% {media}\n"
                     else:
                         content += "% \\None\n"
                 else:
-                    if needs_none:
-                        # Force \None when content starts with layout directives
-                        content += "\\None\n"
-                        self.write(f"  ℹ Slide {idx + 1}: Added \\None because content starts with layout directive\n", "cyan")
-                    elif media and media != "\\None":
+                    if media and media != "\\None":
                         content += f"{media}\n"
                     else:
                         content += "\\None\n"
 
-                # Write content items - PRESERVE LINE-LEVEL MASKING
+                # Write content items
                 for i, item in enumerate(content_items):
                     if item and item.strip():
                         is_line_hidden = i in hidden_content_indices
@@ -12867,10 +13274,10 @@ Created by {self.__author__}
             content += "\\end{document}"
 
             # Save to text file
-            with open(self.current_file, 'w', encoding='utf-8') as f:
+            with open(filename, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-            self.write("✓ File saved successfully: " + self.current_file + "\n", "green")
+            self.write(f"✓ File saved successfully: {filename}\n", "green")
 
             # Show summary
             summary_parts = []
@@ -12882,14 +13289,34 @@ Created by {self.__author__}
             if summary_parts:
                 self.write(f"ℹ Saved with: {', '.join(summary_parts)}\n", "yellow")
 
+            # Update recent files list
+            if hasattr(self, 'session_manager') and self.session_manager:
+                if filename not in self.session_data['recent_files']:
+                    self.session_data['recent_files'].append(filename)
+                    if len(self.session_data['recent_files']) > 10:
+                        self.session_data['recent_files'].pop(0)
+                    self.session_manager.save_session(self.session_data)
+
+            return True
+
         except Exception as e:
             self.write(f"✗ Error saving file: {str(e)}\n", "red")
             messagebox.showerror("Error", f"Error saving file:\n{str(e)}")
+            return False
 
     def load_file(self, filename: str) -> None:
         """Load presentation from file with full preservation of masked content"""
         try:
             logger.info(f"Loading file: {filename}")
+
+           # CRITICAL: Set current_file BEFORE any other operations
+            self.current_file = filename
+            # Update working directory
+            global working_folder
+            working_folder = os.path.dirname(filename) or '.'
+            os.chdir(working_folder)
+            if hasattr(self, 'terminal'):
+                self.terminal.set_working_directory(working_folder)
 
             with open(filename, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -13792,142 +14219,6 @@ Created by {self.__author__}
 
         return '\n'.join(result)
 
-    def _format_content_items(self, content_list):
-        """Format content items into proper LaTeX structure with tabular preservation"""
-        if not content_list:
-            return ""
-
-        result = []
-        in_list = False
-        in_tabular = False
-        tabular_buffer = []
-        brace_depth = 0
-
-        for item in content_list:
-            if not item or not item.strip():
-                continue
-
-            # Track tabular environment boundaries - do this FIRST
-            if '\\begin{tabular}' in item:
-                in_tabular = True
-                tabular_buffer = [item]
-                continue
-            elif '\\end{tabular}' in item:
-                in_tabular = False
-                tabular_buffer.append(item)
-                # Add the complete preserved tabular
-                result.append('\n'.join(tabular_buffer))
-                tabular_buffer = []
-                continue
-
-            if in_tabular:
-                tabular_buffer.append(item)
-                continue
-
-            # Track brace depth to detect unbalanced braces
-            brace_depth += item.count('{')
-            brace_depth -= item.count('}')
-
-            stripped = item.strip()
-
-            # Skip layout directives
-            if hasattr(self, 'is_layout_directive') and self.is_layout_directive(stripped):
-                continue
-
-            # Handle environment starts
-            if stripped.startswith('\\begin{enumerate}'):
-                in_list = True
-                result.append(stripped)
-                continue
-            elif stripped.startswith('\\begin{itemize}'):
-                in_list = True
-                result.append(stripped)
-                continue
-            elif stripped.startswith('\\begin{'):
-                result.append(stripped)
-                continue
-
-            # Handle environment ends
-            if stripped.startswith('\\end{enumerate}'):
-                in_list = False
-                result.append(stripped)
-                continue
-            elif stripped.startswith('\\end{itemize}'):
-                in_list = False
-                result.append(stripped)
-                continue
-            elif stripped.startswith('\\end{'):
-                result.append(stripped)
-                continue
-
-            # Handle bullet points
-            if stripped.startswith(('- ', '• ')):
-                bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                if not in_list:
-                    # Single bullet point - create temporary list
-                    result.append("\\begin{itemize}")
-                    result.append(f"\\item {bullet_content}")
-                    result.append("\\end{itemize}")
-                else:
-                    result.append(f"\\item {bullet_content}")
-                continue
-
-            # Handle standalone \item commands
-            if stripped.startswith('\\item'):
-                if not in_list:
-                    result.append("\\begin{itemize}")
-                    result.append(stripped)
-                    # Check if more items follow
-                    idx = content_list.index(item)
-                    has_more_items = False
-                    for j in range(idx + 1, len(content_list)):
-                        if content_list[j].strip().startswith('\\item'):
-                            has_more_items = True
-                        elif content_list[j].strip() and not content_list[j].strip().startswith('\\end{'):
-                            break
-                    if not has_more_items:
-                        result.append("\\end{itemize}")
-                else:
-                    result.append(stripped)
-                continue
-
-            # Handle \pause commands
-            if stripped.startswith('\\pause'):
-                result.append(stripped)
-                continue
-
-            # Handle column commands - preserve them exactly
-            if stripped.startswith('\\column'):
-                result.append(stripped)
-                continue
-
-            # Handle \hline commands (tabular row separators)
-            if stripped == '\\hline':
-                result.append(stripped)
-                continue
-
-            # Handle tabular cell separators (preserve & as is)
-            if '&' in stripped:
-                # This is tabular content - preserve it exactly
-                result.append(stripped)
-                continue
-
-            # Regular text - escape special characters
-            if stripped:
-                escaped = stripped
-                # Don't escape within math mode
-                if '$' not in escaped:
-                    escaped = escaped.replace('_', '\\_')
-                result.append(escaped)
-
-        # Fix unbalanced braces at the end
-        if brace_depth > 0:
-            result.append('}' * brace_depth)
-        elif brace_depth < 0:
-            result.insert(0, '{' * (-brace_depth))
-
-        return '\n'.join(result)
-
     def _generate_mosaic_from_list(self, images: list, rows: int, cols: int, content: list, frame_title: str) -> str:
         """Generate mosaic from a list of images with specified grid dimensions"""
 
@@ -14596,6 +14887,79 @@ Created by {self.__author__}
             latex += f"\\begin{{center}}\\textcolor{{gray}}{{\\footnotesize {blank_count} placeholder(s) for missing images}}\\end{{center}}\n"
 
         return latex
+
+    def parse_latex_log(self, log_file: str) -> tuple:
+        """
+        Parse LaTeX log file to find exact error line and message.
+        """
+        try:
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                log_content = f.read()
+
+            line_num = None
+            error_msg = ""
+            error_context = []
+
+            # Pattern 1: Missing \item error
+            missing_item_match = re.search(
+                r'LaTeX Error: Something\'s wrong--perhaps a missing \\item\..*?l\.(\d+)',
+                log_content,
+                re.DOTALL
+            )
+            if missing_item_match:
+                line_num = int(missing_item_match.group(1))
+                error_msg = "Missing \\item in list environment"
+                return line_num, error_msg, self._get_error_context(log_content, line_num)
+
+            # Pattern 2: "Not allowed in LR mode" error
+            lr_mode_match = re.search(
+                r'LaTeX Error: Not allowed in LR mode\..*?l\.(\d+)',
+                log_content,
+                re.DOTALL
+            )
+            if lr_mode_match:
+                line_num = int(lr_mode_match.group(1))
+                error_msg = "Not allowed in LR mode - verbatim or special command in wrong place"
+                return line_num, error_msg, self._get_error_context(log_content, line_num)
+
+            # Pattern 3: Standard LaTeX error format
+            error_pattern = r'! (.*?)\nl\.(\d+)\s*\n(.*?)(?=\n! |\n\*\*\* |$)'
+            matches = list(re.finditer(error_pattern, log_content, re.DOTALL))
+
+            if matches:
+                last_match = matches[-1]
+                error_msg = last_match.group(1).strip()
+                line_num = int(last_match.group(2))
+                error_context = last_match.group(3).strip().split('\n')
+                return line_num, error_msg, error_context
+
+            # Pattern 4: File:line format
+            file_line_pattern = r'\./([^:]+):(\d+):\s*(.*?)$'
+            matches = list(re.finditer(file_line_pattern, log_content, re.MULTILINE))
+            if matches:
+                last_match = matches[-1]
+                line_num = int(last_match.group(2))
+                error_msg = last_match.group(3).strip()
+                return line_num, error_msg, self._get_error_context(log_content, line_num)
+
+            return None, "", []
+
+        except Exception as e:
+            print(f"Error parsing log file: {e}")
+            return None, "", []
+
+    def _get_error_context(self, log_content: str, line_num: int) -> list:
+        """Extract context around the error line"""
+        try:
+            lines = log_content.split('\n')
+            for i, line in enumerate(lines):
+                if f'l.{line_num}' in line:
+                    start = max(0, i - 3)
+                    end = min(len(lines), i + 5)
+                    return lines[start:end]
+            return []
+        except Exception:
+            return []
 
 
 #-----------------------------------------------Help Functions --------------------------------------------
