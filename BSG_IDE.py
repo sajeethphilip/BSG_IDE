@@ -3612,7 +3612,8 @@ class BeamerSyntaxHighlighter:
 class LaTeXErrorEditor(ctk.CTkToplevel):
     """Interactive editor for fixing LaTeX compilation errors"""
 
-    def __init__(self, parent, tex_file_path, error_line_num, error_message, error_context, log_content=None, exact_line_content=None):
+    def __init__(self, parent, file_path, error_line_num, error_message, error_context,
+                 log_content=None, exact_line_content=None, is_txt_file=False):
         # Handle different parent types gracefully
         if hasattr(parent, 'root') and isinstance(parent.root, (ctk.CTk, tk.Tk)):
             actual_parent = parent.root
@@ -3623,9 +3624,9 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
 
         super().__init__(actual_parent)
 
-        # Store parent reference
-        self.parent_editor = parent  # Store the parent editor reference
-        self.tex_file_path = tex_file_path
+        self.file_path = file_path
+        self.is_txt_file = is_txt_file
+        self.tex_file_path = file_path.replace('.txt', '.tex') if is_txt_file else file_path
         self.error_line_num = error_line_num
         self.error_message = error_message
         self.error_context = error_context
@@ -3635,8 +3636,10 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.fixed_content = None
         self.modified = False
         self.original_content = None
+        self.parent_editor = parent
+        self.target_line_num = None
 
-        self.title(f"LaTeX Error Editor - Line {error_line_num}")
+        self.title(f"LaTeX Error Editor - {'TXT' if is_txt_file else 'TeX'} File")
         self.geometry("1000x700")
 
         # Make dialog modal
@@ -3653,52 +3656,62 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.geometry(f"+{x}+{y}")
 
         self.create_widgets()
-        self.load_file_at_error_line()
+        self.load_file_and_scroll()
 
-        # Highlight exact error if provided
-        if self.exact_line_content and self.error_line_num:
-            self.highlight_exact_error()
-
-    def load_file_at_error_line(self):
-        """Load the tex file and highlight the error line"""
+    def load_file_and_scroll(self):
+        """Load the file and scroll to the target line - ONE PASS, NO SKIPPING."""
         try:
-            # Check if file exists
-            if not os.path.exists(self.tex_file_path):
-                self.editor.insert("1.0", f"% ERROR: File not found: {self.tex_file_path}\n")
-                self.status_label.configure(text=f"File not found: {self.tex_file_path}", text_color="#dc3545")
+            if not os.path.exists(self.file_path):
+                self.editor.insert("1.0", f"% ERROR: File not found: {self.file_path}\n")
+                self.status_label.configure(text=f"File not found: {self.file_path}", text_color="#dc3545")
                 return
 
-            with open(self.tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
+            # Extract the slide title from TeX
+            tex_title = self.extract_tex_slide_title_at_error_line()
+            print(f"Looking for TXT slide with title: '{tex_title}'")
 
-            if not lines:
+            # Read the entire file
+            with open(self.file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                all_lines = f.readlines()
+                file_content = ''.join(all_lines)
+
+            if not all_lines:
                 self.editor.insert("1.0", "% File is empty\n")
                 return
 
-            self.original_content = ''.join(lines)
+            self.original_content = file_content
 
-            # Insert into editor
-            for i, line in enumerate(lines, 1):
-                self.editor.insert("end", line)
-                self.update_line_numbers()
+            # Load the editor content FIRST
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", file_content)
+            self.update_line_numbers()
 
-            # Highlight the error line
-            if self.error_line_num and 1 <= self.error_line_num <= len(lines):
-                error_start = f"{self.error_line_num}.0"
-                error_end = f"{self.error_line_num}.end"
-                self.editor.tag_add("error_line", error_start, error_end)
-                self.editor.see(error_start)
+            print(f"Total lines loaded in editor: {len(all_lines)}")
 
-                # Show context in status
-                self.status_label.configure(
-                    text=f"Error at line {self.error_line_num}. Edit the code, then click 'Apply Fix & Recompile'",
-                    text_color="#FFB86C"
-                )
+            # Find the target line - COUNT EVERY LINE, NO SKIPPING
+            target_line = None
+            if tex_title:
+                for i, line in enumerate(all_lines, 1):
+                    if line.startswith('\\title '):
+                        txt_title = line[7:].strip()
+                        # Clean the title for comparison (remove [DELETED] if present)
+                        txt_title_clean = txt_title.replace('[DELETED]', '').strip()
+                        print(f"Checking line {i}: '{txt_title_clean}'")
+                        if tex_title == txt_title_clean or tex_title in txt_title_clean:
+                            target_line = i
+                            print(f"Found matching slide at line {target_line}: '{txt_title}'")
+                            break
+
+            print(f"Target line to scroll to: {target_line}")
+
+            # Now scroll to the target line
+            if target_line and 1 <= target_line <= len(all_lines):
+                # Use after to ensure editor is ready
+                self.after(100, lambda: self.scroll_to_line(target_line, all_lines))
             else:
-                # If line number is out of range, scroll to end and show warning
-                self.editor.see("end")
+                self.editor.see("1.0")
                 self.status_label.configure(
-                    text=f"Warning: Line {self.error_line_num} not found (file has {len(lines)} lines). Check the error context.",
+                    text=f"Could not locate slide. TeX line {self.error_line_num}: {self.error_message[:100]}",
                     text_color="#dc3545"
                 )
 
@@ -3708,643 +3721,380 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             traceback.print_exc()
             self.status_label.configure(text=f"Error loading file: {str(e)}", text_color="#dc3545")
 
+    def scroll_to_line(self, line_num, lines):
+        """Scroll to the specified line in the editor."""
+        try:
+            print(f"Scrolling to line {line_num}")
+
+            # Clear existing highlights
+            self.editor.tag_remove("error_line", "1.0", "end")
+            self.editor.tag_remove("error_highlight", "1.0", "end")
+
+            # Highlight the title line
+            start_index = f"{line_num}.0"
+            end_index = f"{line_num}.end"
+            self.editor.tag_add("error_line", start_index, end_index)
+
+            # Scroll to make the line visible
+            self.editor.see(start_index)
+            self.editor.mark_set("insert", start_index)
+
+            # Force update
+            self.editor.update_idletasks()
+
+            title_line = lines[line_num - 1].strip() if line_num <= len(lines) else "Unknown"
+            self.status_label.configure(
+                text=f"✓ Scrolled to slide at line {line_num}: {title_line}",
+                text_color="#FFB86C"
+            )
+
+            # Now find and highlight the problematic line within this slide
+            self.find_and_highlight_problematic_line(lines, line_num)
+
+        except Exception as e:
+            print(f"Error scrolling to line: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def find_and_highlight_problematic_line(self, lines, title_line_num):
+        """Find and highlight the specific problematic line within the slide."""
+        # Find the slide end (next \title or end of file)
+        end_line = len(lines)
+        for i in range(title_line_num + 1, len(lines)):
+            if lines[i].startswith('\\title '):
+                end_line = i
+                break
+
+        print(f"Searching for problematic pattern in slide lines {title_line_num} to {end_line}")
+
+        # Look for problematic patterns within this slide
+        for i in range(title_line_num, end_line):
+            line = lines[i].strip()
+
+            # LR mode: look for \centering followed by \file
+            if 'LR mode' in self.error_message:
+                if '\\centering' in line:
+                    # Check next line for \file
+                    if i + 1 < end_line and '\\file' in lines[i + 1]:
+                        self.highlight_problematic_line(i + 1)
+                        print(f"Highlighted line {i+1} (\\centering followed by \\file)")
+                        return
+                if '\\file' in line and i > title_line_num:
+                    # Check previous line for \centering
+                    if '\\centering' in lines[i - 1]:
+                        self.highlight_problematic_line(i)
+                        print(f"Highlighted line {i} (\\file after \\centering)")
+                        return
+
+    def highlight_problematic_line(self, line_num):
+        """Highlight a specific problematic line."""
+        if line_num:
+            start = f"{line_num}.0"
+            end = f"{line_num}.end"
+            self.editor.tag_add("error_highlight", start, end)
+            self.editor.see(start)
+            self.status_label.configure(
+                text=f"Problematic line highlighted at line {line_num}",
+                text_color="#dc3545"
+            )
+
+    def extract_tex_slide_title_at_error_line(self):
+        """Extract the slide title from the TeX file at the error line."""
+        import re
+
+        try:
+            if not os.path.exists(self.tex_file_path):
+                print(f"TeX file not found: {self.tex_file_path}")
+                return None
+
+            with open(self.tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                tex_lines = f.readlines()
+
+            print(f"TeX file has {len(tex_lines)} lines, looking around line {self.error_line_num}")
+
+            error_line = self.error_line_num - 1  # Convert to 0-index
+
+            # Find the containing frame
+            frame_start = -1
+            for i in range(error_line, -1, -1):
+                if '\\begin{frame}' in tex_lines[i] and not tex_lines[i].strip().startswith('%'):
+                    frame_start = i
+                    break
+
+            if frame_start != -1:
+                # Look for frametitle within the frame
+                for i in range(frame_start, min(frame_start + 100, len(tex_lines))):
+                    line = tex_lines[i]
+                    title_match = re.search(r'\\frametitle\{([^}]+)\}', line)
+                    if title_match:
+                        found_title = title_match.group(1).strip()
+                        print(f"Found frametitle at TeX line {i+1}: '{found_title}'")
+                        return found_title
+                    title_match = re.search(r'\\begin{frame}\{([^}]+)\}', line)
+                    if title_match:
+                        found_title = title_match.group(1).strip()
+                        print(f"Found frame title at TeX line {i+1}: '{found_title}'")
+                        return found_title
+
+            print("Could not find slide title near error line")
+            return None
+
+        except Exception as e:
+            print(f"Error extracting TeX title: {e}")
+            return None
+
+    def load_file_at_error_line(self):
+        """Load the file and scroll to the target line."""
+        try:
+            if not os.path.exists(self.file_path):
+                self.editor.insert("1.0", f"% ERROR: File not found: {self.file_path}\n")
+                self.status_label.configure(text=f"File not found: {self.file_path}", text_color="#dc3545")
+                return
+
+            # Find target line FIRST (before loading editor)
+            tex_title = self.extract_tex_slide_title_at_error_line()
+            print(f"Looking for TXT slide with title: '{tex_title}'")
+
+            # Read the file to find target line - COUNT ALL LINES
+            with open(self.file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                all_lines = f.readlines()
+                file_content = ''.join(all_lines)
+
+            if not all_lines:
+                self.editor.insert("1.0", "% File is empty\n")
+                return
+
+            self.original_content = file_content
+
+            # Find the slide by title - DO NOT SKIP ANY LINES
+            # We need the actual line number in the file, including masked lines
+            target_line = None
+            if tex_title:
+                for i, line in enumerate(all_lines, 1):
+                    if line.startswith('\\title '):
+                        txt_title = line[7:].strip()
+                        # Clean the title for comparison (remove [DELETED] if present)
+                        txt_title_clean = txt_title.replace('[DELETED]', '').strip()
+                        print(f"Checking line {i}: '{txt_title_clean}'")
+                        if tex_title == txt_title_clean or tex_title in txt_title_clean:
+                            target_line = i
+                            print(f"Found matching slide at line {target_line}: '{txt_title}'")
+                            break
+
+            # Clear and load the editor content
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", file_content)
+            self.update_line_numbers()
+
+            print(f"Total lines loaded in editor: {len(all_lines)}")
+            print(f"Target line to scroll to: {target_line}")
+
+            # Scroll to target line AFTER the editor has processed the insertion
+            if target_line and 1 <= target_line <= len(all_lines):
+                # Use multiple after calls to ensure editor is ready
+                self.after(50, lambda: self.scroll_to_line_after_load(target_line, all_lines))
+            else:
+                self.editor.see("1.0")
+                self.status_label.configure(
+                    text=f"Could not locate slide. TeX line {self.error_line_num}: {self.error_message[:100]}",
+                    text_color="#dc3545"
+                )
+
+        except Exception as e:
+            self.editor.insert("1.0", f"% Error loading file: {e}\n")
+            import traceback
+            traceback.print_exc()
+            self.status_label.configure(text=f"Error loading file: {str(e)}", text_color="#dc3545")
+
+    def scroll_to_line_after_load(self, line_num, lines):
+        """Scroll to the specified line after the editor is fully loaded."""
+        try:
+            print(f"Scrolling to line {line_num}")
+
+            # Clear existing highlights
+            self.editor.tag_remove("error_line", "1.0", "end")
+            self.editor.tag_remove("error_highlight", "1.0", "end")
+
+            # Highlight the title line
+            start_index = f"{line_num}.0"
+            end_index = f"{line_num}.end"
+            self.editor.tag_add("error_line", start_index, end_index)
+
+            # Force the editor to update its display
+            self.editor.update_idletasks()
+
+            # Method 1: Use see() to make the line visible
+            self.editor.see(start_index)
+
+            # Method 2: Set the insert cursor to the line
+            self.editor.mark_set("insert", start_index)
+
+            # Method 3: Use yview to ensure the line is at the top of the view
+            # Get the line's position
+            line_position = self.editor.index(start_index)
+            # Scroll so this line is at the top
+            self.editor.yview_moveto((line_num - 5) / len(lines) if len(lines) > 0 else 0)
+
+            # Update again
+            self.editor.update_idletasks()
+
+            # Final see() to ensure visibility
+            self.editor.see(start_index)
+
+            title_line = lines[line_num - 1].strip() if line_num <= len(lines) else "Unknown"
+            self.status_label.configure(
+                text=f"✓ Scrolled to slide at line {line_num}: {title_line}",
+                text_color="#FFB86C"
+            )
+
+            # Highlight problematic line within the slide
+            self.highlight_problematic_line_in_slide(lines, line_num)
+
+            print(f"Successfully scrolled to line {line_num}")
+
+        except Exception as e:
+            print(f"Error scrolling to line: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def highlight_line_after_scroll(self, line_num):
+        """Highlight a specific line after scrolling is done."""
+        if line_num:
+            # Use after to ensure scrolling is complete
+            self.after(100, lambda: self._do_highlight_line(line_num))
+
+    def _do_highlight_line(self, line_num):
+        """Actually perform the line highlighting."""
+        try:
+            start = f"{line_num}.0"
+            end = f"{line_num}.end"
+            self.editor.tag_add("error_highlight", start, end)
+            self.editor.see(start)
+            self.status_label.configure(
+                text=f"Problematic line highlighted at line {line_num}",
+                text_color="#dc3545"
+            )
+            print(f"Highlighted problematic line {line_num}")
+        except Exception as e:
+            print(f"Error highlighting line: {e}")
+
+
+    def highlight_line(self, line_num):
+        """Highlight a specific line in the editor."""
+        if line_num:
+            start = f"{line_num}.0"
+            end = f"{line_num}.end"
+            self.editor.tag_add("error_highlight", start, end)
+            self.editor.see(start)
+            self.status_label.configure(
+                text=f"Problematic line highlighted at line {line_num}",
+                text_color="#dc3545"
+            )
+
     def save_changes(self):
-        """Save changes to file and update main IDE if needed"""
+        """Save changes to file and regenerate TeX if needed."""
         try:
             content = self.editor.get("1.0", "end-1c")
 
-            # Debug: Print the file path being saved
-            print(f"Saving to: {self.tex_file_path}")
-
-            # Write to the tex file
-            with open(self.tex_file_path, 'w', encoding='utf-8') as f:
+            print(f"Saving to file: {self.file_path}")
+            with open(self.file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-            # Verify the save was successful
-            if os.path.exists(self.tex_file_path) and os.path.getsize(self.tex_file_path) > 0:
-                self.status_label.configure(text="✓ Changes saved successfully!", text_color="#28a745")
-                self.modified = False
-                return True
-            else:
-                raise Exception("File was not saved properly (empty or missing)")
+            # ALWAYS regenerate TeX file immediately after saving TXT
+            if self.is_txt_file:
+                try:
+                    from BeamerSlideGenerator import process_input_file
+                    print(f"Regenerating TeX file: {self.tex_file_path}")
+                    process_input_file(self.file_path, self.tex_file_path)
 
-        except PermissionError as e:
-            error_msg = f"Permission denied: {str(e)}\nYou may not have write access to this file."
-            self.status_label.configure(text=error_msg, text_color="#dc3545")
-            messagebox.showerror("Permission Error", error_msg)
-            return False
+                    # Verify TeX file was created
+                    if os.path.exists(self.tex_file_path):
+                        print(f"✓ TeX file regenerated successfully: {self.tex_file_path}")
+                    else:
+                        print(f"⚠ Warning: TeX file was not created: {self.tex_file_path}")
+
+                except Exception as e:
+                    print(f"Error regenerating TeX: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Don't return False - still saved TXT file
+
+            self.status_label.configure(text="✓ File saved successfully! TeX regenerated.", text_color="#28a745")
+            self.modified = False
+
+            return True
+
         except Exception as e:
-            error_msg = f"Error saving: {str(e)}"
-            self.status_label.configure(text=error_msg, text_color="#dc3545")
-            messagebox.showerror("Save Error", f"Failed to save changes to file.\n\nError: {str(e)}\n\nFile: {self.tex_file_path}")
+            self.status_label.configure(text=f"✗ Error saving: {str(e)}", text_color="#dc3545")
             import traceback
             traceback.print_exc()
             return False
 
     def apply_and_recompile(self):
-        """Apply changes and signal recompile"""
+        """Apply changes, regenerate TeX, and signal recompile."""
         if self.save_changes():
+            # Force regenerate TeX file to ensure it's up to date
+            if self.is_txt_file:
+                try:
+                    from BeamerSlideGenerator import process_input_file
+                    print(f"Regenerating TeX file: {self.tex_file_path}")
+                    process_input_file(self.file_path, self.tex_file_path)
+                    print(f"✓ TeX file regenerated successfully")
+                except Exception as e:
+                    print(f"Warning: Could not regenerate TeX: {e}")
+                    import traceback
+                    traceback.print_exc()
+
             self.result = 'fixed'
             self.destroy()
 
     def abort_compilation(self):
-        """Abort compilation - signal to stop and return to IDE"""
+        """Abort compilation - return to IDE without recompile."""
         self.result = 'abort'
         self.destroy()
 
     def skip_error(self):
-        """Skip this error by commenting out the line"""
-        if self.error_line_num:
-            if self.comment_out_line_in_file(self.tex_file_path, self.error_line_num):
-                self.result = 'skip'
-                self.destroy()
-            else:
-                messagebox.showerror("Skip Failed",
-                                    f"Could not automatically skip the error at line {self.error_line_num}.\n"
-                                    "Please fix it manually.")
-        else:
-            self.result = 'skip'
-            self.destroy()
-
-    def comment_out_line_in_file(self, file_path, line_num):
-        """Comment out a specific line in the file"""
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-
-            if 1 <= line_num <= len(lines):
-                original_line = lines[line_num - 1]
-                if not original_line.strip().startswith('%'):
-                    lines[line_num - 1] = f'% {original_line.rstrip()}\n'
-
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.writelines(lines)
-                    return True
-            return False
-        except Exception as e:
-            print(f"Error commenting line: {e}")
-            return False
+        """Skip this error."""
+        self.result = 'skip'
+        self.destroy()
 
     def restore_original(self):
-        """Restore original content"""
+        """Restore original content."""
         if self.original_content:
             self.editor.delete("1.0", "end")
             self.editor.insert("1.0", self.original_content)
             self.modified = True
             self.status_label.configure(text="Restored original content", text_color="#ffc107")
             self.update_line_numbers()
-            if self.error_line_num:
-                self.editor.tag_add("error_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-
-    def highlight_exact_error(self):
-        """Highlight the exact problematic part of the error line"""
-        if not self.error_line_num or not self.exact_line_content:
-            return
-
-        # Highlight the entire line
-        self.editor.tag_add("error_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-
-        # Look for specific error patterns
-        error_patterns = [
-            (r'\\begin{itemize}[^\\]*$', 'Missing \\item after \\begin{itemize}'),
-            (r'\\begin{enumerate}[^\\]*$', 'Missing \\item after \\begin{enumerate}'),
-            (r'\\item\s*$', 'Empty \\item command'),
-            (r'\\end{itemize}[^\\]*$', 'Unmatched \\end{itemize}'),
-            (r'\\end{enumerate}[^\\]*$', 'Unmatched \\end{enumerate}'),
-            (r'[^\\]#', 'Unescaped # character'),
-            (r'[^\\]&', 'Unescaped & character (use \\& in text)'),
-        ]
-
-        for pattern, description in error_patterns:
-            match = re.search(pattern, self.exact_line_content)
-            if match:
-                start_col = match.start()
-                end_col = match.end()
-                error_start = f"{self.error_line_num}.{start_col}"
-                error_end = f"{self.error_line_num}.{end_col}"
-                self.editor.tag_add("error_highlight", error_start, error_end)
-                self.status_label.configure(text=f"Error: {description}")
-                break
-
-        # Scroll to the error line
-        self.editor.see(f"{self.error_line_num}.0")
-
-    def update_error_info_display(self):
-        """Update the error info display with exact error location"""
-        # Find and highlight the exact error line in the editor
-        if self.error_line_num and self.exact_line_content:
-            # Scroll to the error line
-            self.editor.see(f"{self.error_line_num}.0")
-
-            # Highlight the entire error line
-            self.editor.tag_add("error_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-
-            # Try to highlight the exact problematic part
-            if self.exact_line_content:
-                # Look for common error patterns in the line
-                error_patterns = [
-                    (r'\\begin\{[^}]+\}[^\\]*$', 'Missing \\end'),
-                    (r'[^\\]#', 'Unescaped #'),
-                    (r'[^\\]&', 'Unescaped &'),
-                    (r'\\item[^\\]*$', 'Item outside list'),
-                    (r'\{[^}]*$', 'Unclosed brace'),
-                    (r'\}[^{]*$', 'Unopened brace'),
-                ]
-
-                for pattern, desc in error_patterns:
-                    match = re.search(pattern, self.exact_line_content)
-                    if match:
-                        start_col = match.start()
-                        end_col = match.end()
-                        error_start = f"{self.error_line_num}.{start_col}"
-                        error_end = f"{self.error_line_num}.{end_col}"
-                        self.editor.tag_add("error_highlight", error_start, error_end)
-                        break
-
-            # Update the status to show exact error location
-            self.status_label.configure(
-                text=f"Error at line {self.error_line_num}: {self.error_message[:100]}"
-            )
-
-    def create_widgets(self):
-        """Create the editor UI"""
-        # Main container
-        main_frame = ctk.CTkFrame(self)
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Error info frame
-        error_frame = ctk.CTkFrame(main_frame, fg_color="#8B0000")
-        error_frame.pack(fill="x", padx=5, pady=5)
-
-        ctk.CTkLabel(
-            error_frame,
-            text="⚠ ERROR DETECTED",
-            font=("Arial", 14, "bold"),
-            text_color="white"
-        ).pack(anchor="w", padx=10, pady=5)
-
-        ctk.CTkLabel(
-            error_frame,
-            text=self.error_message[:200],
-            font=("Arial", 11),
-            text_color="#FFB6C1",
-            wraplength=950
-        ).pack(anchor="w", padx=10, pady=5)
-
-        ctk.CTkLabel(
-            error_frame,
-            text=f"Location: Line {self.error_line_num}",
-            font=("Arial", 10),
-            text_color="#FFD700"
-        ).pack(anchor="w", padx=10, pady=5)
-
-        # Editor frame with line numbers
-        editor_frame = ctk.CTkFrame(main_frame)
-        editor_frame.pack(fill="both", expand=True, padx=5, pady=5)
-
-        # Create a paned window for side-by-side view
-        paned = tk.PanedWindow(editor_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, sashwidth=5)
-        paned.pack(fill="both", expand=True)
-
-        # Left side - Code editor with line numbers
-        left_frame = tk.Frame(paned)
-        paned.add(left_frame, width=500)
-
-        # Line number area
-        line_number_frame = tk.Frame(left_frame, bg="#1e1e1e", width=50)
-        line_number_frame.pack(side="left", fill="y")
-        line_number_frame.pack_propagate(False)
-
-        self.line_numbers = tk.Text(
-            line_number_frame,
-            width=4,
-            padx=3,
-            takefocus=0,
-            border=0,
-            background="#1e1e1e",
-            foreground="#858585",
-            font=("Courier", 11),
-            wrap="none",
-            state="disabled"
-        )
-        self.line_numbers.pack(side="left", fill="y")
-
-        # Main text editor
-        editor_container = tk.Frame(left_frame)
-        editor_container.pack(side="left", fill="both", expand=True)
-
-        # Scrollbar
-        scrollbar = tk.Scrollbar(editor_container)
-        scrollbar.pack(side="right", fill="y")
-
-        self.editor = tk.Text(
-            editor_container,
-            font=("Courier", 11),
-            background="#1e1e1e",
-            foreground="#d4d4d4",
-            insertbackground="white",
-            wrap="none",
-            yscrollcommand=scrollbar.set,
-            tabs=("4c", "8c", "12c", "16c", "20c", "24c")
-        )
-        self.editor.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=self.on_scroll)
-
-        # Configure tags for syntax highlighting
-        self.editor.tag_config("error_line", background="#8B0000", foreground="white")
-        self.editor.tag_config("error_highlight", background="#FF4444", foreground="white")
-        self.editor.tag_config("line_number", foreground="#858585")
-        self.editor.tag_config("commented_line", background="#2d2d2d", foreground="#6a9955")
-
-        # Bind events
-        self.editor.bind("<KeyRelease>", self.on_text_change)
-        self.editor.bind("<MouseWheel>", self.on_mousewheel)
-        self.editor.bind("<Button-4>", self.on_mousewheel)
-        self.editor.bind("<Button-5>", self.on_mousewheel)
-        self.editor.bind("<Control-s>", lambda e: self.save_changes() or "break")  # Ctrl+S to save
-
-        # Right side - Error context and suggestions
-        right_frame = ctk.CTkFrame(paned)
-        paned.add(right_frame, width=400)
-
-        # Error details
-        ctk.CTkLabel(
-            right_frame,
-            text="Error Details",
-            font=("Arial", 12, "bold")
-        ).pack(anchor="w", padx=10, pady=5)
-
-        error_detail_text = ctk.CTkTextbox(right_frame, height=150, font=("Courier", 10))
-        error_detail_text.pack(fill="x", padx=10, pady=5)
-        error_detail_text.insert("1.0", self.error_context[:1000])
-        error_detail_text.configure(state="disabled")
-
-        # Common fixes suggestions
-        ctk.CTkLabel(
-            right_frame,
-            text="Suggested Fixes",
-            font=("Arial", 12, "bold")
-        ).pack(anchor="w", padx=10, pady=(10, 5))
-
-        self.suggestions = self.generate_suggestions()
-        suggestions_text = ctk.CTkTextbox(right_frame, height=150, font=("Courier", 10))
-        suggestions_text.pack(fill="both", expand=True, padx=10, pady=5)
-        suggestions_text.insert("1.0", self.suggestions)
-        suggestions_text.configure(state="disabled")
-
-        # Quick fix buttons - Two rows for better organization
-        quick_fix_frame = ctk.CTkFrame(right_frame)
-        quick_fix_frame.pack(fill="x", padx=10, pady=10)
-
-        # Row 1 buttons
-        row1_frame = ctk.CTkFrame(quick_fix_frame)
-        row1_frame.pack(fill="x", pady=2)
-
-        quick_fixes_row1 = [
-            ("Fix Missing \\item", self.fix_missing_item),
-            ("Mask/Unmask Line", self.toggle_mask_line),
-            ("Remove Empty []", self.remove_empty_brackets),
-        ]
-
-        for text, command in quick_fixes_row1:
-            btn = ctk.CTkButton(
-                row1_frame,
-                text=text,
-                command=command,
-                width=120,
-                height=30
-            )
-            btn.pack(side="left", padx=2, pady=2)
-
-        # Row 2 buttons
-        row2_frame = ctk.CTkFrame(quick_fix_frame)
-        row2_frame.pack(fill="x", pady=2)
-
-        quick_fixes_row2 = [
-            ("Escape # as \\#", self.escape_hash),
-            ("Fix Itemize", self.fix_itemize),
-            ("Comment Out Line", self.comment_out_line),
-        ]
-
-        for text, command in quick_fixes_row2:
-            btn = ctk.CTkButton(
-                row2_frame,
-                text=text,
-                command=command,
-                width=120,
-                height=30
-            )
-            btn.pack(side="left", padx=2, pady=2)
-
-        # Row 3 buttons
-        row3_frame = ctk.CTkFrame(quick_fix_frame)
-        row3_frame.pack(fill="x", pady=2)
-
-        quick_fixes_row3 = [
-            ("Restore Original", self.restore_original),
-            ("Save Only", self.save_changes),
-        ]
-
-        for text, command in quick_fixes_row3:
-            btn = ctk.CTkButton(
-                row3_frame,
-                text=text,
-                command=command,
-                width=120,
-                height=30
-            )
-            btn.pack(side="left", padx=2, pady=2)
-
-        # Bottom buttons
-        button_frame = ctk.CTkFrame(main_frame)
-        button_frame.pack(fill="x", padx=5, pady=10)
-
-        ctk.CTkButton(
-            button_frame,
-            text="✓ Apply Fix & Recompile",
-            command=self.apply_and_recompile,
-            width=150,
-            fg_color="#28a745",
-            hover_color="#218838"
-        ).pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            button_frame,
-            text="⏭ Skip This Error",
-            command=self.skip_error,
-            width=120,
-            fg_color="#ffc107",
-            hover_color="#e0a800",
-            text_color="black"
-        ).pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            button_frame,
-            text="⏹ Abort Compilation",
-            command=self.abort_compilation,
-            width=120,
-            fg_color="#dc3545",
-            hover_color="#c82333"
-        ).pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            button_frame,
-            text="📋 Copy Error",
-            command=self.copy_error,
-            width=100
-        ).pack(side="right", padx=5)
-
-        # Status bar
-        self.status_label = ctk.CTkLabel(
-            main_frame,
-            text="Edit the code on the left, then click 'Apply Fix & Recompile'",
-            font=("Arial", 10),
-            text_color="#888888"
-        )
-        self.status_label.pack(fill="x", padx=5, pady=5)
-
-    def update_line_numbers(self):
-        """Update line number display"""
-        lines = self.editor.get("1.0", "end-1c").split('\n')
-        line_numbers = '\n'.join(str(i) for i in range(1, len(lines) + 1))
-        self.line_numbers.configure(state="normal")
-        self.line_numbers.delete("1.0", "end")
-        self.line_numbers.insert("1.0", line_numbers)
-        self.line_numbers.configure(state="disabled")
-
-    def on_scroll(self, *args):
-        """Sync scrolling between editor and line numbers"""
-        self.editor.yview(*args)
-        self.line_numbers.yview(*args)
-
-    def on_mousewheel(self, event):
-        """Handle mousewheel scrolling"""
-        if event.num == 4:
-            delta = -1
-        elif event.num == 5:
-            delta = 1
-        else:
-            delta = -1 * (event.delta // 120)
-
-        self.editor.yview_scroll(delta, "units")
-        self.line_numbers.yview_scroll(delta, "units")
-        return "break"
-
-    def on_text_change(self, event=None):
-        """Update line numbers when text changes"""
-        self.update_line_numbers()
-        self.modified = True
-        self.editor.tag_remove("error_line", "1.0", "end")
-        self.editor.tag_remove("error_highlight", "1.0", "end")
-        self.status_label.configure(text="Changes made - Click 'Apply Fix & Recompile' to save", text_color="#FFB86C")
-
-    def generate_suggestions(self):
-        """Generate suggested fixes based on error message"""
-        suggestions = []
-
-        if 'Illegal parameter number' in self.error_message:
-            suggestions.append("• Use \\# instead of # in regular text")
-            suggestions.append("• In nested macros, use ## instead of #")
-        elif 'Missing number' in self.error_message:
-            suggestions.append("• Check for empty [] brackets and remove them")
-            suggestions.append("• Look for standalone numbers that should be part of commands")
-        elif 'Undefined control sequence' in self.error_message:
-            suggestions.append("• Check for misspelled LaTeX commands")
-            suggestions.append("• Make sure required packages are loaded")
-        elif 'Environment' in self.error_message and 'undefined' in self.error_message:
-            suggestions.append("• Check if the environment name is spelled correctly")
-            suggestions.append("• Make sure the required package is loaded")
-        else:
-            suggestions.append("• Check for unmatched braces {}")
-            suggestions.append("• Look for special characters that need escaping (# $ % & _ { } ~ ^)")
-            suggestions.append("• Check for missing \\item commands in itemize/enumerate")
-
-        suggestions.append("\nQuick fixes available in the buttons below:")
-        suggestions.append("  • 'Remove Empty []' - removes problematic empty brackets")
-        suggestions.append("  • 'Escape # as \\#' - escapes hash symbols")
-        suggestions.append("  • 'Fix Itemize' - fixes malformed itemize environments")
-        suggestions.append("  • 'Comment Out Line' - comments out the problematic line (preserves it)")
-        suggestions.append("  • 'Restore Original' - reverts all changes")
-
-        return '\n'.join(suggestions)
-
-    def remove_empty_brackets(self):
-        """Remove empty brackets from the error line"""
-        if not self.error_line_num:
-            return
-        line_content = self.editor.get(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-        fixed = line_content.replace('[]', '').replace('[,]', '')
-        self.editor.delete(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-        self.editor.insert(f"{self.error_line_num}.0", fixed)
-        self.modified = True
-        self.status_label.configure(text="Removed empty brackets")
-        self.update_line_numbers()
-
-    def escape_hash(self):
-        """Escape # characters in the error line"""
-        if not self.error_line_num:
-            return
-        line_content = self.editor.get(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-        fixed = line_content.replace('#', '\\#')
-        self.editor.delete(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-        self.editor.insert(f"{self.error_line_num}.0", fixed)
-        self.modified = True
-        self.status_label.configure(text="Escaped # characters")
-        self.update_line_numbers()
-
-    def fix_itemize(self):
-        """Fix malformed itemize environments"""
-        content = self.editor.get("1.0", "end-1c")
-        lines = content.split('\n')
-        fixed_lines = []
-        in_itemize = False
-
-        for line in lines:
-            if '\\begin{itemize}' in line:
-                in_itemize = True
-            elif '\\end{itemize}' in line:
-                in_itemize = False
-
-            if in_itemize and re.match(r'^\s*\d+\.?\d*\s*$', line):
-                fixed_lines.append(f'% {line}  % Commented out by fix_itemize')
-                continue
-
-            fixed_lines.append(line)
-
-        self.editor.delete("1.0", "end")
-        self.editor.insert("1.0", '\n'.join(fixed_lines))
-        self.modified = True
-        self.status_label.configure(text="Fixed itemize environment")
-        self.update_line_numbers()
-
-    def comment_out_line(self):
-        """Comment out the problematic line"""
-        if not self.error_line_num:
-            return
-        line_content = self.editor.get(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-
-        if not line_content.strip().startswith('%'):
-            fixed = f'% {line_content}  % Commented out by error editor'
-            self.editor.delete(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-            self.editor.insert(f"{self.error_line_num}.0", fixed)
-            self.modified = True
-            self.status_label.configure(text=f"Commented out line {self.error_line_num}")
-            self.editor.tag_add("commented_line", f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-        else:
-            self.status_label.configure(text="Line already commented out")
-        self.update_line_numbers()
-
-    def copy_error(self):
-        """Copy error to clipboard"""
-        self.clipboard_clear()
-        self.clipboard_append(self.error_message)
-        self.status_label.configure(text="Error copied to clipboard")
-
-    def convert_tex_to_txt(self, tex_content):
-        """Convert tex content back to txt format"""
-        import re
-        txt_lines = []
-
-        # Extract frames
-        frames = re.findall(r'\\begin{frame}(.*?)\\end{frame}', tex_content, re.DOTALL)
-
-        for i, frame in enumerate(frames):
-            # Extract title
-            title_match = re.search(r'\\frametitle{(.*?)}', frame)
-            title = title_match.group(1) if title_match else f"Slide {i+1}"
-
-            txt_lines.append(f"\\title {title}")
-            txt_lines.append("\\begin{Content}")
-
-            # Extract content (items, etc.)
-            items = re.findall(r'\\item\s*(.*?)(?=\\item|\\end|$)', frame, re.DOTALL)
-            for item in items:
-                txt_lines.append(f"- {item.strip()}")
-
-            txt_lines.append("\\end{Content}")
-            txt_lines.append("\\begin{Notes}")
-            txt_lines.append("\\end{Notes}")
-            txt_lines.append("")
-
-        return "\n".join(txt_lines)
 
     def fix_missing_item(self):
-        """Fix missing \item error by adding \item commands"""
-        if not self.error_line_num:
-            # Try to find the problematic frame
-            content = self.editor.get("1.0", "end-1c")
-            if '\\end{frame}' in content:
-                # Find the last \end{frame}
-                lines = content.split('\n')
-                for i in range(len(lines) - 1, -1, -1):
-                    if '\\end{frame}' in lines[i]:
-                        # Check the line before
-                        if i > 0 and lines[i-1].strip() and not lines[i-1].strip().startswith('\\item'):
-                            # Add \item before this line
-                            indent = re.match(r'^\s*', lines[i-1]).group(0)
-                            lines.insert(i, f"{indent}\\item ")
-                            self.editor.delete("1.0", "end")
-                            self.editor.insert("1.0", '\n'.join(lines))
-                            self.modified = True
-                            self.status_label.configure(text="Added missing \\item before \\end{frame}", text_color="#28a745")
-                            self.update_line_numbers()
-                            return
-            return
-
-        # Get the problematic environment
+        """Fix missing \item error by adding \item commands."""
         content = self.editor.get("1.0", "end-1c")
         lines = content.split('\n')
 
-        if self.error_line_num <= len(lines):
-            current_line = self.error_line_num - 1
-            found_begin = False
-            env_type = None
-            begin_line = -1
+        for i in range(len(lines) - 1, -1, -1):
+            if '\\end{frame}' in lines[i] and i > 0:
+                if lines[i-1].strip() and not lines[i-1].strip().startswith('\\item'):
+                    indent = re.match(r'^\s*', lines[i-1]).group(0)
+                    lines.insert(i, f"{indent}\\item ")
+                    self.editor.delete("1.0", "end")
+                    self.editor.insert("1.0", '\n'.join(lines))
+                    self.modified = True
+                    self.status_label.configure(text="Added missing \\item", text_color="#28a745")
+                    self.update_line_numbers()
+                    return
 
-            # Look for \begin{itemize} or \begin{enumerate}
-            for i in range(current_line, max(0, current_line - 30), -1):
-                if '\\begin{itemize}' in lines[i]:
-                    found_begin = True
-                    env_type = 'itemize'
-                    begin_line = i
-                    break
-                elif '\\begin{enumerate}' in lines[i]:
-                    found_begin = True
-                    env_type = 'enumerate'
-                    begin_line = i
-                    break
-
-            if found_begin:
-                # Insert \item right after begin
-                indent = "    "
-                if begin_line + 1 < len(lines):
-                    indent = re.match(r'^\s*', lines[begin_line + 1]).group(0) if lines[begin_line + 1].strip() else "    "
-
-                lines.insert(begin_line + 1, f"{indent}\\item ")
-
-                # Update the editor
-                self.editor.delete("1.0", "end")
-                self.editor.insert("1.0", '\n'.join(lines))
-                self.modified = True
-                self.status_label.configure(text=f"Added \\item to {env_type} environment", text_color="#28a745")
-                self.update_line_numbers()
-                return
-
-        # If no \begin found, add \item at the cursor position
         cursor_pos = self.editor.index("insert")
         self.editor.insert(cursor_pos, "\\item ")
         self.modified = True
-        self.status_label.configure(text="Added \\item at cursor position", text_color="#28a745")
+        self.status_label.configure(text="Added \\item at cursor", text_color="#28a745")
         self.update_line_numbers()
 
     def toggle_mask_line(self):
-        """Mask or unmask the current line where cursor is positioned"""
+        """Mask or unmask the current line."""
         try:
-            # Get current cursor position
             current_pos = self.editor.index("insert")
             line_num = int(current_pos.split('.')[0])
-
-            # Get the line content
             line_start = self.editor.index(f"{line_num}.0")
             line_end = self.editor.index(f"{line_num}.end")
             line_content = self.editor.get(line_start, line_end)
@@ -4353,17 +4103,14 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
                 self.status_label.configure(text="Cannot mask empty line", text_color="#dc3545")
                 return
 
-            # Check if line is already masked
             is_masked = line_content.lstrip().startswith('%')
 
             if is_masked:
-                # Unmask: remove the % prefix
                 clean_line = re.sub(r'^\s*%\s*', '', line_content)
                 self.editor.delete(line_start, line_end)
                 self.editor.insert(line_start, clean_line)
                 self.status_label.configure(text=f"✓ Unmasked line {line_num}", text_color="#28a745")
             else:
-                # Mask: add % at beginning
                 indent_match = re.match(r'^(\s*)', line_content)
                 indent = indent_match.group(1) if indent_match else ""
                 rest = line_content[len(indent):]
@@ -4375,14 +4122,148 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             self.modified = True
             self.update_line_numbers()
 
-            # Re-highlight error line if needed
-            if self.error_line_num and line_num == self.error_line_num:
-                self.editor.tag_add("error_line", line_start, line_end)
-
         except Exception as e:
-            self.status_label.configure(text=f"Error toggling mask: {str(e)}", text_color="#dc3545")
-            import traceback
-            traceback.print_exc()
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="#dc3545")
+
+    def comment_out_line(self):
+        """Comment out the current line."""
+        if not self.error_line_num:
+            return
+        line_content = self.editor.get(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
+        if not line_content.strip().startswith('%'):
+            fixed = f'% {line_content}'
+            self.editor.delete(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
+            self.editor.insert(f"{self.error_line_num}.0", fixed)
+            self.modified = True
+            self.status_label.configure(text=f"Commented out line {self.error_line_num}", text_color="#ffc107")
+            self.update_line_numbers()
+
+    def copy_error(self):
+        """Copy error to clipboard."""
+        self.clipboard_clear()
+        self.clipboard_append(self.error_message)
+        self.status_label.configure(text="Error copied to clipboard", text_color="#28a745")
+
+    def update_line_numbers(self):
+        """Update line number display."""
+        lines = self.editor.get("1.0", "end-1c").split('\n')
+        line_numbers = '\n'.join(str(i) for i in range(1, len(lines) + 1))
+        self.line_numbers.configure(state="normal")
+        self.line_numbers.delete("1.0", "end")
+        self.line_numbers.insert("1.0", line_numbers)
+        self.line_numbers.configure(state="disabled")
+
+    def on_scroll(self, *args):
+        """Sync scrolling between editor and line numbers."""
+        self.editor.yview(*args)
+        self.line_numbers.yview(*args)
+
+    def on_mousewheel(self, event):
+        """Handle mousewheel scrolling."""
+        if event.num == 4:
+            delta = -1
+        elif event.num == 5:
+            delta = 1
+        else:
+            delta = -1 * (event.delta // 120)
+        self.editor.yview_scroll(delta, "units")
+        self.line_numbers.yview_scroll(delta, "units")
+        return "break"
+
+    def on_text_change(self, event=None):
+        """Update line numbers when text changes."""
+        self.update_line_numbers()
+        self.modified = True
+        self.status_label.configure(text="Changes made - Click 'Apply Fix & Recompile' to save", text_color="#FFB86C")
+
+    def create_widgets(self):
+        """Create the editor UI."""
+        # Main container
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Error info frame
+        error_frame = ctk.CTkFrame(main_frame, fg_color="#8B0000")
+        error_frame.pack(fill="x", padx=5, pady=5)
+
+        ctk.CTkLabel(error_frame, text="⚠ ERROR DETECTED", font=("Arial", 14, "bold"), text_color="white").pack(anchor="w", padx=10, pady=5)
+        ctk.CTkLabel(error_frame, text=self.error_message[:200], font=("Arial", 11), text_color="#FFB6C1", wraplength=950).pack(anchor="w", padx=10, pady=5)
+        ctk.CTkLabel(error_frame, text=f"Location: TeX line {self.error_line_num}", font=("Arial", 10), text_color="#FFD700").pack(anchor="w", padx=10, pady=5)
+
+        # Editor frame
+        editor_frame = ctk.CTkFrame(main_frame)
+        editor_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        paned = tk.PanedWindow(editor_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, sashwidth=5)
+        paned.pack(fill="both", expand=True)
+
+        # Left side - Editor
+        left_frame = tk.Frame(paned)
+        paned.add(left_frame, width=500)
+
+        line_number_frame = tk.Frame(left_frame, bg="#1e1e1e", width=50)
+        line_number_frame.pack(side="left", fill="y")
+        line_number_frame.pack_propagate(False)
+
+        self.line_numbers = tk.Text(line_number_frame, width=4, padx=3, takefocus=0, border=0,
+                                    background="#1e1e1e", foreground="#858585", font=("Courier", 11),
+                                    wrap="none", state="disabled")
+        self.line_numbers.pack(side="left", fill="y")
+
+        editor_container = tk.Frame(left_frame)
+        editor_container.pack(side="left", fill="both", expand=True)
+
+        scrollbar = tk.Scrollbar(editor_container)
+        scrollbar.pack(side="right", fill="y")
+
+        self.editor = tk.Text(editor_container, font=("Courier", 11), background="#1e1e1e",
+                              foreground="#d4d4d4", insertbackground="white", wrap="none",
+                              yscrollcommand=scrollbar.set, tabs=("4c", "8c", "12c", "16c", "20c", "24c"))
+        self.editor.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.on_scroll)
+
+        self.editor.tag_config("error_line", background="#8B0000", foreground="white")
+        self.editor.tag_config("error_highlight", background="#FF4444", foreground="white")
+        self.editor.tag_config("commented_line", background="#2d2d2d", foreground="#6a9955")
+
+        self.editor.bind("<KeyRelease>", self.on_text_change)
+        self.editor.bind("<MouseWheel>", self.on_mousewheel)
+        self.editor.bind("<Button-4>", self.on_mousewheel)
+        self.editor.bind("<Button-5>", self.on_mousewheel)
+        self.editor.bind("<Control-s>", lambda e: self.save_changes() or "break")
+
+        # Right side - Suggestions
+        right_frame = ctk.CTkFrame(paned)
+        paned.add(right_frame, width=400)
+
+        ctk.CTkLabel(right_frame, text="Quick Fixes", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=5)
+
+        quick_frame = ctk.CTkFrame(right_frame)
+        quick_frame.pack(fill="x", padx=10, pady=5)
+
+        fixes = [
+            ("Fix Missing \\item", self.fix_missing_item),
+            ("Mask/Unmask Line", self.toggle_mask_line),
+            ("Comment Out Line", self.comment_out_line),
+            ("Restore Original", self.restore_original),
+            ("Save Only", self.save_changes),
+        ]
+
+        for text, cmd in fixes:
+            ctk.CTkButton(quick_frame, text=text, command=cmd, width=120, height=30).pack(side="left", padx=2, pady=2)
+
+        # Bottom buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkButton(button_frame, text="✓ Apply Fix & Recompile", command=self.apply_and_recompile, width=150, fg_color="#28a745").pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="⏭ Skip Error", command=self.skip_error, width=120, fg_color="#ffc107", text_color="black").pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="⏹ Abort", command=self.abort_compilation, width=120, fg_color="#dc3545").pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="📋 Copy Error", command=self.copy_error, width=100).pack(side="right", padx=5)
+
+        self.status_label = ctk.CTkLabel(main_frame, text="Edit the code, then click 'Apply Fix & Recompile'", font=("Arial", 10), text_color="#888888")
+        self.status_label.pack(fill="x", padx=5, pady=5)
+
 
 
 class BeamerSlideEditor(ctk.CTk):
@@ -12255,6 +12136,7 @@ Created by {self.__author__}
     def run_pdflatex(self, tex_file: str, timeout: int = 60) -> dict:
         """
         Run pdflatex with interactive error editor that pinpoints exact errors.
+        The error editor loads and edits the TXT file directly, then regenerates TeX.
         """
         result = {
             'success': False,
@@ -12276,16 +12158,28 @@ Created by {self.__author__}
 
             # Make sure tex_file is absolute path
             tex_file_abs = os.path.abspath(tex_file)
+            txt_file_abs = tex_file_abs.replace('.tex', '.txt')
 
             while attempt < max_attempts and not result['aborted']:
                 attempt += 1
 
                 self.write("\n" + "="*60 + "\n", "cyan")
                 self.write(f"RUNNING PDFLATEX (Attempt {attempt})\n", "cyan")
-                self.write(f"File: {tex_file_abs}\n", "cyan")
+                self.write(f"TeX File: {tex_file_abs}\n", "cyan")
+                self.write(f"TXT File: {txt_file_abs}\n", "cyan")
                 self.write("="*60 + "\n\n", "cyan")
 
-                # Use -file-line-error to get precise line numbers
+                # First, ensure the tex file exists (generate from txt if needed)
+                if not os.path.exists(tex_file_abs) and os.path.exists(txt_file_abs):
+                    self.write("Regenerating TeX file from TXT...\n", "yellow")
+                    try:
+                        from BeamerSlideGenerator import process_input_file
+                        process_input_file(txt_file_abs, tex_file_abs)
+                        self.write("✓ TeX file regenerated\n", "green")
+                    except Exception as e:
+                        self.write(f"✗ Error regenerating TeX: {e}\n", "red")
+
+                # Run pdflatex
                 cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
                        '-file-line-error', tex_file_abs]
 
@@ -12385,26 +12279,32 @@ Created by {self.__author__}
 
                 last_error_key = error_key
 
-                # Get the exact line content for context
+                # Get the exact line content for context from the TXT file
                 line_content = ""
                 if error_line_num:
                     try:
-                        with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
-                            lines = f.readlines()
-                            if 1 <= error_line_num <= len(lines):
-                                line_content = lines[error_line_num - 1].strip()
-                                self.write(f"Error line content: {line_content}\n", "yellow")
-                            else:
-                                self.write(f"Warning: Line {error_line_num} not in file (file has {len(lines)} lines)\n", "yellow")
+                        # Try to get the corresponding line from TXT file
+                        if os.path.exists(txt_file_abs):
+                            with open(txt_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
+                                txt_lines = f.readlines()
+                                # Map TeX line number to approximate TXT line number
+                                # Since structures are different, we'll show context from both
+                                if 1 <= error_line_num <= len(txt_lines):
+                                    line_content = txt_lines[error_line_num - 1].strip()
+                                    self.write(f"Error line content (TXT): {line_content}\n", "yellow")
+                                else:
+                                    self.write(f"Note: Line {error_line_num} may correspond to different location in TXT\n", "yellow")
+                        else:
+                            self.write(f"Warning: TXT file not found: {txt_file_abs}\n", "yellow")
                     except Exception as e:
                         self.write(f"Could not read line {error_line_num}: {e}\n", "yellow")
 
-                # Launch error editor
+                # Launch error editor - EDIT THE TXT FILE DIRECTLY
                 self.write("\n" + "="*60 + "\n", "yellow")
                 self.write("LAUNCHING ERROR EDITOR\n", "yellow")
                 self.write("="*60 + "\n", "yellow")
-                self.write(f"Error at line {error_line_num if error_line_num else 'unknown'}\n", "white")
-                self.write("The error editor will open. Fix the issue, save, and close.\n", "white")
+                self.write(f"Error at line {error_line_num if error_line_num else 'unknown'} (in TeX)\n", "white")
+                self.write("The error editor will open the TXT file. Fix the issue, save, and close.\n", "white")
                 self.write("Options: Fix & Recompile | Skip Error | Abort\n\n", "white")
 
                 # Get the parent window safely
@@ -12419,17 +12319,17 @@ Created by {self.__author__}
                     parent_window = tk.Tk()
                     parent_window.withdraw()
 
-                # Create and show editor dialog with exact error location
+                # Create editor with TXT file (NOT the TeX file)
                 editor = LaTeXErrorEditor(
                     parent_window,
-                    tex_file_abs,
+                    txt_file_abs,  # Pass the TXT file path
                     error_line_num or 1,
                     error_message,
                     '\n'.join(error_context),
                     '\n'.join(output_lines[-100:]),
-                    exact_line_content=line_content
+                    exact_line_content=line_content,
+                    is_txt_file=True  # This is the key parameter
                 )
-
                 # Wait for editor to close
                 try:
                     if hasattr(parent_window, 'wait_window'):
@@ -12441,11 +12341,27 @@ Created by {self.__author__}
 
                 # Handle editor result
                 if editor.result == 'fixed':
-                    self.write("\n✓ User fixed the file. Recompiling...\n", "green")
+                    self.write("\n✓ User fixed the TXT file. Regenerating TeX and recompiling...\n", "green")
+                    # Regenerate TeX from the updated TXT file
+                    try:
+                        from BeamerSlideGenerator import process_input_file
+                        process_input_file(txt_file_abs, tex_file_abs)
+                        self.write("✓ TeX file regenerated from updated TXT\n", "green")
+                    except Exception as e:
+                        self.write(f"✗ Error regenerating TeX: {e}\n", "red")
+                        result['fatal_error'] = True
+                        return result
                     continue
 
                 elif editor.result == 'skip':
-                    self.write("\n⚠ Skipping error by commenting out line...\n", "yellow")
+                    self.write("\n⚠ Skipping error. TeX will be regenerated...\n", "yellow")
+                    # Regenerate TeX from the (possibly modified) TXT file
+                    try:
+                        from BeamerSlideGenerator import process_input_file
+                        process_input_file(txt_file_abs, tex_file_abs)
+                        self.write("✓ TeX file regenerated\n", "green")
+                    except Exception as e:
+                        self.write(f"✗ Error regenerating TeX: {e}\n", "red")
                     continue
 
                 elif editor.result == 'abort':
@@ -14960,6 +14876,17 @@ Created by {self.__author__}
             return []
         except Exception:
             return []
+
+    def reload_txt_from_tex(self, tex_file_path):
+        """Reload the corresponding txt file from the updated tex file"""
+        try:
+            txt_file = tex_file_path.replace('.tex', '.txt')
+            if os.path.exists(txt_file):
+                # Reload the txt file to update the IDE
+                self.load_file(txt_file)
+                self.write(f"✓ Reloaded {os.path.basename(txt_file)} from updated TeX file\n", "green")
+        except Exception as e:
+            self.write(f"✗ Error reloading txt file: {str(e)}\n", "red")
 
 
 #-----------------------------------------------Help Functions --------------------------------------------
