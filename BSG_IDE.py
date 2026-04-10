@@ -3610,7 +3610,7 @@ class BeamerSyntaxHighlighter:
             self.ctk_text.master.check_spelling()
 
 class LaTeXErrorEditor(ctk.CTkToplevel):
-    """Interactive editor for fixing LaTeX compilation errors"""
+    """Interactive editor for fixing LaTeX compilation errors - works with TXT files directly"""
 
     def __init__(self, parent, file_path, error_line_num, error_message, error_context,
                  log_content=None, exact_line_content=None, is_txt_file=False):
@@ -3637,9 +3637,8 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.modified = False
         self.original_content = None
         self.parent_editor = parent
-        self.target_line_num = None
 
-        self.title(f"LaTeX Error Editor - {'TXT' if is_txt_file else 'TeX'} File")
+        self.title(f"LaTeX Error Editor - Editing {os.path.basename(file_path)}")
         self.geometry("1000x700")
 
         # Make dialog modal
@@ -3656,64 +3655,37 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.geometry(f"+{x}+{y}")
 
         self.create_widgets()
-        self.load_file_and_scroll()
+        self.load_file()
 
-    def load_file_and_scroll(self):
-        """Load the file and scroll to the target line - ONE PASS, NO SKIPPING."""
+    def load_file(self):
+        """Load the file content into the editor."""
         try:
             if not os.path.exists(self.file_path):
                 self.editor.insert("1.0", f"% ERROR: File not found: {self.file_path}\n")
                 self.status_label.configure(text=f"File not found: {self.file_path}", text_color="#dc3545")
                 return
 
-            # Extract the slide title from TeX
-            tex_title = self.extract_tex_slide_title_at_error_line()
-            print(f"Looking for TXT slide with title: '{tex_title}'")
-
             # Read the entire file
             with open(self.file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                all_lines = f.readlines()
-                file_content = ''.join(all_lines)
+                file_content = f.read()
+                lines = file_content.splitlines(keepends=True)
 
-            if not all_lines:
+            if not lines:
                 self.editor.insert("1.0", "% File is empty\n")
                 return
 
             self.original_content = file_content
 
-            # Load the editor content FIRST
+            # Load the editor content
             self.editor.delete("1.0", "end")
             self.editor.insert("1.0", file_content)
             self.update_line_numbers()
 
-            print(f"Total lines loaded in editor: {len(all_lines)}")
+            print(f"Total lines loaded in editor: {len(lines)}")
+            print(f"File loaded: {self.file_path}")
 
-            # Find the target line - COUNT EVERY LINE, NO SKIPPING
-            target_line = None
-            if tex_title:
-                for i, line in enumerate(all_lines, 1):
-                    if line.startswith('\\title '):
-                        txt_title = line[7:].strip()
-                        # Clean the title for comparison (remove [DELETED] if present)
-                        txt_title_clean = txt_title.replace('[DELETED]', '').strip()
-                        print(f"Checking line {i}: '{txt_title_clean}'")
-                        if tex_title == txt_title_clean or tex_title in txt_title_clean:
-                            target_line = i
-                            print(f"Found matching slide at line {target_line}: '{txt_title}'")
-                            break
-
-            print(f"Target line to scroll to: {target_line}")
-
-            # Now scroll to the target line
-            if target_line and 1 <= target_line <= len(all_lines):
-                # Use after to ensure editor is ready
-                self.after(100, lambda: self.scroll_to_line(target_line, all_lines))
-            else:
-                self.editor.see("1.0")
-                self.status_label.configure(
-                    text=f"Could not locate slide. TeX line {self.error_line_num}: {self.error_message[:100]}",
-                    text_color="#dc3545"
-                )
+            # Try to find and scroll to the relevant slide if possible
+            self.find_and_scroll_to_relevant_slide(lines)
 
         except Exception as e:
             self.editor.insert("1.0", f"% Error loading file: {e}\n")
@@ -3721,275 +3693,85 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             traceback.print_exc()
             self.status_label.configure(text=f"Error loading file: {str(e)}", text_color="#dc3545")
 
-    def scroll_to_line(self, line_num, lines):
-        """Scroll to the specified line in the editor."""
-        try:
-            print(f"Scrolling to line {line_num}")
+    def find_and_scroll_to_relevant_slide(self, lines):
+        """Try to find the slide that might contain the error and scroll to it."""
+        # For TXT files, we can look for the slide title from the TeX error context
+        if not self.is_txt_file:
+            return
 
-            # Clear existing highlights
-            self.editor.tag_remove("error_line", "1.0", "end")
-            self.editor.tag_remove("error_highlight", "1.0", "end")
+        # Extract the slide title from the TeX error (if available)
+        tex_title = self.extract_tex_slide_title()
+        if not tex_title:
+            return
 
-            # Highlight the title line
-            start_index = f"{line_num}.0"
-            end_index = f"{line_num}.end"
-            self.editor.tag_add("error_line", start_index, end_index)
+        print(f"Looking for slide with title: '{tex_title}'")
 
-            # Scroll to make the line visible
-            self.editor.see(start_index)
-            self.editor.mark_set("insert", start_index)
+        # Find the slide in the TXT file
+        for i, line in enumerate(lines, 1):
+            if line.startswith('\\title '):
+                txt_title = line[7:].strip()
+                txt_title_clean = txt_title.replace('[DELETED]', '').strip()
+                if tex_title == txt_title_clean or tex_title in txt_title_clean:
+                    print(f"Found matching slide at line {i}")
+                    self.scroll_to_line(i, lines)
+                    return
 
-            # Force update
-            self.editor.update_idletasks()
-
-            title_line = lines[line_num - 1].strip() if line_num <= len(lines) else "Unknown"
-            self.status_label.configure(
-                text=f"✓ Scrolled to slide at line {line_num}: {title_line}",
-                text_color="#FFB86C"
-            )
-
-            # Now find and highlight the problematic line within this slide
-            self.find_and_highlight_problematic_line(lines, line_num)
-
-        except Exception as e:
-            print(f"Error scrolling to line: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def find_and_highlight_problematic_line(self, lines, title_line_num):
-        """Find and highlight the specific problematic line within the slide."""
-        # Find the slide end (next \title or end of file)
-        end_line = len(lines)
-        for i in range(title_line_num + 1, len(lines)):
-            if lines[i].startswith('\\title '):
-                end_line = i
-                break
-
-        print(f"Searching for problematic pattern in slide lines {title_line_num} to {end_line}")
-
-        # Look for problematic patterns within this slide
-        for i in range(title_line_num, end_line):
-            line = lines[i].strip()
-
-            # LR mode: look for \centering followed by \file
-            if 'LR mode' in self.error_message:
-                if '\\centering' in line:
-                    # Check next line for \file
-                    if i + 1 < end_line and '\\file' in lines[i + 1]:
-                        self.highlight_problematic_line(i + 1)
-                        print(f"Highlighted line {i+1} (\\centering followed by \\file)")
-                        return
-                if '\\file' in line and i > title_line_num:
-                    # Check previous line for \centering
-                    if '\\centering' in lines[i - 1]:
-                        self.highlight_problematic_line(i)
-                        print(f"Highlighted line {i} (\\file after \\centering)")
-                        return
-
-    def highlight_problematic_line(self, line_num):
-        """Highlight a specific problematic line."""
-        if line_num:
-            start = f"{line_num}.0"
-            end = f"{line_num}.end"
-            self.editor.tag_add("error_highlight", start, end)
-            self.editor.see(start)
-            self.status_label.configure(
-                text=f"Problematic line highlighted at line {line_num}",
-                text_color="#dc3545"
-            )
-
-    def extract_tex_slide_title_at_error_line(self):
-        """Extract the slide title from the TeX file at the error line."""
+    def extract_tex_slide_title(self):
+        """Extract the slide title from the TeX error context."""
         import re
 
         try:
             if not os.path.exists(self.tex_file_path):
-                print(f"TeX file not found: {self.tex_file_path}")
                 return None
 
             with open(self.tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 tex_lines = f.readlines()
 
-            print(f"TeX file has {len(tex_lines)} lines, looking around line {self.error_line_num}")
+            # Find the error line in the TeX file
+            error_line_idx = self.error_line_num - 1 if self.error_line_num else 0
+            if error_line_idx >= len(tex_lines):
+                error_line_idx = len(tex_lines) - 1
 
-            error_line = self.error_line_num - 1  # Convert to 0-index
+            # Look backwards for a frametitle
+            for i in range(error_line_idx, max(0, error_line_idx - 100), -1):
+                line = tex_lines[i]
+                title_match = re.search(r'\\frametitle\{([^}]+)\}', line)
+                if title_match:
+                    return title_match.group(1).strip()
+                title_match = re.search(r'\\begin{frame}\{([^}]+)\}', line)
+                if title_match:
+                    return title_match.group(1).strip()
 
-            # Find the containing frame
-            frame_start = -1
-            for i in range(error_line, -1, -1):
-                if '\\begin{frame}' in tex_lines[i] and not tex_lines[i].strip().startswith('%'):
-                    frame_start = i
-                    break
-
-            if frame_start != -1:
-                # Look for frametitle within the frame
-                for i in range(frame_start, min(frame_start + 100, len(tex_lines))):
-                    line = tex_lines[i]
-                    title_match = re.search(r'\\frametitle\{([^}]+)\}', line)
-                    if title_match:
-                        found_title = title_match.group(1).strip()
-                        print(f"Found frametitle at TeX line {i+1}: '{found_title}'")
-                        return found_title
-                    title_match = re.search(r'\\begin{frame}\{([^}]+)\}', line)
-                    if title_match:
-                        found_title = title_match.group(1).strip()
-                        print(f"Found frame title at TeX line {i+1}: '{found_title}'")
-                        return found_title
-
-            print("Could not find slide title near error line")
             return None
 
         except Exception as e:
             print(f"Error extracting TeX title: {e}")
             return None
 
-    def load_file_at_error_line(self):
-        """Load the file and scroll to the target line."""
+    def scroll_to_line(self, line_num, lines):
+        """Scroll to a specific line in the editor."""
         try:
-            if not os.path.exists(self.file_path):
-                self.editor.insert("1.0", f"% ERROR: File not found: {self.file_path}\n")
-                self.status_label.configure(text=f"File not found: {self.file_path}", text_color="#dc3545")
-                return
-
-            # Find target line FIRST (before loading editor)
-            tex_title = self.extract_tex_slide_title_at_error_line()
-            print(f"Looking for TXT slide with title: '{tex_title}'")
-
-            # Read the file to find target line - COUNT ALL LINES
-            with open(self.file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                all_lines = f.readlines()
-                file_content = ''.join(all_lines)
-
-            if not all_lines:
-                self.editor.insert("1.0", "% File is empty\n")
-                return
-
-            self.original_content = file_content
-
-            # Find the slide by title - DO NOT SKIP ANY LINES
-            # We need the actual line number in the file, including masked lines
-            target_line = None
-            if tex_title:
-                for i, line in enumerate(all_lines, 1):
-                    if line.startswith('\\title '):
-                        txt_title = line[7:].strip()
-                        # Clean the title for comparison (remove [DELETED] if present)
-                        txt_title_clean = txt_title.replace('[DELETED]', '').strip()
-                        print(f"Checking line {i}: '{txt_title_clean}'")
-                        if tex_title == txt_title_clean or tex_title in txt_title_clean:
-                            target_line = i
-                            print(f"Found matching slide at line {target_line}: '{txt_title}'")
-                            break
-
-            # Clear and load the editor content
-            self.editor.delete("1.0", "end")
-            self.editor.insert("1.0", file_content)
-            self.update_line_numbers()
-
-            print(f"Total lines loaded in editor: {len(all_lines)}")
-            print(f"Target line to scroll to: {target_line}")
-
-            # Scroll to target line AFTER the editor has processed the insertion
-            if target_line and 1 <= target_line <= len(all_lines):
-                # Use multiple after calls to ensure editor is ready
-                self.after(50, lambda: self.scroll_to_line_after_load(target_line, all_lines))
-            else:
-                self.editor.see("1.0")
-                self.status_label.configure(
-                    text=f"Could not locate slide. TeX line {self.error_line_num}: {self.error_message[:100]}",
-                    text_color="#dc3545"
-                )
-
-        except Exception as e:
-            self.editor.insert("1.0", f"% Error loading file: {e}\n")
-            import traceback
-            traceback.print_exc()
-            self.status_label.configure(text=f"Error loading file: {str(e)}", text_color="#dc3545")
-
-    def scroll_to_line_after_load(self, line_num, lines):
-        """Scroll to the specified line after the editor is fully loaded."""
-        try:
-            print(f"Scrolling to line {line_num}")
+            start_index = f"{line_num}.0"
 
             # Clear existing highlights
             self.editor.tag_remove("error_line", "1.0", "end")
             self.editor.tag_remove("error_highlight", "1.0", "end")
 
-            # Highlight the title line
-            start_index = f"{line_num}.0"
-            end_index = f"{line_num}.end"
-            self.editor.tag_add("error_line", start_index, end_index)
+            # Highlight the line
+            self.editor.tag_add("error_line", start_index, f"{line_num}.end")
 
-            # Force the editor to update its display
-            self.editor.update_idletasks()
-
-            # Method 1: Use see() to make the line visible
+            # Scroll to the line
             self.editor.see(start_index)
-
-            # Method 2: Set the insert cursor to the line
             self.editor.mark_set("insert", start_index)
-
-            # Method 3: Use yview to ensure the line is at the top of the view
-            # Get the line's position
-            line_position = self.editor.index(start_index)
-            # Scroll so this line is at the top
-            self.editor.yview_moveto((line_num - 5) / len(lines) if len(lines) > 0 else 0)
-
-            # Update again
             self.editor.update_idletasks()
-
-            # Final see() to ensure visibility
-            self.editor.see(start_index)
 
             title_line = lines[line_num - 1].strip() if line_num <= len(lines) else "Unknown"
             self.status_label.configure(
-                text=f"✓ Scrolled to slide at line {line_num}: {title_line}",
+                text=f"Scrolled to line {line_num}: {title_line}",
                 text_color="#FFB86C"
             )
-
-            # Highlight problematic line within the slide
-            self.highlight_problematic_line_in_slide(lines, line_num)
-
-            print(f"Successfully scrolled to line {line_num}")
-
         except Exception as e:
             print(f"Error scrolling to line: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def highlight_line_after_scroll(self, line_num):
-        """Highlight a specific line after scrolling is done."""
-        if line_num:
-            # Use after to ensure scrolling is complete
-            self.after(100, lambda: self._do_highlight_line(line_num))
-
-    def _do_highlight_line(self, line_num):
-        """Actually perform the line highlighting."""
-        try:
-            start = f"{line_num}.0"
-            end = f"{line_num}.end"
-            self.editor.tag_add("error_highlight", start, end)
-            self.editor.see(start)
-            self.status_label.configure(
-                text=f"Problematic line highlighted at line {line_num}",
-                text_color="#dc3545"
-            )
-            print(f"Highlighted problematic line {line_num}")
-        except Exception as e:
-            print(f"Error highlighting line: {e}")
-
-
-    def highlight_line(self, line_num):
-        """Highlight a specific line in the editor."""
-        if line_num:
-            start = f"{line_num}.0"
-            end = f"{line_num}.end"
-            self.editor.tag_add("error_highlight", start, end)
-            self.editor.see(start)
-            self.status_label.configure(
-                text=f"Problematic line highlighted at line {line_num}",
-                text_color="#dc3545"
-            )
 
     def save_changes(self):
         """Save changes to file and regenerate TeX if needed."""
@@ -4000,26 +3782,19 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             with open(self.file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-            # ALWAYS regenerate TeX file immediately after saving TXT
+            # If this is a TXT file, regenerate the TeX file
             if self.is_txt_file:
                 try:
                     from BeamerSlideGenerator import process_input_file
                     print(f"Regenerating TeX file: {self.tex_file_path}")
                     process_input_file(self.file_path, self.tex_file_path)
-
-                    # Verify TeX file was created
-                    if os.path.exists(self.tex_file_path):
-                        print(f"✓ TeX file regenerated successfully: {self.tex_file_path}")
-                    else:
-                        print(f"⚠ Warning: TeX file was not created: {self.tex_file_path}")
-
+                    print(f"✓ TeX file regenerated successfully")
                 except Exception as e:
-                    print(f"Error regenerating TeX: {e}")
+                    print(f"Warning: Could not regenerate TeX: {e}")
                     import traceback
                     traceback.print_exc()
-                    # Don't return False - still saved TXT file
 
-            self.status_label.configure(text="✓ File saved successfully! TeX regenerated.", text_color="#28a745")
+            self.status_label.configure(text="✓ File saved successfully!", text_color="#28a745")
             self.modified = False
 
             return True
@@ -4033,18 +3808,6 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
     def apply_and_recompile(self):
         """Apply changes, regenerate TeX, and signal recompile."""
         if self.save_changes():
-            # Force regenerate TeX file to ensure it's up to date
-            if self.is_txt_file:
-                try:
-                    from BeamerSlideGenerator import process_input_file
-                    print(f"Regenerating TeX file: {self.tex_file_path}")
-                    process_input_file(self.file_path, self.tex_file_path)
-                    print(f"✓ TeX file regenerated successfully")
-                except Exception as e:
-                    print(f"Warning: Could not regenerate TeX: {e}")
-                    import traceback
-                    traceback.print_exc()
-
             self.result = 'fixed'
             self.destroy()
 
@@ -4127,16 +3890,22 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
 
     def comment_out_line(self):
         """Comment out the current line."""
-        if not self.error_line_num:
-            return
-        line_content = self.editor.get(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-        if not line_content.strip().startswith('%'):
-            fixed = f'% {line_content}'
-            self.editor.delete(f"{self.error_line_num}.0", f"{self.error_line_num}.end")
-            self.editor.insert(f"{self.error_line_num}.0", fixed)
-            self.modified = True
-            self.status_label.configure(text=f"Commented out line {self.error_line_num}", text_color="#ffc107")
-            self.update_line_numbers()
+        try:
+            current_pos = self.editor.index("insert")
+            line_num = int(current_pos.split('.')[0])
+            line_start = self.editor.index(f"{line_num}.0")
+            line_end = self.editor.index(f"{line_num}.end")
+            line_content = self.editor.get(line_start, line_end)
+
+            if not line_content.strip().startswith('%'):
+                fixed = f'% {line_content}'
+                self.editor.delete(line_start, line_end)
+                self.editor.insert(line_start, fixed)
+                self.modified = True
+                self.status_label.configure(text=f"Commented out line {line_num}", text_color="#ffc107")
+                self.update_line_numbers()
+        except Exception as e:
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="#dc3545")
 
     def copy_error(self):
         """Copy error to clipboard."""
@@ -4263,7 +4032,6 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
 
         self.status_label = ctk.CTkLabel(main_frame, text="Edit the code, then click 'Apply Fix & Recompile'", font=("Arial", 10), text_color="#888888")
         self.status_label.pack(fill="x", padx=5, pady=5)
-
 
 
 class BeamerSlideEditor(ctk.CTk):
@@ -12136,7 +11904,7 @@ Created by {self.__author__}
     def run_pdflatex(self, tex_file: str, timeout: int = 60) -> dict:
         """
         Run pdflatex with interactive error editor that pinpoints exact errors.
-        The error editor loads and edits the TXT file directly, then regenerates TeX.
+        After fixing, saves the file, reloads it, regenerates TeX, and recompiles.
         """
         result = {
             'success': False,
@@ -12328,8 +12096,9 @@ Created by {self.__author__}
                     '\n'.join(error_context),
                     '\n'.join(output_lines[-100:]),
                     exact_line_content=line_content,
-                    is_txt_file=True  # This is the key parameter
+                    is_txt_file=True  # This tells the editor it's editing a TXT file
                 )
+
                 # Wait for editor to close
                 try:
                     if hasattr(parent_window, 'wait_window'):
@@ -12341,17 +12110,33 @@ Created by {self.__author__}
 
                 # Handle editor result
                 if editor.result == 'fixed':
-                    self.write("\n✓ User fixed the TXT file. Regenerating TeX and recompiling...\n", "green")
-                    # Regenerate TeX from the updated TXT file
+                    self.write("\n✓ User fixed the TXT file.\n", "green")
+
+                    # CRITICAL: RELOAD THE TXT FILE INTO THE IDE
+                    self.write("Reloading file into IDE...\n", "cyan")
                     try:
+                        # Save current state first
+                        self.save_current_slide()
+
+                        # Reload the file - this will update all internal data structures
+                        self.load_file(txt_file_abs)
+
+                        self.write("✓ File reloaded successfully\n", "green")
+
+                        # Regenerate TeX from the updated TXT file
+                        self.write("Regenerating TeX file...\n", "cyan")
                         from BeamerSlideGenerator import process_input_file
                         process_input_file(txt_file_abs, tex_file_abs)
                         self.write("✓ TeX file regenerated from updated TXT\n", "green")
+
                     except Exception as e:
-                        self.write(f"✗ Error regenerating TeX: {e}\n", "red")
+                        self.write(f"✗ Error reloading/regenerating: {e}\n", "red")
+                        import traceback
+                        traceback.print_exc()
                         result['fatal_error'] = True
                         return result
-                    continue
+
+                    continue  # Recompile with the updated files
 
                 elif editor.result == 'skip':
                     self.write("\n⚠ Skipping error. TeX will be regenerated...\n", "yellow")
@@ -14286,138 +14071,183 @@ Created by {self.__author__}
         return extracted
 
     def _format_content_items(self, content_list):
-        """Format content items into proper LaTeX structure with tabular preservation"""
+        """Format content items into proper LaTeX structure with correct nesting"""
         if not content_list:
             return ""
 
         result = []
         in_list = False
-        in_tabular = False
-        tabular_buffer = []
-        brace_depth = 0
+        list_type = None
+        list_stack = []  # Track nested list types
+        in_alertblock = False
+        in_block = False
+        current_block_type = None
 
-        for item in content_list:
+        i = 0
+        while i < len(content_list):
+            item = content_list[i]
             if not item or not item.strip():
+                i += 1
                 continue
-
-            # Track tabular environment boundaries - do this FIRST before any processing
-            if '\\begin{tabular}' in item:
-                in_tabular = True
-                tabular_buffer = [item]
-                continue
-            elif '\\end{tabular}' in item:
-                in_tabular = False
-                tabular_buffer.append(item)
-                # Add the complete preserved tabular WITHOUT any modifications
-                result.append('\n'.join(tabular_buffer))
-                tabular_buffer = []
-                continue
-
-            if in_tabular:
-                # Preserve tabular content exactly as is - NO modifications
-                tabular_buffer.append(item)
-                continue
-
-            # Track brace depth
-            brace_depth += item.count('{')
-            brace_depth -= item.count('}')
 
             stripped = item.strip()
 
-            # Skip layout directives
-            if hasattr(self, 'is_layout_directive') and self.is_layout_directive(stripped):
+            # Handle alertblock environment
+            if stripped.startswith('\\begin{alertblock}'):
+                in_alertblock = True
+                result.append(stripped)
+                i += 1
+                continue
+            elif stripped.startswith('\\end{alertblock}'):
+                in_alertblock = False
+                result.append(stripped)
+                i += 1
                 continue
 
-            # Handle environment starts
-            if stripped.startswith('\\begin{enumerate}'):
-                in_list = True
+            # Handle block environment
+            if stripped.startswith('\\begin{block}'):
+                in_block = True
+                current_block_type = 'block'
                 result.append(stripped)
+                i += 1
                 continue
-            elif stripped.startswith('\\begin{itemize}'):
-                in_list = True
+            elif stripped.startswith('\\end{block}'):
+                in_block = False
+                current_block_type = None
                 result.append(stripped)
-                continue
-            elif stripped.startswith('\\begin{'):
-                result.append(stripped)
-                continue
-
-            # Handle environment ends
-            if stripped.startswith('\\end{enumerate}'):
-                in_list = False
-                result.append(stripped)
-                continue
-            elif stripped.startswith('\\end{itemize}'):
-                in_list = False
-                result.append(stripped)
-                continue
-            elif stripped.startswith('\\end{'):
-                result.append(stripped)
+                i += 1
                 continue
 
-            # Handle bullet points
+            # Handle itemize environment start
+            if '\\begin{itemize}' in stripped:
+                list_stack.append('itemize')
+                result.append(stripped)
+                i += 1
+                continue
+
+            # Handle itemize environment end
+            if '\\end{itemize}' in stripped:
+                if list_stack:
+                    list_stack.pop()
+                result.append(stripped)
+                i += 1
+                continue
+
+            # Handle enumerate environment
+            if '\\begin{enumerate}' in stripped:
+                list_stack.append('enumerate')
+                result.append(stripped)
+                i += 1
+                continue
+            elif '\\end{enumerate}' in stripped:
+                if list_stack:
+                    list_stack.pop()
+                result.append(stripped)
+                i += 1
+                continue
+
+            # Handle bullet points (convert - to \item)
             if stripped.startswith(('- ', '• ')):
                 bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                if not in_list:
+                bullet_content = self._fix_alert_commands(bullet_content)
+
+                # If not already in a list, start one
+                if not list_stack:
                     result.append("\\begin{itemize}")
                     result.append(f"\\item {bullet_content}")
-                    result.append("\\end{itemize}")
+                    # Don't close immediately - might have more items
+                    list_stack.append('itemize')
                 else:
                     result.append(f"\\item {bullet_content}")
+                i += 1
                 continue
 
             # Handle standalone \item commands
             if stripped.startswith('\\item'):
-                if not in_list:
+                # Fix any malformed \alert commands
+                item_content = self._fix_alert_commands(stripped)
+                if not list_stack:
                     result.append("\\begin{itemize}")
-                    result.append(stripped)
-                    idx = content_list.index(item)
-                    has_more_items = False
-                    for j in range(idx + 1, len(content_list)):
-                        if content_list[j].strip().startswith('\\item'):
-                            has_more_items = True
-                        elif content_list[j].strip() and not content_list[j].strip().startswith('\\end{'):
-                            break
-                    if not has_more_items:
-                        result.append("\\end{itemize}")
+                    result.append(item_content)
+                    list_stack.append('itemize')
                 else:
-                    result.append(stripped)
+                    result.append(item_content)
+                i += 1
                 continue
 
             # Handle \pause commands
             if stripped.startswith('\\pause'):
                 result.append(stripped)
+                i += 1
                 continue
 
             # Handle column commands
             if stripped.startswith('\\column'):
                 result.append(stripped)
+                i += 1
                 continue
 
             # Handle \hline commands
             if stripped == '\\hline':
                 result.append(stripped)
+                i += 1
                 continue
 
-            # Regular text - but preserve & for tabular (though we shouldn't get here for tabular)
-            if stripped:
-                # Don't escape & - they should remain as column separators
-                # But since we've already handled tabular above, this is for regular text
-                escaped = stripped
-                if '$' not in escaped:
-                    escaped = escaped.replace('_', '\\_')
-                # Only escape & if it's NOT in a tabular context (but we shouldn't get tabular here)
-                if '&' in escaped and not in_tabular:
-                    # This might be standalone & that needs escaping
-                    escaped = escaped.replace('&', '\\&')
-                result.append(escaped)
+            # Handle \centering
+            if stripped == '\\centering':
+                result.append(stripped)
+                i += 1
+                continue
 
-        # Fix unbalanced braces
-        if brace_depth > 0:
-            result.append('}' * brace_depth)
-        elif brace_depth < 0:
-            result.insert(0, '{' * (-brace_depth))
+            # Handle plain text content
+            if stripped:
+                # Fix alert commands in text
+                stripped = self._fix_alert_commands(stripped)
+
+                # If we're in a list but this isn't an item, we need to close the list
+                if list_stack and not stripped.startswith('\\item'):
+                    # Close all open lists
+                    for _ in range(len(list_stack)):
+                        if list_stack[-1] == 'itemize':
+                            result.append("\\end{itemize}")
+                        elif list_stack[-1] == 'enumerate':
+                            result.append("\\end{enumerate}")
+                        list_stack.pop()
+                    result.append(stripped)
+                else:
+                    result.append(stripped)
+
+            i += 1
+
+        # Close any remaining open lists
+        while list_stack:
+            if list_stack[-1] == 'itemize':
+                result.append("\\end{itemize}")
+            elif list_stack[-1] == 'enumerate':
+                result.append("\\end{enumerate}")
+            list_stack.pop()
 
         return '\n'.join(result)
+
+    def _fix_alert_commands(self, text):
+        """
+        Fix malformed \alert commands to ensure they have proper braces.
+        Converts \alert text -> \alert{text}
+        Converts \alert{text} -> \alert{text} (unchanged)
+        """
+        import re
+
+        # Fix \alert without braces: \alert text -> \alert{text}
+        # Match \alert followed by space and then content until space, newline, or end
+        text = re.sub(r'\\alert\s+([^{\\\s][^\\\n]*?)(?=\s*$|\s*\\|$)', r'\\alert{\1}', text)
+
+        # Fix \alert with missing opening brace: \alert text} -> \alert{text}
+        text = re.sub(r'\\alert\s+([^{][^}]*?)\}', r'\\alert{\1}', text)
+
+        # Fix \alert with no braces at all
+        text = re.sub(r'\\alert\s+([a-zA-Z][a-zA-Z\s]*?)(?=\s|$|\\|\.|,|;|:)', r'\\alert{\1}', text)
+
+        return text
 
     def _generate_split_layout(self, params: str, content: list, frame_title: str) -> str:
         """Generate split layout: image on left, content on right"""
@@ -14807,6 +14637,7 @@ Created by {self.__author__}
     def parse_latex_log(self, log_file: str) -> tuple:
         """
         Parse LaTeX log file to find exact error line and message.
+        Handles various error types including "Undefined control sequence".
         """
         try:
             with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
@@ -14816,7 +14647,19 @@ Created by {self.__author__}
             error_msg = ""
             error_context = []
 
-            # Pattern 1: Missing \item error
+            # Pattern 1: Undefined control sequence error
+            undefined_ctrl_match = re.search(
+                r'Undefined control sequence\.\s*<argument>\s*(.*?)\s*l\.(\d+)',
+                log_content,
+                re.DOTALL
+            )
+            if undefined_ctrl_match:
+                line_num = int(undefined_ctrl_match.group(2))
+                error_msg = f"Undefined control sequence: {undefined_ctrl_match.group(1).strip()[:100]}"
+                print(f"Found undefined control sequence error at line {line_num}: {error_msg}")
+                return line_num, error_msg, self._get_error_context(log_content, line_num)
+
+            # Pattern 2: Missing \item error
             missing_item_match = re.search(
                 r'LaTeX Error: Something\'s wrong--perhaps a missing \\item\..*?l\.(\d+)',
                 log_content,
@@ -14825,9 +14668,10 @@ Created by {self.__author__}
             if missing_item_match:
                 line_num = int(missing_item_match.group(1))
                 error_msg = "Missing \\item in list environment"
+                print(f"Found missing \\item error at line {line_num}")
                 return line_num, error_msg, self._get_error_context(log_content, line_num)
 
-            # Pattern 2: "Not allowed in LR mode" error
+            # Pattern 3: "Not allowed in LR mode" error
             lr_mode_match = re.search(
                 r'LaTeX Error: Not allowed in LR mode\..*?l\.(\d+)',
                 log_content,
@@ -14836,9 +14680,22 @@ Created by {self.__author__}
             if lr_mode_match:
                 line_num = int(lr_mode_match.group(1))
                 error_msg = "Not allowed in LR mode - verbatim or special command in wrong place"
+                print(f"Found LR mode error at line {line_num}")
                 return line_num, error_msg, self._get_error_context(log_content, line_num)
 
-            # Pattern 3: Standard LaTeX error format
+            # Pattern 4: Extra } or forgotten \endgroup
+            extra_brace_match = re.search(
+                r'Extra \}, or forgotten \\endgroup\.\s*l\.(\d+)',
+                log_content,
+                re.DOTALL
+            )
+            if extra_brace_match:
+                line_num = int(extra_brace_match.group(1))
+                error_msg = "Extra } or forgotten \\endgroup - check for unbalanced braces"
+                print(f"Found brace error at line {line_num}")
+                return line_num, error_msg, self._get_error_context(log_content, line_num)
+
+            # Pattern 5: Standard LaTeX error format
             error_pattern = r'! (.*?)\nl\.(\d+)\s*\n(.*?)(?=\n! |\n\*\*\* |$)'
             matches = list(re.finditer(error_pattern, log_content, re.DOTALL))
 
@@ -14847,34 +14704,67 @@ Created by {self.__author__}
                 error_msg = last_match.group(1).strip()
                 line_num = int(last_match.group(2))
                 error_context = last_match.group(3).strip().split('\n')
+                print(f"Found standard error at line {line_num}: {error_msg[:100]}")
                 return line_num, error_msg, error_context
 
-            # Pattern 4: File:line format
+            # Pattern 6: File:line format
             file_line_pattern = r'\./([^:]+):(\d+):\s*(.*?)$'
             matches = list(re.finditer(file_line_pattern, log_content, re.MULTILINE))
             if matches:
                 last_match = matches[-1]
                 line_num = int(last_match.group(2))
                 error_msg = last_match.group(3).strip()
+                print(f"Found file-line error at line {line_num}: {error_msg[:100]}")
                 return line_num, error_msg, self._get_error_context(log_content, line_num)
 
+            # Pattern 7: Look for any line number reference in fatal error
+            fatal_pattern = r'==> Fatal error occurred.*?l\.(\d+)'
+            fatal_match = re.search(fatal_pattern, log_content, re.DOTALL)
+            if fatal_match:
+                line_num = int(fatal_match.group(1))
+                # Try to find error message before this
+                error_match = re.search(r'! (.*?)(?=\n)', log_content)
+                if error_match:
+                    error_msg = error_match.group(1).strip()
+                else:
+                    error_msg = "Fatal LaTeX error"
+                print(f"Found fatal error at line {line_num}: {error_msg[:100]}")
+                return line_num, error_msg, self._get_error_context(log_content, line_num)
+
+            # Pattern 8: Generic error detection - find the last error in the log
+            error_lines = re.findall(r'^! (.*?)$.*?l\.(\d+)', log_content, re.MULTILINE | re.DOTALL)
+            if error_lines:
+                last_error = error_lines[-1]
+                error_msg = last_error[0].strip()
+                line_num = int(last_error[1])
+                print(f"Found generic error at line {line_num}: {error_msg[:100]}")
+                return line_num, error_msg, self._get_error_context(log_content, line_num)
+
+            print("No error pattern matched in log file")
             return None, "", []
 
         except Exception as e:
             print(f"Error parsing log file: {e}")
+            import traceback
+            traceback.print_exc()
             return None, "", []
 
     def _get_error_context(self, log_content: str, line_num: int) -> list:
-        """Extract context around the error line"""
+        """Extract context around the error line from log content"""
         try:
             lines = log_content.split('\n')
+            context = []
+
             for i, line in enumerate(lines):
                 if f'l.{line_num}' in line:
-                    start = max(0, i - 3)
-                    end = min(len(lines), i + 5)
-                    return lines[start:end]
-            return []
-        except Exception:
+                    start = max(0, i - 5)
+                    end = min(len(lines), i + 10)
+                    context = lines[start:end]
+                    break
+
+            return context
+        except Exception as e:
+            print(f"Error getting context: {e}")
             return []
 
     def reload_txt_from_tex(self, tex_file_path):
