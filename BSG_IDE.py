@@ -13752,11 +13752,25 @@ Created by {self.__author__}
     def _generate_layout_latex(self, layout_type: str, layout_params: str, content: list, title: str) -> str:
         """
         Generate LaTeX code for various layout directives.
-        Supports: mosaic, split, pip, watermark, fullframe, highlight, background, topbottom, overlay, corner
+        Supports: mosaic, split, pip, watermark, fullframe, highlight, background, topbottom, overlay, corner, table
         """
         frame_title = self.clean_frame_title_for_latex(title)
 
-        if layout_type == 'mosaic':
+        # Check if this is a table layout (detect from params or content)
+        is_table = False
+        if layout_type == 'table':
+            is_table = True
+        elif layout_params and ('\\begin{tabular}' in layout_params or '\\hline' in layout_params):
+            is_table = True
+            layout_type = 'table'
+        elif content and any('\\begin{tabular}' in line for line in content):
+            is_table = True
+            layout_type = 'table'
+
+        # Route to appropriate layout handler
+        if is_table or layout_type == 'table':
+            return self._generate_table_layout(layout_params, content, frame_title)
+        elif layout_type == 'mosaic':
             return self._generate_mosaic_layout(layout_params, content, frame_title)
         elif layout_type == 'split':
             return self._generate_split_layout(layout_params, content, frame_title)
@@ -13780,6 +13794,628 @@ Created by {self.__author__}
             # Fallback to default layout
             return self._generate_default_layout(layout_params, content, frame_title)
 
+
+
+    def _generate_default_layout(self, params: str, content: list, frame_title: str) -> str:
+        """Generate default layout with automatic two-column split when first line is an image"""
+        latex = f"\\begin{{frame}}{{{frame_title}}}\n"
+        latex += f"\\frametitle{{{frame_title}}}\n"
+
+        # Initialize containers
+        has_image = False
+        image_path = None
+        table_content = []
+        regular_content = []
+        in_table = False
+        is_first_line_image = False
+
+        # First, check params for image
+        if params and params != "\\None":
+            is_media_file = False
+            if any(x in params for x in ['\\includegraphics', '.png', '.jpg', '.jpeg', '.pdf', '.gif']):
+                is_media_file = True
+            elif params.strip().startswith(('media_files/', './', '/')) and params.endswith(('.png', '.jpg', '.jpeg', '.pdf', '.gif')):
+                is_media_file = True
+
+            if is_media_file:
+                has_image = True
+                image_path = params.strip()
+                if not image_path.startswith(('media_files/', './', '/')):
+                    image_path = f"media_files/{image_path}"
+                if image_path.startswith('\\file'):
+                    image_path = image_path.replace('\\file', '').strip()
+
+        # Parse content to separate images, tables, and regular content
+        if content:
+            first_line = True
+            for line in content:
+                line_stripped = line.strip()
+
+                # Check if first line is an image (and we don't already have an image from params)
+                if first_line:
+                    first_line = False
+                    if not has_image:
+                        # Check if this line is an image directive
+                        if (line_stripped.startswith('\\file') and
+                            any(ext in line_stripped.lower() for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif'])):
+                            is_first_line_image = True
+                            has_image = True
+                            # Extract image path
+                            image_path = line_stripped
+                            if image_path.startswith('\\file'):
+                                image_path = image_path.replace('\\file', '').strip()
+                            if not image_path.startswith(('media_files/', './', '/')):
+                                image_path = f"media_files/{image_path}"
+                            continue  # Skip adding this line to content
+
+                # Detect table boundaries
+                if '\\begin{tabular}' in line_stripped:
+                    in_table = True
+                    table_content.append(line)
+                    continue
+                elif '\\end{tabular}' in line_stripped:
+                    in_table = False
+                    table_content.append(line)
+                    continue
+
+                # Detect images in content (not first line)
+                if not in_table and not has_image:
+                    if (line_stripped.startswith('\\file') and
+                        any(ext in line_stripped.lower() for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif'])):
+                        has_image = True
+                        image_path = line_stripped
+                        if image_path.startswith('\\file'):
+                            image_path = image_path.replace('\\file', '').strip()
+                        if not image_path.startswith(('media_files/', './', '/')):
+                            image_path = f"media_files/{image_path}"
+                        continue
+
+                # Collect content
+                if in_table:
+                    # Fix any escaped newlines in table content
+                    if '\\\\' in line and line.endswith('\\\\'):
+                        line = line.rstrip('\\')
+                    table_content.append(line)
+                elif line_stripped and not line_stripped.startswith('\\file'):
+                    regular_content.append(line)
+
+        # Fix table formatting
+        if table_content:
+            table_content = self._fix_table_formatting(table_content)
+
+        # CRITICAL: Determine layout based on what we have
+        # If we have an image AND (table OR regular content), use two columns
+        if has_image and (table_content or regular_content):
+            # Two-column layout: image on left, all remaining content on right
+            latex += "\\begin{columns}[T]\n"
+
+            # Left column: Image (45% width)
+            latex += "\\column{0.45\\textwidth}\n"
+            latex += "\\begin{center}\n"
+            latex += f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}\n"
+            latex += "\\end{center}\n"
+
+            # Right column: All remaining content (50% width)
+            latex += "\\column{0.5\\textwidth}\n"
+
+            # Add table if present
+            if table_content:
+                table_text = '\n'.join(table_content)
+                latex += table_text + "\n"
+
+            # Add regular content (text, bullet points, etc.)
+            if regular_content:
+                # Check if regular content contains itemize-like structure
+                has_bullets = any(line.strip().startswith(('-', '•')) for line in regular_content)
+                if has_bullets or len(regular_content) > 1:
+                    # Format as itemized list
+                    content_items = self._format_content_items(regular_content)
+                    if content_items:
+                        latex += content_items + "\n"
+                else:
+                    # Just plain text
+                    latex += '\n'.join(regular_content) + "\n"
+
+            latex += "\\end{columns}\n"
+        elif has_image:
+            # Just image centered (no other content)
+            latex += "\\begin{center}\n"
+            latex += f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{image_path}}}\n"
+            latex += "\\end{center}\n"
+        elif table_content:
+            # Just table (no image)
+            table_text = '\n'.join(table_content)
+            latex += table_text + "\n"
+        elif regular_content:
+            # Just text (no image, no table)
+            content_items = self._format_content_items(regular_content)
+            if content_items:
+                latex += content_items + "\n"
+
+        latex += "\\end{frame}\n"
+        return latex
+
+    def _generate_table_layout(self, params: str, content: list, frame_title: str) -> str:
+        """
+        Generate table layout - preserves LaTeX tabular environments exactly as they appear.
+        Automatically creates two-column layout when first line is an image.
+        """
+        # Clean the frame title
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        latex = f"\\begin{{frame}}{{{clean_title}}}\n"
+        latex += f"\\frametitle{{{clean_title}}}\n"
+
+        # Initialize containers
+        has_image = False
+        image_path = None
+        table_content = []
+        regular_content = []
+        in_table = False
+        is_first_line_image = False
+
+        # Check params for image
+        if params and params != "\\None":
+            if any(x in params for x in ['\\includegraphics', '.png', '.jpg', '.jpeg', '.pdf', '.gif']):
+                has_image = True
+                image_path = params.strip()
+                if image_path.startswith('\\file'):
+                    image_path = image_path.replace('\\file', '').strip()
+                if not image_path.startswith(('media_files/', './', '/')):
+                    image_path = f"media_files/{image_path}"
+
+        # Parse content
+        if content:
+            first_line = True
+            for line in content:
+                line_stripped = line.strip()
+
+                # Check if first line is an image
+                if first_line:
+                    first_line = False
+                    if not has_image:
+                        if (line_stripped.startswith('\\file') and
+                            any(ext in line_stripped.lower() for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif'])):
+                            is_first_line_image = True
+                            has_image = True
+                            image_path = line_stripped
+                            if image_path.startswith('\\file'):
+                                image_path = image_path.replace('\\file', '').strip()
+                            if not image_path.startswith(('media_files/', './', '/')):
+                                image_path = f"media_files/{image_path}"
+                            continue
+
+                # Detect table
+                if '\\begin{tabular}' in line_stripped:
+                    in_table = True
+                    table_content.append(line)
+                    continue
+                elif '\\end{tabular}' in line_stripped:
+                    in_table = False
+                    table_content.append(line)
+                    continue
+
+                # Detect other images
+                if not in_table and not has_image:
+                    if (line_stripped.startswith('\\file') and
+                        any(ext in line_stripped.lower() for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif'])):
+                        has_image = True
+                        image_path = line_stripped
+                        if image_path.startswith('\\file'):
+                            image_path = image_path.replace('\\file', '').strip()
+                        if not image_path.startswith(('media_files/', './', '/')):
+                            image_path = f"media_files/{image_path}"
+                        continue
+
+                # Collect content
+                if in_table:
+                    if '\\\\' in line and line.endswith('\\\\'):
+                        line = line.rstrip('\\')
+                    table_content.append(line)
+                elif line_stripped and not line_stripped.startswith('\\file'):
+                    regular_content.append(line)
+
+        # Fix table formatting
+        if table_content:
+            table_content = self._fix_table_formatting(table_content)
+
+        # Determine layout
+        if has_image and (table_content or regular_content):
+            # Two-column: image on left, content on right
+            latex += "\\begin{columns}[T]\n"
+            latex += "\\column{0.45\\textwidth}\n"
+            latex += "\\begin{center}\n"
+            latex += f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}\n"
+            latex += "\\end{center}\n"
+            latex += "\\column{0.5\\textwidth}\n"
+
+            if table_content:
+                table_text = '\n'.join(table_content)
+                latex += table_text + "\n"
+
+            if regular_content:
+                has_bullets = any(line.strip().startswith(('-', '•')) for line in regular_content)
+                if has_bullets or len(regular_content) > 1:
+                    content_items = self._format_content_items(regular_content)
+                    if content_items:
+                        latex += content_items + "\n"
+                else:
+                    latex += '\n'.join(regular_content) + "\n"
+
+            latex += "\\end{columns}\n"
+        elif has_image:
+            # Just image centered
+            latex += "\\begin{center}\n"
+            latex += f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{image_path}}}\n"
+            latex += "\\end{center}\n"
+        elif table_content:
+            # Just table
+            table_text = '\n'.join(table_content)
+            latex += table_text + "\n"
+        elif regular_content:
+            # Just text
+            has_bullets = any(line.strip().startswith(('-', '•')) for line in regular_content)
+            if has_bullets or len(regular_content) > 1:
+                content_items = self._format_content_items(regular_content)
+                if content_items:
+                    latex += content_items + "\n"
+            else:
+                latex += '\n'.join(regular_content) + "\n"
+
+        latex += "\\end{frame}\n"
+        return latex
+
+    def _fix_table_formatting(self, table_lines: list) -> list:
+        """
+        Fix table formatting issues including:
+        - Missing \hline at the beginning
+        - Escaped newline issues (\\hline\\)
+        - Proper column separators
+        """
+        fixed_lines = []
+        in_table = False
+        hline_added = False
+
+        for line in table_lines:
+            line_stripped = line.rstrip()
+
+            # Check for table start
+            if '\\begin{tabular}' in line_stripped:
+                in_table = True
+                hline_added = False
+                fixed_lines.append(line_stripped)
+                continue
+
+            # Check for table end
+            if '\\end{tabular}' in line_stripped:
+                in_table = False
+                fixed_lines.append(line_stripped)
+                continue
+
+            if in_table:
+                # Fix escaped newlines: convert \\hline\\ to \hline
+                if '\\\\hline\\\\' in line_stripped:
+                    line_stripped = line_stripped.replace('\\\\hline\\\\', '\\hline')
+                elif '\\\\hline' in line_stripped:
+                    line_stripped = line_stripped.replace('\\\\hline', '\\hline')
+
+                # Remove trailing backslashes if they're not needed
+                if line_stripped.endswith('\\\\') and '\\hline' not in line_stripped:
+                    # Check if this is a row separator that needs the backslashes
+                    if line_stripped.count('&') > 0:
+                        # This is a data row, keep the backslashes
+                        pass
+                    else:
+                        line_stripped = line_stripped.rstrip('\\')
+
+                # Add missing initial \hline if needed
+                if not hline_added and (line_stripped.startswith('\\textbf') or
+                                         (line_stripped and line_stripped[0].isalpha())):
+                    # This is the first row of data, add \hline before it
+                    fixed_lines.append('\\hline')
+                    hline_added = True
+
+                fixed_lines.append(line_stripped)
+            else:
+                fixed_lines.append(line_stripped)
+
+        return fixed_lines
+
+    def _generate_mosaic_layout(self, params: str, content: list, frame_title: str) -> str:
+        """Generate mosaic layout with dynamic grid sizing and proper scaling, including table support"""
+        import re
+
+        # Clean the frame title
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        # Parse mosaic parameters: \mosaic{rows,cols}{image1, image2, ...}
+        mosaic_match = re.search(r'\{(\d+),(\d+)\}\{(.*?)\}', params)
+
+        if not mosaic_match:
+            # Try to fix malformed mosaic (missing braces)
+            if params.strip() and not params.startswith('{'):
+                # Assume it's just a list of images, use auto-layout
+                images = [img.strip() for img in params.split(',') if img.strip()]
+                if images:
+                    # Auto-calculate grid (prefer 3 columns, max 4)
+                    cols = min(4, max(2, (len(images) + 2) // 3))
+                    rows = (len(images) + cols - 1) // cols
+                    self.write(f"  ℹ Auto-detected mosaic: {rows}x{cols} for {len(images)} images\n", "cyan")
+                    return self._render_mosaic_grid(images, rows, cols, content, clean_title)
+
+            # Check if this might be a table directive
+            if params.strip().startswith('{') and 'rows' in params.lower():
+                self.write("  ℹ Detected table format, using table layout\n", "cyan")
+                return self._generate_table_layout(params, content, clean_title)
+
+            self.write("  ⚠ Invalid mosaic format, using default layout\n", "yellow")
+            return self._generate_default_layout(params, content, clean_title)
+
+        rows = int(mosaic_match.group(1))
+        cols = int(mosaic_match.group(2))
+        images = [img.strip() for img in mosaic_match.group(3).split(',') if img.strip()]
+
+        # Remove any 'media_files/' prefix that might be duplicated
+        cleaned_images = []
+        for img in images:
+            if img.startswith('media_files/media_files/'):
+                img = img.replace('media_files/media_files/', 'media_files/')
+            cleaned_images.append(img)
+
+        return self._render_mosaic_grid(cleaned_images, rows, cols, content, clean_title)
+
+    def _render_mosaic_grid(self, images: list, rows: int, cols: int, content: list, frame_title: str) -> str:
+        """Render the mosaic grid with proper scaling, blank cells, and auto-expansion"""
+
+        # Clean the frame title for LaTeX
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        # Check if any image contains table-like content
+        has_table_like = any(',' in img and ('rows' in img.lower() or 'cols' in img.lower()) for img in images)
+        if has_table_like:
+            self.write("  ℹ Detected table-like content in mosaic, using table layout\n", "cyan")
+            # Extract the table parameters from the images list
+            table_params = ','.join(images)
+            return self._generate_table_layout(table_params, content, clean_title)
+
+        # Calculate optimal grid if needed
+        total_images = len(images)
+        total_cells = rows * cols
+
+        # Auto-expand if more images than cells
+        if total_images > total_cells:
+            new_rows = (total_images + cols - 1) // cols
+            self.write(f"  ℹ Expanding mosaic: {rows}x{cols} → {new_rows}x{cols} for {total_images} images\n", "cyan")
+            rows = new_rows
+            total_cells = rows * cols
+
+        # Pad images list with empty strings to fill the grid
+        padded_images = images + [''] * (total_cells - len(images))
+
+        # Calculate available width per column
+        col_width = 0.94 / cols
+
+        latex = f"\\begin{{frame}}{{{clean_title}}}\n"
+        latex += f"\\frametitle{{{clean_title}}}\n"
+
+        # Check if we're inside a columns environment (content contains column markers)
+        has_existing_columns = any('\\begin{columns}' in line for line in content) if content else False
+
+        if has_existing_columns:
+            # Extract left column content and right column content separately
+            left_content = []
+            right_content = []
+            in_columns = False
+            in_left = False
+            in_right = False
+
+            for line in content:
+                if '\\begin{columns}' in line:
+                    in_columns = True
+                    continue
+                elif '\\end{columns}' in line:
+                    in_columns = False
+                    continue
+                elif in_columns and '\\column' in line:
+                    # Determine which column
+                    if '0.5' in line or '0.48' in line:
+                        in_left = True
+                        in_right = False
+                    else:
+                        in_left = False
+                        in_right = True
+                    continue
+                elif in_columns and in_left:
+                    left_content.append(line)
+                elif in_columns and in_right:
+                    right_content.append(line)
+
+            # Build the columns structure
+            latex += "\\begin{columns}[T]\n"
+
+            # Left column - original text content
+            latex += "\\column{0.48\\textwidth}\n"
+            for line in left_content:
+                if line.strip():
+                    # Process bullet points
+                    if line.strip().startswith(('-', '•')):
+                        bullet_content = re.sub(r'^[-•]\s*', '', line.strip())
+                        latex += f"\\item {bullet_content}\n"
+                    else:
+                        latex += line + "\n"
+
+            # Right column - mosaic grid
+            latex += "\\column{0.48\\textwidth}\n"
+            latex += self._generate_mosaic_grid_only(padded_images, rows, cols)
+
+            latex += "\\end{columns}\n"
+
+        else:
+            # No existing columns - just add content then mosaic
+            if content:
+                content_items = self._format_content_items(content)
+                if content_items:
+                    latex += content_items + "\n"
+                    latex += "\\vspace{0.5em}\n"
+
+            # Add the mosaic grid
+            latex += self._generate_mosaic_grid_only(padded_images, rows, cols)
+
+        latex += "\\end{frame}\n"
+        return latex
+
+    def _generate_mosaic_grid_only(self, images: list, rows: int, cols: int) -> str:
+        """Generate just the mosaic grid table (without frame wrapper)"""
+
+        total_cells = rows * cols
+        padded_images = images + [''] * (total_cells - len(images))
+
+        # Calculate available width per column
+        col_width = 0.94 / cols
+
+        # Check if any image contains a table or list
+        has_list_content = any(',' in img and ('item' in img.lower() or 'bullet' in img.lower()) for img in padded_images)
+
+        if has_list_content:
+            # Use tabular with paragraph columns for list content
+            latex = "\\begin{center}\n"
+            latex += f"\\begin{{tabular}}{{{'p{' + str(col_width) + '\\textwidth}' * cols}}}\n"
+            latex += "\\hline\n"
+
+            for idx, img_path in enumerate(padded_images):
+                if idx > 0 and idx % cols == 0:
+                    latex = latex.rstrip('& ') + "\\\\ \\hline\n"
+
+                if img_path:
+                    clean_path = img_path
+                    if not clean_path.startswith(('media_files/', './', '/')):
+                        clean_path = f"media_files/{clean_path}"
+
+                    # Check if this contains list items
+                    if '\\item' in clean_path or '•' in clean_path or '-' in clean_path:
+                        # Format as itemized list
+                        items = re.split(r'[,;]', clean_path)
+                        items = [item.strip() for item in items if item.strip()]
+                        if items:
+                            cell_content = "\\begin{itemize}\n"
+                            for item in items:
+                                item = re.sub(r'^[-•]\\s*', '', item)
+                                cell_content += f"\\item {item}\n"
+                            cell_content += "\\end{itemize}"
+                            latex += f" {cell_content} &"
+                        else:
+                            latex += f" \\includegraphics[width={col_width}\\textwidth,height=0.25\\textheight,keepaspectratio]{{{clean_path}}} &"
+                    else:
+                        # Regular image
+                        latex += f" \\includegraphics[width={col_width}\\textwidth,height=0.25\\textheight,keepaspectratio]{{{clean_path}}} &"
+                else:
+                    # Empty cell placeholder
+                    latex += f" \\textcolor{{gray}}{{\\rule{{{col_width}\\textwidth}}{{0.2\\textheight}}}} &"
+
+            latex = latex.rstrip('& ') + "\\\\ \\hline\n"
+            latex += "\\end{tabular}\n"
+            latex += "\\end{center}\n"
+        else:
+            # Use standard tabular for images
+            latex = "\\begin{center}\n"
+            latex += f"\\begin{{tabular}}{{{'c' * cols}}}\n"
+            latex += "\\hline\n"
+
+            for idx, img_path in enumerate(padded_images):
+                if idx > 0 and idx % cols == 0:
+                    latex = latex.rstrip('& ') + "\\\\ \\hline\n"
+
+                if img_path:
+                    clean_path = img_path
+                    if not clean_path.startswith(('media_files/', './', '/')):
+                        clean_path = f"media_files/{clean_path}"
+                    latex += f" \\includegraphics[width={col_width}\\textwidth,height=0.25\\textheight,keepaspectratio]{{{clean_path}}} &"
+                else:
+                    # Empty cell placeholder
+                    latex += f" \\textcolor{{gray}}{{\\rule{{{col_width}\\textwidth}}{{0.2\\textheight}}}} &"
+
+            latex = latex.rstrip('& ') + "\\\\ \\hline\n"
+            latex += "\\end{tabular}\n"
+            latex += "\\end{center}\n"
+
+        blank_count = padded_images.count('')
+        if blank_count > 0:
+            latex += "\n\\vspace{0.3em}\n"
+            latex += f"\\begin{{center}}\\textcolor{{gray}}{{\\footnotesize {blank_count} placeholder(s) for missing images}}\\end{{center}}\n"
+
+        return latex
+
+
+
+
+    def _render_table_grid(self, cell_data: list, rows: int, cols: int, content_mode: str) -> str:
+        """
+        Render the table grid with proper cell formatting.
+        Supports both images and text items.
+        """
+        # Calculate column width based on number of columns
+        col_width = 0.9 / cols
+
+        latex = "\\begin{center}\n"
+        latex += f"\\begin{{tabular}}{{{'p{' + str(col_width) + '\\textwidth}' * cols}}}\n"
+        latex += "\\hline\n"
+
+        for i, row in enumerate(cell_data):
+            row_latex = ""
+            for j, cell in enumerate(row):
+                if cell.strip():
+                    # Check if this cell contains an image
+                    if content_mode == "images" or ('\\includegraphics' in cell or cell.lower().endswith(('.png', '.jpg', '.jpeg', '.pdf'))):
+                        # Handle image cell
+                        clean_path = cell.strip()
+                        if not clean_path.startswith(('media_files/', './', '/')) and '\\includegraphics' not in clean_path:
+                            clean_path = f"media_files/{clean_path}"
+
+                        # Remove any existing \includegraphics wrapper
+                        img_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}', clean_path)
+                        if img_match:
+                            clean_path = img_match.group(1)
+
+                        # Create centered image cell
+                        cell_content = f"\\begin{{center}}\\includegraphics[width={col_width}\\textwidth,keepaspectratio]{{{clean_path}}}\\end{{center}}"
+                    else:
+                        # Handle text cell - convert to itemized list if multiple items
+                        if '\n' in cell or ';' in cell:
+                            # Multiple items - create itemize
+                            items = re.split(r'[;\n]', cell)
+                            items = [item.strip() for item in items if item.strip()]
+                            if items:
+                                cell_content = "\\begin{itemize}\n"
+                                for item in items:
+                                    # Clean up the item
+                                    item = re.sub(r'^[-•]\s*', '', item)
+                                    cell_content += f"\\item {item}\n"
+                                cell_content += "\\end{itemize}"
+                            else:
+                                cell_content = cell.strip()
+                        else:
+                            # Single item - remove bullet if present
+                            cell_content = re.sub(r'^[-•]\s*', '', cell.strip())
+                            if not cell_content:
+                                cell_content = "\\textcolor{gray}{---}"
+
+                    row_latex += f" {cell_content} &"
+                else:
+                    # Empty cell
+                    row_latex += f" \\textcolor{{gray}}{{\\rule{{{col_width}\\textwidth}}{{1cm}}}} &"
+
+            # Remove trailing '&' and add row separator
+            row_latex = row_latex.rstrip('&') + "\\\\ \\hline\n"
+            latex += row_latex
+
+        latex += "\\end{tabular}\n"
+        latex += "\\end{center}\n"
+
+        return latex
+
+
+
+
     def clean_frame_title_for_latex(self, title: str) -> str:
         """Clean frame title to prevent LaTeX compilation errors"""
         if not title:
@@ -13799,126 +14435,6 @@ Created by {self.__author__}
 
         return title.strip() or "Untitled"
 
-    def _generate_mosaic_layout(self, params: str, content: list, frame_title: str) -> str:
-        """Generate mosaic layout with dynamic grid sizing and proper scaling"""
-        import re
-
-        # Clean the frame title
-        clean_title = self.clean_frame_title_for_latex(frame_title)
-
-        # Parse mosaic parameters: \mosaic{rows,cols}{image1, image2, ...}
-        mosaic_match = re.search(r'\{(\d+),(\d+)\}\{(.*?)\}', params)
-
-        if not mosaic_match:
-            # Try to fix malformed mosaic (missing braces)
-            if params.strip() and not params.startswith('{'):
-                # Assume it's just a list of images, use auto-layout
-                images = [img.strip() for img in params.split(',') if img.strip()]
-                if images:
-                    # Auto-calculate grid (prefer 3 columns, max 4)
-                    cols = min(4, max(2, (len(images) + 2) // 3))
-                    rows = (len(images) + cols - 1) // cols
-                    self.write(f"  ℹ Auto-detected mosaic: {rows}x{cols} for {len(images)} images\n", "cyan")
-                    # Pass empty content to avoid duplication
-                    return self._render_mosaic_grid(images, rows, cols, [], clean_title)
-            self.write("  ⚠ Invalid mosaic format, using default layout\n", "yellow")
-            return self._generate_default_layout(params, content, clean_title)
-
-        rows = int(mosaic_match.group(1))
-        cols = int(mosaic_match.group(2))
-        images = [img.strip() for img in mosaic_match.group(3).split(',') if img.strip()]
-
-        # Remove any 'media_files/' prefix that might be duplicated
-        cleaned_images = []
-        for img in images:
-            if img.startswith('media_files/media_files/'):
-                img = img.replace('media_files/media_files/', 'media_files/')
-            cleaned_images.append(img)
-
-        # CRITICAL FIX: Extract text content that is NOT part of the mosaic
-        # The content list contains everything, including the text that should stay
-        # in the left column. We need to separate it.
-
-        # When mosaic is inside columns, the content list contains:
-        # - Text content for left column (should be preserved)
-        # - The mosaic directive (should be removed from text processing)
-        # So we should pass the original content to be placed BEFORE the mosaic
-        # NOT as content to be formatted inside the mosaic
-
-        return self._render_mosaic_grid(cleaned_images, rows, cols, content, clean_title)
-
-
-    def _extract_and_format_content_from_columns(self, content: list) -> str:
-        """
-        Extract content from inside columns environment and format it properly.
-        Preserves itemize environments and converts bullet points to \item commands.
-        """
-        if not content:
-            return ""
-
-        result = []
-        in_columns = False
-        in_itemize = False
-        current_column_content = []
-        current_column = 0
-
-        for line in content:
-            stripped = line.strip()
-
-            # Track columns environment boundaries
-            if '\\begin{columns}' in stripped:
-                in_columns = True
-                current_column_content = [[], []]
-                current_column = 0
-                continue
-            elif '\\end{columns}' in stripped:
-                in_columns = False
-                # Add content from both columns
-                for col_idx, col_items in enumerate(current_column_content):
-                    if col_items:
-                        result.append(f"\\column{{{0.48 if col_idx == 0 else 0.48}\\textwidth}}")
-                        for col_item in col_items:
-                            if col_item.strip():
-                                result.append(col_item)
-                continue
-
-            # Handle column separators
-            if in_columns and stripped.startswith('\\column'):
-                current_column = 0 if '0.5' in stripped else 1
-                continue
-
-            # Handle itemize environment boundaries
-            if '\\begin{itemize}' in stripped:
-                in_itemize = True
-                if in_columns:
-                    current_column_content[current_column].append(stripped)
-                else:
-                    result.append(stripped)
-                continue
-            elif '\\end{itemize}' in stripped:
-                in_itemize = False
-                if in_columns:
-                    current_column_content[current_column].append(stripped)
-                else:
-                    result.append(stripped)
-                continue
-
-            # Handle bullet points inside columns
-            if in_columns and stripped.startswith('-'):
-                bullet_content = stripped[1:].strip()
-                if in_itemize:
-                    current_column_content[current_column].append(f"\\item {bullet_content}")
-                else:
-                    current_column_content[current_column].append(f"\\begin{{itemize}}\n\\item {bullet_content}\n\\end{{itemize}}")
-                continue
-
-            # Regular content
-            if in_columns and stripped:
-                current_column_content[current_column].append(stripped)
-            elif stripped:
-                result.append(stripped)
-
-        return '\n'.join(result)
 
     def _generate_mosaic_from_list(self, images: list, rows: int, cols: int, content: list, frame_title: str) -> str:
         """Generate mosaic from a list of images with specified grid dimensions"""
@@ -14479,160 +14995,7 @@ Created by {self.__author__}
         latex += "\\end{frame}\n"
         return latex
 
-    def _generate_default_layout(self, params: str, content: list, frame_title: str) -> str:
-        """Generate default layout (fallback)"""
-        latex = f"\\begin{{frame}}{{{frame_title}}}\n"
-        latex += f"\\frametitle{{{frame_title}}}\n"
 
-        if params and params != "\\None":
-            clean_path = params.strip()
-            if not clean_path.startswith(('media_files/', './', '/')):
-                clean_path = f"media_files/{clean_path}"
-            latex += "\\begin{center}\n"
-            latex += f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{clean_path}}}\n"
-            latex += "\\end{center}\n"
-            latex += "\\vspace{0.5em}\n"
-
-        if content:
-            content_items = self._format_content_items(content)
-            if content_items:
-                latex += content_items + "\n"
-
-        latex += "\\end{frame}\n"
-        return latex
-
-    def _render_mosaic_grid(self, images: list, rows: int, cols: int, content: list, frame_title: str) -> str:
-        """Render the mosaic grid with proper scaling, blank cells, and auto-expansion"""
-
-        # Clean the frame title for LaTeX
-        clean_title = self.clean_frame_title_for_latex(frame_title)
-
-        # Calculate optimal grid if needed
-        total_images = len(images)
-        total_cells = rows * cols
-
-        # Auto-expand if more images than cells
-        if total_images > total_cells:
-            new_rows = (total_images + cols - 1) // cols
-            self.write(f"  ℹ Expanding mosaic: {rows}x{cols} → {new_rows}x{cols} for {total_images} images\n", "cyan")
-            rows = new_rows
-            total_cells = rows * cols
-
-        # Pad images list with empty strings to fill the grid
-        padded_images = images + [''] * (total_cells - len(images))
-
-        # Calculate available width per column
-        col_width = 0.94 / cols
-
-        latex = f"\\begin{{frame}}{{{clean_title}}}\n"
-        latex += f"\\frametitle{{{clean_title}}}\n"
-
-        # Check if we're inside a columns environment (content contains column markers)
-        has_existing_columns = any('\\begin{columns}' in line for line in content) if content else False
-
-        if has_existing_columns:
-            # Extract left column content and right column content separately
-            left_content = []
-            right_content = []
-            in_columns = False
-            in_left = False
-            in_right = False
-
-            for line in content:
-                if '\\begin{columns}' in line:
-                    in_columns = True
-                    continue
-                elif '\\end{columns}' in line:
-                    in_columns = False
-                    continue
-                elif in_columns and '\\column' in line:
-                    # Determine which column
-                    if '0.5' in line or '0.48' in line:
-                        # First column (left)
-                        in_left = True
-                        in_right = False
-                    else:
-                        # Second column (right)
-                        in_left = False
-                        in_right = True
-                    continue
-                elif in_columns and in_left:
-                    left_content.append(line)
-                elif in_columns and in_right:
-                    right_content.append(line)
-
-            # Build the columns structure
-            latex += "\\begin{columns}[T]\n"
-
-            # Left column - original text content
-            latex += "\\column{0.48\\textwidth}\n"
-            for line in left_content:
-                if line.strip():
-                    # Process bullet points
-                    if line.strip().startswith('-') or line.strip().startswith('•'):
-                        bullet_content = re.sub(r'^[-•]\s*', '', line.strip())
-                        latex += f"\\item {bullet_content}\n"
-                    else:
-                        latex += line + "\n"
-
-            # Right column - mosaic grid
-            latex += "\\column{0.48\\textwidth}\n"
-            latex += self._generate_mosaic_grid_only(images, rows, cols)
-
-            latex += "\\end{columns}\n"
-
-        else:
-            # No existing columns - just add content then mosaic
-            if content:
-                content_items = self._format_content_items(content)
-                if content_items:
-                    latex += content_items + "\n"
-                    latex += "\\vspace{0.5em}\n"
-
-            # Add the mosaic grid
-            latex += self._generate_mosaic_grid_only(images, rows, cols)
-
-        latex += "\\end{frame}\n"
-        return latex
-
-    def _generate_mosaic_grid_only(self, images: list, rows: int, cols: int) -> str:
-        """Generate just the mosaic grid table (without frame wrapper)"""
-
-        total_cells = rows * cols
-        padded_images = images + [''] * (total_cells - len(images))
-
-        # Calculate available width per column
-        col_width = 0.94 / cols
-
-        latex = "\\begin{center}\n"
-        latex += f"\\begin{{tabular}}{{{'c' * cols}}}\n"
-        latex += "\\hline\n"
-
-        for idx, img_path in enumerate(padded_images):
-            if idx > 0 and idx % cols == 0:
-                latex = latex.rstrip('& ') + "\\\\ \\hline\n"
-
-            if img_path:
-                clean_path = img_path
-                if not clean_path.startswith(('media_files/', './', '/')):
-                    clean_path = f"media_files/{clean_path}"
-
-                # Simplified: no minipage wrapper, just the includegraphics
-                latex += f"\\includegraphics[width={col_width}\\textwidth,height=0.25\\textheight,keepaspectratio]{{{clean_path}}} & "
-            else:
-                # Empty cell placeholder
-                latex += f"\\textcolor{{gray}}{{\\rule{{{col_width}\\textwidth}}{{0.2\\textheight}}}} & "
-
-        latex = latex.rstrip('& ') + "\\\\ \\hline\n"
-        latex += "\\end{tabular}\n"
-        latex += "\\end{center}\n"
-
-        blank_count = padded_images.count('')
-        if blank_count > 0:
-            latex += "\n\\vspace{0.3em}\n"
-            latex += f"\\begin{{center}}\\textcolor{{gray}}{{\\footnotesize {blank_count} placeholder(s) for missing images}}\\end{{center}}\n"
-
-        return latex
 
     def parse_latex_log(self, log_file: str) -> tuple:
         """
