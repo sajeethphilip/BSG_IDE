@@ -1358,7 +1358,202 @@ except ImportError as e:
     from Grammarly import  GrammarlyIntegration,GrammarlySetupDialog,AutomatedGrammarlyIntegration
     from InteractiveTerminal import InteractiveTerminal
 
+class DynamicToolbar:
+    """Manages dynamic toolbar with overflow handling"""
 
+    def __init__(self, parent):
+        self.parent = parent
+        self.all_buttons = []  # Store all button references (widget, priority, pack_info)
+        self.more_menu = None
+        self.more_button = None
+        self.last_width = 0
+        self.is_dynamic = True
+
+    def add_button(self, button, priority=0, pack_kwargs=None):
+        """Add a button with priority (higher priority = stays visible longer)"""
+        if pack_kwargs is None:
+            pack_kwargs = {'side': 'left', 'padx': 2}
+        self.all_buttons.append({
+            'widget': button,
+            'priority': priority,
+            'visible': True,
+            'pack_kwargs': pack_kwargs
+        })
+
+    def add_frame(self, frame, priority=0, pack_kwargs=None):
+        """Add a frame containing multiple widgets"""
+        if pack_kwargs is None:
+            pack_kwargs = {'side': 'left', 'padx': 2}
+        self.all_buttons.append({
+            'widget': frame,
+            'priority': priority,
+            'visible': True,
+            'pack_kwargs': pack_kwargs,
+            'is_frame': True
+        })
+
+    def setup_more_menu(self):
+        """Create the 'More' dropdown menu button"""
+        if self.more_button is None or not self.more_button.winfo_exists():
+            self.more_button = ctk.CTkButton(
+                self.parent,
+                text="▼ More",
+                width=60,
+                command=self.show_more_menu,
+                fg_color="#2F3542",
+                hover_color="#404859"
+            )
+
+    def show_more_menu(self):
+        """Show the dropdown menu with hidden buttons"""
+        if self.more_menu:
+            self.more_menu.destroy()
+
+        self.more_menu = tk.Menu(self.parent, tearoff=0)
+
+        # Add hidden items to menu
+        for btn_info in self.all_buttons:
+            if not btn_info['visible']:
+                widget = btn_info['widget']
+                if widget.winfo_exists():
+                    # Try to get button text
+                    try:
+                        text = widget.cget('text')
+                        if text:
+                            self.more_menu.add_command(
+                                label=text,
+                                command=widget.cget('command')
+                            )
+                    except:
+                        # For frames or complex widgets, add separator with label
+                        if btn_info.get('is_frame'):
+                            self.more_menu.add_separator()
+                            self.more_menu.add_command(
+                                label="Additional Controls",
+                                state="disabled"
+                            )
+
+        # Show menu below the More button
+        if self.more_button and self.more_button.winfo_exists():
+            x = self.more_button.winfo_rootx()
+            y = self.more_button.winfo_rooty() + self.more_button.winfo_height()
+            self.more_menu.tk_popup(x, y)
+
+    def update_layout(self, event=None):
+        """Update button visibility based on available width"""
+        if not self.parent.winfo_exists() or not self.is_dynamic:
+            return
+
+        # Get available width
+        available_width = self.parent.winfo_width() - 30  # Account for padding
+
+        # Don't update if width hasn't changed significantly
+        if abs(available_width - self.last_width) < 50 and self.last_width > 0:
+            return
+        self.last_width = available_width
+
+        # Sort buttons by priority (higher first)
+        sorted_buttons = sorted(
+            self.all_buttons,
+            key=lambda x: x['priority'],
+            reverse=True
+        )
+
+        # Calculate current total width
+        total_width = 0
+        visible_buttons = []
+
+        for btn_info in sorted_buttons:
+            if btn_info['visible'] and btn_info['widget'].winfo_exists():
+                btn_info['widget'].update_idletasks()
+                width = btn_info['widget'].winfo_width()
+                if width <= 1:  # Not yet sized properly
+                    width = 80  # Default width estimate
+                total_width += width + 10
+                visible_buttons.append(btn_info)
+
+        # Determine which buttons to hide
+        more_button_width = 70  # Approximate width of More button
+
+        if total_width > available_width:
+            # Hide lowest priority buttons until we fit
+            hide_count = 0
+            temp_total = total_width
+
+            for btn_info in reversed(sorted_buttons):
+                if btn_info['visible'] and btn_info['widget'].winfo_exists():
+                    btn_width = btn_info['widget'].winfo_width()
+                    if btn_width <= 1:
+                        btn_width = 80
+
+                    if temp_total > available_width - more_button_width:
+                        # Hide this button
+                        btn_info['widget'].pack_forget()
+                        btn_info['visible'] = False
+                        temp_total -= (btn_width + 10)
+                        hide_count += 1
+                    else:
+                        break
+
+            # Show More button if we hid anything
+            if hide_count > 0:
+                self.setup_more_menu()
+                if not self.more_button.winfo_ismapped():
+                    self.more_button.pack(side="right", padx=5)
+            else:
+                if self.more_button and self.more_button.winfo_ismapped():
+                    self.more_button.pack_forget()
+
+        else:
+            # Show hidden buttons if space permits
+            for btn_info in sorted_buttons:
+                if not btn_info['visible'] and btn_info['widget'].winfo_exists():
+                    btn_width = btn_info['widget'].winfo_width()
+                    if btn_width <= 1:
+                        btn_width = 80
+
+                    if total_width + btn_width + 10 <= available_width:
+                        # Repack the button
+                        btn_info['widget'].pack(**btn_info['pack_kwargs'])
+                        btn_info['visible'] = True
+                        total_width += btn_width + 10
+                    else:
+                        break
+
+            # Hide More button if all buttons are visible
+            if all(btn['visible'] for btn in self.all_buttons if btn['widget'].winfo_exists()):
+                if self.more_button and self.more_button.winfo_ismapped():
+                    self.more_button.pack_forget()
+
+    def pack_all(self):
+        """Pack all buttons initially"""
+        for btn_info in self.all_buttons:
+            if btn_info['widget'].winfo_exists():
+                btn_info['widget'].pack(**btn_info['pack_kwargs'])
+                btn_info['visible'] = True
+
+        # Bind resize event
+        self.parent.bind('<Configure>', self.update_layout)
+        self.parent.after(100, self.update_layout)  # Initial layout
+
+    def unbind_events(self):
+        """Unbind resize events for cleanup"""
+        try:
+            self.parent.unbind('<Configure>')
+        except:
+            pass
+
+    def set_dynamic(self, enabled):
+        """Enable or disable dynamic behavior"""
+        self.is_dynamic = enabled
+        if not enabled:
+            # Show all buttons when disabled
+            for btn_info in self.all_buttons:
+                if not btn_info['visible'] and btn_info['widget'].winfo_exists():
+                    btn_info['widget'].pack(**btn_info['pack_kwargs'])
+                    btn_info['visible'] = True
+            if self.more_button and self.more_button.winfo_ismapped():
+                self.more_button.pack_forget()
 
 #---------------Helper Utils ------------------------------
 class SessionManager:
@@ -1633,7 +1828,10 @@ class NotesToolbar(ctk.CTkFrame):
         super().__init__(parent, *args, **kwargs)
         self.notes_editor = notes_editor
 
-        # Templates
+        # Initialize dynamic toolbar
+        self.dynamic_toolbar = None
+
+        # Templates (PRESERVED)
         self.templates = {
             "Key Points": "• Key points:\n  - \n  - \n  - \n",
             "Time Markers": "• Timing guide:\n  0:00 - Introduction\n  0:00 - Main points\n  0:00 - Conclusion",
@@ -1645,10 +1843,13 @@ class NotesToolbar(ctk.CTkFrame):
         self.create_toolbar()
 
     def create_toolbar(self):
-        """Create the notes toolbar"""
-        # Template dropdown
+        """Create the notes toolbar with dynamic layout - ALL FEATURES PRESERVED"""
+
+        # Initialize dynamic toolbar for this frame
+        self.dynamic_toolbar = DynamicToolbar(self)
+
+        # ========== TEMPLATE DROPDOWN (Priority: 100 - Highest) ==========
         template_frame = ctk.CTkFrame(self)
-        template_frame.pack(side="left", padx=5, pady=2)
 
         ctk.CTkLabel(template_frame, text="Template:").pack(side="left", padx=2)
 
@@ -1662,13 +1863,17 @@ class NotesToolbar(ctk.CTkFrame):
         )
         template_menu.pack(side="left", padx=2)
 
-        # Separator
-        ttk.Separator(self, orient="vertical").pack(side="left", padx=5, fill="y", pady=2)
+        # Add template frame to dynamic toolbar
+        self.dynamic_toolbar.add_frame(template_frame, priority=100, pack_kwargs={'side': 'left', 'padx': 5, 'pady': 2})
 
-        # Formatting buttons
+        # ========== SEPARATOR (Priority: 90) ==========
+        separator = ttk.Separator(self, orient="vertical")
+        self.dynamic_toolbar.add_button(separator, priority=90, pack_kwargs={'side': 'left', 'padx': 5, 'fill': 'y', 'pady': 2})
+
+        # ========== FORMATTING BUTTONS (Priority: 80) ==========
         formatting_frame = ctk.CTkFrame(self)
-        formatting_frame.pack(side="left", padx=5, pady=2)
 
+        # ALL formatting buttons preserved exactly as in original
         formatting_buttons = [
             ("B", self.add_bold, "Bold"),
             ("I", self.add_italic, "Italic"),
@@ -1689,10 +1894,30 @@ class NotesToolbar(ctk.CTkFrame):
                 height=30
             )
             btn.pack(side="left", padx=2)
-            self.create_tooltip(btn, tooltip)
+            self.create_tooltip(btn, tooltip)  # Tooltips preserved
+
+        # Add formatting frame to dynamic toolbar
+        self.dynamic_toolbar.add_frame(formatting_frame, priority=80, pack_kwargs={'side': 'left', 'padx': 5, 'pady': 2})
+
+        # ========== PACK ALL ITEMS DYNAMICALLY ==========
+        self.dynamic_toolbar.pack_all()
+
+        # Add resize handling for the parent window
+        def on_parent_resize(event=None):
+            if self.dynamic_toolbar and self.winfo_exists():
+                self.dynamic_toolbar.update_layout()
+
+        # Bind to parent's configure event
+        if hasattr(self, 'master'):
+            self.master.bind('<Configure>', on_parent_resize)
+
+        # Also bind to this frame's configure event
+        self.bind('<Configure>', on_parent_resize)
+
+    # ========== ALL ORIGINAL METHODS PRESERVED BELOW ==========
 
     def create_tooltip(self, widget, text):
-        """Create tooltip for buttons"""
+        """Create tooltip for buttons - PRESERVED"""
         def show_tooltip(event):
             x, y, _, _ = widget.bbox("insert")
             x += widget.winfo_rootx() + 25
@@ -1716,21 +1941,21 @@ class NotesToolbar(ctk.CTkFrame):
         widget.bind('<Leave>', hide_tooltip)
 
     def insert_template(self, choice):
-        """Insert selected template"""
+        """Insert selected template - PRESERVED"""
         if choice in self.templates:
             self.notes_editor.insert('insert', self.templates[choice])
             self.template_var.set("Select Template")  # Reset dropdown
 
     def add_bold(self):
-        """Add bold text"""
+        """Add bold text - PRESERVED"""
         self.wrap_selection(r'\textbf{', '}')
 
     def add_italic(self):
-        """Add italic text"""
+        """Add italic text - PRESERVED"""
         self.wrap_selection(r'\textit{', '}')
 
     def add_color(self):
-        """Add colored text"""
+        """Add colored text - PRESERVED"""
         colors = ['red', 'blue', 'green', 'orange', 'purple']
         color = simpledialog.askstring(
             "Color",
@@ -1741,15 +1966,15 @@ class NotesToolbar(ctk.CTkFrame):
             self.wrap_selection(f'\\textcolor{{{color}}}{{', '}')
 
     def add_highlight(self):
-        """Add highlighted text"""
+        """Add highlighted text - PRESERVED"""
         self.wrap_selection('\\hl{', '}')
 
     def add_bullet(self):
-        """Add bullet point"""
+        """Add bullet point - PRESERVED"""
         self.notes_editor.insert('insert', '\n• ')
 
     def add_timestamp(self):
-        """Add timestamp"""
+        """Add timestamp - PRESERVED"""
         timestamp = simpledialog.askstring(
             "Timestamp",
             "Enter timestamp (MM:SS):",
@@ -1759,15 +1984,15 @@ class NotesToolbar(ctk.CTkFrame):
             self.notes_editor.insert('insert', f'[{timestamp}] ')
 
     def add_alert(self):
-        """Add alert note"""
+        """Add alert note - PRESERVED"""
         self.notes_editor.insert('insert', '⚠ Important: ')
 
     def add_tip(self):
-        """Add tip"""
+        """Add tip - PRESERVED"""
         self.notes_editor.insert('insert', '💡 Tip: ')
 
     def wrap_selection(self, prefix, suffix):
-        """Wrap selected text with prefix and suffix"""
+        """Wrap selected text with prefix and suffix - PRESERVED"""
         try:
             selection = self.notes_editor.get('sel.first', 'sel.last')
             self.notes_editor.delete('sel.first', 'sel.last')
@@ -5521,12 +5746,14 @@ class BeamerSlideEditor(ctk.CTk):
             # Disable Grammarly
             self.grammarly.grammarly_enabled = False
             self.grammarly.save_grammarly_settings()
-            self.grammarly_button.configure(text="Grammarly: Off", fg_color="#dc3545")
+            if hasattr(self, 'grammarly_button'):
+                self.grammarly_button.configure(text="Grammarly: Off", fg_color="#dc3545")
             self.write("Grammarly disabled\n", "yellow")
 
         # Update button state based on current status
         if self.grammarly.grammarly_enabled:
-            self.grammarly_button.configure(text="Grammarly: On", fg_color="#28a745")
+            if hasattr(self, 'grammarly_button'):
+                self.grammarly_button.configure(text="Grammarly: On", fg_color="#28a745")
             self.setup_realtime_grammarly()
 
     def setup_realtime_grammarly(self):
@@ -7786,19 +8013,26 @@ class BeamerSlideEditor(ctk.CTk):
     def on_closing(self):
         """Handle window closing with error handling"""
         try:
+            # Unbind all dynamic toolbar events
+            if hasattr(self, 'upper_dynamic_toolbar'):
+                self.upper_dynamic_toolbar.unbind_events()
+            if hasattr(self, 'lower_dynamic_toolbar'):
+                self.lower_dynamic_toolbar.unbind_events()
+            if hasattr(self, 'media_dynamic_toolbar'):
+                self.media_dynamic_toolbar.unbind_events()
+            if hasattr(self, 'notes_mode_dynamic_toolbar'):
+                self.notes_mode_dynamic_toolbar.unbind_events()
+
+            # Rest of your existing on_closing code...
             if self.session_manager:
-                # Update session data
                 self.session_data.update({
                     'last_file': self.current_file,
                     'working_directory': os.getcwd()
                 })
-
-                # Save session
                 self.session_manager.save_session(self.session_data)
         except Exception as e:
             print(f"Warning: Could not save session on exit: {str(e)}")
         finally:
-            # Always close window
             self.destroy()
 
     def load_file(self, filename: str) -> None:
@@ -8970,7 +9204,7 @@ Created by {self.__author__}
         self.title_entry = ctk.CTkEntry(title_frame, width=400)
         self.title_entry.pack(side="left", padx=5, fill="x", expand=True)
 
-        # Media section
+        # ========== MEDIA SECTION WITH DYNAMIC TOOLBAR ==========
         media_frame = ctk.CTkFrame(self.editor_frame)
         media_frame.pack(fill="x", padx=5, pady=5)
 
@@ -8982,28 +9216,24 @@ Created by {self.__author__}
         self.media_entry = ctk.CTkEntry(media_label_frame, width=300)
         self.media_entry.pack(side="left", padx=5, fill="x", expand=True)
 
-        # Media buttons frame
+        # Media buttons frame with dynamic toolbar
         media_buttons = ctk.CTkFrame(media_frame)
         media_buttons.pack(side="right", padx=5)
 
-        # Standard media buttons
+        # Initialize dynamic toolbar for media buttons
+        self.media_dynamic_toolbar = DynamicToolbar(media_buttons)
+
+        # ALL original media buttons preserved with priorities
         button_configs = [
-            ("Local File", self.browse_media, "Browse local media files"),
-            ("YouTube", self.youtube_dialog, "Add YouTube video"),
-            ("Search Images", self.search_images, "Search for images online"),
-            None,  # Separator
-            ("📷 Camera", self.open_camera, "Capture from camera"),
-            ("🖥️ Screen", self.capture_screen, "Capture screen area"),
-            ("❌ No Media", lambda: self.media_entry.insert(0, "\\None"), "Create slide without media")
+            ("Local File", self.browse_media, "Browse local media files", 100),
+            ("YouTube", self.youtube_dialog, "Add YouTube video", 90),
+            ("Search Images", self.search_images, "Search for images online", 80),
+            ("📷 Camera", self.open_camera, "Capture from camera", 70),
+            ("🖥️ Screen", self.capture_screen, "Capture screen area", 70),
+            ("❌ No Media", lambda: self.media_entry.insert(0, "\\None"), "Create slide without media", 60)
         ]
 
-        for config in button_configs:
-            if config is None:
-                # Add separator
-                ttk.Separator(media_buttons, orient="vertical").pack(side="left", padx=5, pady=5, fill="y")
-                continue
-
-            text, command, tooltip = config
+        for text, command, tooltip, priority in button_configs:
             is_capture = text.startswith(('📷', '🖥️', '❌'))
 
             btn = ctk.CTkButton(
@@ -9014,8 +9244,11 @@ Created by {self.__author__}
                 fg_color="#4A90E2" if is_capture else None,
                 hover_color="#357ABD" if is_capture else None
             )
-            btn.pack(side="left", padx=2)
             self.create_tooltip(btn, tooltip)
+            self.media_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 2})
+
+        # Pack all media buttons dynamically
+        self.media_dynamic_toolbar.pack_all()
 
         # Create editors container
         editors_frame = ctk.CTkFrame(self.editor_frame)
@@ -9050,12 +9283,15 @@ Created by {self.__author__}
 
         # Notes mode buttons
         buttons_config = [
-            ("slides", "Slides Only", "Generate slides without notes", "#2B87BB", "#1B5577"),
-            ("notes", "Notes Only", "Generate notes only", "#27AE60", "#1A7340"),
-            ("both", "Slides + Notes", "Generate slides with notes", "#8E44AD", "#5E2D73")
+            ("slides", "Slides Only", "Generate slides without notes", "#2B87BB", "#1B5577", 100),
+            ("notes", "Notes Only", "Generate notes only", "#27AE60", "#1A7340", 90),
+            ("both", "Slides + Notes", "Generate slides with notes", "#8E44AD", "#5E2D73", 80)
         ]
 
-        for mode, text, tooltip, active_color, hover_color in buttons_config:
+        # Initialize dynamic toolbar for notes mode buttons
+        self.notes_mode_dynamic_toolbar = DynamicToolbar(notes_buttons)
+
+        for mode, text, tooltip, active_color, hover_color, priority in buttons_config:
             btn = ctk.CTkButton(
                 notes_buttons,
                 text=text,
@@ -9064,15 +9300,22 @@ Created by {self.__author__}
                 fg_color=active_color if self.notes_mode.get() == mode else "gray",
                 hover_color=hover_color
             )
-            btn.pack(side="left", padx=2)
             self.create_tooltip(btn, tooltip)
+            self.notes_mode_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 2})
+
+            # Store button references for later updates
+            if not hasattr(self, 'notes_buttons'):
+                self.notes_buttons = {}
             self.notes_buttons[mode] = {
                 'button': btn,
                 'active_color': active_color,
                 'hover_color': hover_color
             }
 
-        # Editor options row (new)
+        # Pack notes mode buttons dynamically
+        self.notes_mode_dynamic_toolbar.pack_all()
+
+        # Editor options row
         editor_options = ctk.CTkFrame(notes_frame)
         editor_options.pack(fill="x", padx=5, pady=(10, 5))
 
@@ -10116,29 +10359,33 @@ Created by {self.__author__}
 
 
     def create_toolbar(self) -> None:
-        """Create main editor toolbar with presentation features and capture controls split into two rows"""
+        """Create main editor toolbar with dynamic layout - ALL FEATURES PRESERVED"""
         # Create main toolbar container
         self.toolbar = ctk.CTkFrame(self)
         self.toolbar.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
 
-        # Upper row for file and presentation operations
-        upper_row = ctk.CTkFrame(self.toolbar)
-        upper_row.pack(fill="x", padx=5, pady=(5, 2))
+        # Initialize dynamic toolbar managers
+        self.upper_dynamic_toolbar = DynamicToolbar(self.toolbar)
+        self.lower_dynamic_toolbar = DynamicToolbar(self.toolbar)
 
-        # Basic file operations buttons
+        # ========== UPPER ROW - File and presentation operations ==========
+        upper_row = ctk.CTkFrame(self.toolbar)
+
+        # ALL original upper buttons preserved with priorities
+        # Higher priority = stays visible longer
         buttons_upper = [
-            ("New", self.new_file, "Create new presentation"),
-            ("Open", self.open_file, "Open existing presentation"),
-            ("Save", self.save_file, "Save current presentation"),
-            ("Convert to TeX", self.convert_to_tex, "Convert to LaTeX format"),
-            ("Generate PDF", self.generate_pdf, "Generate PDF file"),
-            ("Present with Notes", self.present_with_notes, "Launch dual-screen presentation with notes"),
-            ("Preview PDF", self.preview_pdf, "View generated PDF"),
-            ("Load TeX", self.load_tex_file, "Load and convert Beamer TeX file"),
-            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF")
+            ("New", self.new_file, "Create new presentation", 100),
+            ("Open", self.open_file, "Open existing presentation", 100),
+            ("Save", self.save_file, "Save current presentation", 100),
+            ("Generate PDF", self.generate_pdf, "Generate PDF file", 95),  # High priority
+            ("Convert to TeX", self.convert_to_tex, "Convert to LaTeX format", 85),
+            ("Preview PDF", self.preview_pdf, "View generated PDF", 80),
+            ("Present with Notes", self.present_with_notes, "Launch dual-screen presentation with notes", 75),
+            ("Load TeX", self.load_tex_file, "Load and convert Beamer TeX file", 70),
+            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF", 65)
         ]
 
-        for text, command, tooltip in buttons_upper:
+        for text, command, tooltip, priority in buttons_upper:
             if text == "Export to Overleaf":
                 btn = ctk.CTkButton(
                     upper_row,
@@ -10164,28 +10411,31 @@ Created by {self.__author__}
                     command=command,
                     width=100
                 )
-            btn.pack(side="left", padx=5)
             self.create_tooltip(btn, tooltip)
+            self.upper_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 5})
 
-        # Lower row for screen capture controls
+        # Pack upper row
+        upper_row.pack(fill="x", padx=5, pady=(5, 2))
+        self.upper_dynamic_toolbar.pack_all()
+
+
+        # ========== LOWER ROW - Screen capture and additional controls ==========
         lower_row = ctk.CTkFrame(self.toolbar)
-        lower_row.pack(fill="x", padx=5, pady=(2, 5))
 
-        # Left side - Screen capture controls
+        # ========== LEFT SIDE - Screen capture controls ==========
         capture_frame = ctk.CTkFrame(lower_row, fg_color="transparent")
-        capture_frame.pack(side="left", padx=5)
 
-        # Screen capture label
+        # Screen capture label (PRESERVED)
         capture_label = ctk.CTkLabel(capture_frame, text="Screen Capture:")
         capture_label.pack(side="left", padx=5)
         self.create_tooltip(capture_label, "Choose capture mode and settings")
 
-        # Initialize capture settings
+        # Initialize capture settings (PRESERVED)
         self.capture_mode = tk.StringVar(value="single")
         self.frame_count = tk.IntVar(value=10)
         self.frame_delay = tk.DoubleVar(value=0.5)
 
-        # Single frame mode
+        # Single frame mode (PRESERVED)
         single_btn = ctk.CTkRadioButton(
             capture_frame,
             text="Single",
@@ -10195,7 +10445,7 @@ Created by {self.__author__}
         single_btn.pack(side="left", padx=5)
         self.create_tooltip(single_btn, "Capture single screenshot")
 
-        # Animation mode
+        # Animation mode (PRESERVED)
         anim_btn = ctk.CTkRadioButton(
             capture_frame,
             text="Animation",
@@ -10205,10 +10455,10 @@ Created by {self.__author__}
         anim_btn.pack(side="left", padx=5)
         self.create_tooltip(anim_btn, "Capture animated GIF")
 
-        # Animation settings (shown/hidden based on mode)
+        # Animation settings frame (PRESERVED - initially hidden)
         self.anim_settings = ctk.CTkFrame(capture_frame, fg_color="transparent")
 
-        # Frames control
+        # Frames control (PRESERVED)
         frames_frame = ctk.CTkFrame(self.anim_settings, fg_color="transparent")
         frames_frame.pack(side="left", padx=5)
         ctk.CTkLabel(frames_frame, text="Frames:").pack(side="left")
@@ -10216,7 +10466,7 @@ Created by {self.__author__}
         frames_entry.pack(side="left", padx=2)
         self.create_tooltip(frames_entry, "Number of frames to capture")
 
-        # Delay control
+        # Delay control (PRESERVED)
         delay_frame = ctk.CTkFrame(self.anim_settings, fg_color="transparent")
         delay_frame.pack(side="left", padx=5)
         ctk.CTkLabel(delay_frame, text="Delay:").pack(side="left")
@@ -10224,7 +10474,7 @@ Created by {self.__author__}
         delay_entry.pack(side="left", padx=2)
         self.create_tooltip(delay_entry, "Delay between frames (seconds)")
 
-        # Capture button
+        # Capture button (PRESERVED)
         capture_btn = ctk.CTkButton(
             capture_frame,
             text="Capture",
@@ -10236,39 +10486,81 @@ Created by {self.__author__}
         capture_btn.pack(side="left", padx=5)
         self.create_tooltip(capture_btn, "Start screen capture")
 
-        # Add separator
-        ttk.Separator(lower_row, orient="vertical").pack(side="left", padx=10, pady=5, fill="y")
+        # Add capture frame to dynamic toolbar (high priority)
+        self.lower_dynamic_toolbar.add_frame(capture_frame, priority=100, pack_kwargs={'side': 'left', 'padx': 5})
 
-        # Right side - Moved buttons from top menu
+        # ========== SEPARATOR (PRESERVED) ==========
+        separator = ttk.Separator(lower_row, orient="vertical")
+        self.lower_dynamic_toolbar.add_button(separator, priority=90, pack_kwargs={'side': 'left', 'padx': 10, 'fill': 'y', 'pady': 5})
+
+        # ========== RIGHT SIDE - Additional buttons (PRESERVED) ==========
+        right_frame = ctk.CTkFrame(lower_row, fg_color="transparent")
+
+        # ALL original right buttons preserved
         right_buttons = [
-            ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble"),
-            ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings"),
-            ("Get Source", self.get_source_from_tex, "Extract source from TEX file"),
-            ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip")
+            ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble", 80),
+            ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings", 80),
+            ("Get Source", self.get_source_from_tex, "Extract source from TEX file", 70),
+            ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip", 60),
+            ("TikZ Colors", self.show_tikz_color_helper, "TikZ Color Helper", 50),
+            ("Command Index", self.show_enhanced_command_index, "LaTeX Command Reference", 50),
+            ("Grammarly", self.toggle_grammarly, "Toggle Grammarly grammar checking", 40)
         ]
 
-        for text, command, tooltip in right_buttons:
-            btn = ctk.CTkButton(
-                lower_row,
-                text=text,
-                command=command,
-                width=130
-            )
+        for text, command, tooltip, priority in right_buttons:
+            if text == "Export to Overleaf":
+                btn = ctk.CTkButton(
+                    right_frame,
+                    text=text,
+                    command=command,
+                    width=130,
+                    fg_color="#47A141",
+                    hover_color="#2E8B57"
+                )
+            elif text == "Grammarly":
+                btn = ctk.CTkButton(
+                    right_frame,
+                    text=f"{text}: Off",
+                    command=command,
+                    width=100,
+                    fg_color="#dc3545"
+                )
+                self.grammarly_button = btn  # Store reference for later updates
+            else:
+                btn = ctk.CTkButton(
+                    right_frame,
+                    text=text,
+                    command=command,
+                    width=130
+                )
             btn.pack(side="left", padx=5)
             self.create_tooltip(btn, tooltip)
+            self.lower_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 5})
 
-        # Function to show/hide animation settings
+        # Add right frame to dynamic toolbar
+        self.lower_dynamic_toolbar.add_frame(right_frame, priority=70, pack_kwargs={'side': 'right', 'padx': 5})
+
+        # Pack lower row
+        lower_row.pack(fill="x", padx=5, pady=(2, 5))
+        self.lower_dynamic_toolbar.pack_all()
+
+        # ========== ANIMATION SETTINGS TOGGLE (PRESERVED) ==========
         def toggle_anim_settings(*args):
+            """Show/hide animation settings based on mode - PRESERVED"""
             if self.capture_mode.get() == "animation":
                 self.anim_settings.pack(side='left', padx=5)
+                # Update layout after showing
+                self.lower_dynamic_toolbar.update_layout()
             else:
                 self.anim_settings.pack_forget()
+                self.lower_dynamic_toolbar.update_layout()
 
-        # Bind mode changes
+        # Bind mode changes (PRESERVED)
         self.capture_mode.trace('w', toggle_anim_settings)
 
-        # Initial state
+        # Initial state (PRESERVED)
         toggle_anim_settings()
+
 #------------------------------------------------------------------------------------------------------
 
     def on_notes_mode_change(self, mode: str) -> None:
@@ -10999,11 +11291,21 @@ Created by {self.__author__}
 
             # Process each slide
             for idx, slide in enumerate(self.slides):
+                # ========== CRITICAL FIX: Check BOTH flags for deleted slides ==========
                 is_fully_masked = slide.get('_fully_masked', False)
 
+                # Also check if title has [DELETED] marker (from older slides)
+                slide_title = slide.get('title', '')
+                if slide_title.startswith('[DELETED]'):
+                    is_fully_masked = True
+                    # Also update the flag for consistency
+                    slide['_fully_masked'] = True
+
+                # Skip fully masked slides entirely - NO output at all
                 if is_fully_masked:
                     total_skipped_slides += 1
-                    continue
+                    self.write(f"  Skipping fully masked slide {idx + 1}: {slide_title}\n", "yellow")
+                    continue  # ← This is the key: completely skip the slide
 
                 hidden_content_indices = set(slide.get('_hidden_content_indices', []))
                 hidden_note_indices = set(slide.get('_hidden_note_indices', []))
@@ -11045,19 +11347,18 @@ Created by {self.__author__}
                 # Check if content already has columns (regular LaTeX, NOT a layout directive)
                 has_existing_columns = any('\\begin{columns}' in line for line in visible_content)
 
+                # Skip if no visible content at all
                 if not visible_content and not visible_notes and not has_valid_image:
                     total_skipped_slides += 1
+                    self.write(f"  Skipping empty slide {idx + 1}\n", "yellow")
                     continue
 
                 total_visible_slides += 1
 
-                slide_title = slide.get('title', 'Untitled')
                 clean_title = re.sub(r'^\[DELETED\]\s*', '', slide_title)
 
                 # ============================================================
                 # CHECK FOR LAYOUT DIRECTIVES ANYWHERE IN CONTENT
-                # IMPORTANT: This ONLY detects explicit layout directives like \mosaic, \wm, etc.
-                # NOT regular LaTeX environments like \begin{columns}
                 # ============================================================
                 layout_type, layout_params, layout_line_index = find_layout_in_content(visible_content)
                 has_layout = layout_type is not None
@@ -11104,7 +11405,6 @@ Created by {self.__author__}
 
                 # ============================================================
                 # CASE 2: No layout directive - use standard processing
-                # This handles regular slides with or without \begin{columns}
                 # ============================================================
                 frame_lines = []
                 frame_lines.append(f"\\begin{{frame}}{{{clean_title}}}")
