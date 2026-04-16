@@ -7038,6 +7038,388 @@ class SearchReplacePanel(ctk.CTkToplevel):
         else:
             self.status_label.configure(text="No matches found", text_color="yellow")
 
+class MenuBar(ctk.CTkFrame):
+    """Comprehensive menu bar for BSG-IDE"""
+
+    def __init__(self, parent, editor):
+        super().__init__(parent, fg_color="transparent")
+        self.editor = editor
+        self.create_menus()
+
+    def create_menus(self):
+        """Create all menu bars"""
+        # Create main menu bar container
+        self.menu_container = tk.Menu(self)
+
+        # Create individual menus
+        self.create_file_menu()
+        self.create_edit_menu()
+        self.create_slide_menu()
+        self.create_view_menu()
+        self.create_insert_menu()
+        self.create_tools_menu()
+        self.create_help_menu()
+
+        # Configure the menu bar
+        self.master.config(menu=self.menu_container)
+
+    def create_file_menu(self):
+        """Create File menu"""
+        file_menu = tk.Menu(self.menu_container, tearoff=0)
+
+        file_menu.add_command(label="New", command=self.editor.new_file, accelerator="Ctrl+N")
+        file_menu.add_command(label="Open...", command=self.editor.open_file, accelerator="Ctrl+O")
+        file_menu.add_command(label="Save", command=self.editor.save_file, accelerator="Ctrl+S")
+        file_menu.add_separator()
+
+        # Recent files submenu
+        self.recent_menu = tk.Menu(file_menu, tearoff=0)
+        file_menu.add_cascade(label="Recent Files", menu=self.recent_menu)
+        self.update_recent_menu()
+
+        file_menu.add_separator()
+        file_menu.add_command(label="Load TeX File...", command=self.editor.load_tex_file)
+        file_menu.add_command(label="Get Source from TeX...", command=self.editor.get_source_from_tex)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export to Overleaf...", command=self.editor.create_overleaf_zip)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.editor.on_closing, accelerator="Ctrl+Q")
+
+        self.menu_container.add_cascade(label="File", menu=file_menu)
+
+    def update_recent_menu(self):
+        """Update the recent files menu"""
+        self.recent_menu.delete(0, 'end')
+        if hasattr(self.editor, 'session_data') and self.editor.session_data.get('recent_files'):
+            for filepath in self.editor.session_data['recent_files'][-10:]:
+                if os.path.exists(filepath):
+                    self.recent_menu.add_command(
+                        label=os.path.basename(filepath),
+                        command=lambda f=filepath: self.editor.load_file(f)
+                    )
+        else:
+            self.recent_menu.add_command(label="No recent files", state="disabled")
+
+    def create_edit_menu(self):
+        """Create Edit menu with undo/redo and editing operations"""
+        edit_menu = tk.Menu(self.menu_container, tearoff=0)
+
+        edit_menu.add_command(label="Undo", command=self.editor.undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="Redo", command=self.editor.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Cut", command=lambda: self.editor_focused_action('cut'), accelerator="Ctrl+X")
+        edit_menu.add_command(label="Copy", command=lambda: self.editor_focused_action('copy'), accelerator="Ctrl+C")
+        edit_menu.add_command(label="Paste", command=lambda: self.editor_focused_action('paste'), accelerator="Ctrl+V")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Find/Replace", command=self.show_search_replace, accelerator="Ctrl+F")
+        edit_menu.add_separator()
+
+        # Slide operations submenu
+        slide_ops = tk.Menu(edit_menu, tearoff=0)
+        slide_ops.add_command(label="New Slide", command=self.editor.new_slide, accelerator="Ctrl+N")
+        slide_ops.add_command(label="Duplicate Slide", command=self.editor.duplicate_slide, accelerator="Ctrl+D")
+        slide_ops.add_command(label="Delete Slide", command=self.editor.delete_slide, accelerator="Delete")
+        slide_ops.add_separator()
+        slide_ops.add_command(label="Move Slide Up", command=lambda: self.editor.move_slide(-1), accelerator="Ctrl+Up")
+        slide_ops.add_command(label="Move Slide Down", command=lambda: self.editor.move_slide(1), accelerator="Ctrl+Down")
+        edit_menu.add_cascade(label="Slide Operations", menu=slide_ops)
+
+        # Mask/Unmask operations
+        mask_ops = tk.Menu(edit_menu, tearoff=0)
+        mask_ops.add_command(label="Mask/Unmask Line", command=lambda: self.editor.mask_line_in_editor(), accelerator="Ctrl+Delete")
+        mask_ops.add_command(label="Mask Current Slide", command=self.editor.mask_current_slide)
+        mask_ops.add_command(label="Restore Current Slide", command=self.editor.restore_deleted_slide, accelerator="Ctrl+Shift+R")
+        mask_ops.add_command(label="Restore All Deleted", command=self.editor.restore_all_deleted_slides)
+        mask_ops.add_separator()
+        mask_ops.add_command(label="Permanently Delete Masked", command=self.editor.permanently_delete_masked_slides)
+        edit_menu.add_cascade(label="Mask/Unmask", menu=mask_ops)
+
+        self.menu_container.add_cascade(label="Edit", menu=edit_menu)
+
+    def editor_focused_action(self, action):
+        """Perform edit action on focused widget"""
+        focused = self.editor.focus_get()
+
+        if action == 'cut':
+            try:
+                focused.event_generate('<<Cut>>')
+            except:
+                pass
+        elif action == 'copy':
+            try:
+                focused.event_generate('<<Copy>>')
+            except:
+                pass
+        elif action == 'paste':
+            try:
+                focused.event_generate('<<Paste>>')
+            except:
+                pass
+
+    def show_search_replace(self):
+        """Show search/replace dialog"""
+        focused = self.editor.focus_get()
+        if focused in [self.editor.content_editor._textbox, self.editor.notes_editor._textbox]:
+            SearchReplacePanel(self.editor, focused)
+
+    def create_slide_menu(self):
+        """Create Slide menu"""
+        slide_menu = tk.Menu(self.menu_container, tearoff=0)
+
+        slide_menu.add_command(label="New Slide", command=self.editor.new_slide, accelerator="Ctrl+N")
+        slide_menu.add_command(label="Insert Below", command=self.editor.insert_slide_below, accelerator="Ctrl+I")
+        slide_menu.add_command(label="Duplicate Slide", command=self.editor.duplicate_slide, accelerator="Ctrl+D")
+        slide_menu.add_separator()
+        slide_menu.add_command(label="Delete/Mask Slide", command=self.editor.delete_slide, accelerator="Delete")
+        slide_menu.add_command(label="Restore Deleted Slide", command=self.editor.restore_deleted_slide, accelerator="Ctrl+Shift+R")
+        slide_menu.add_separator()
+        slide_menu.add_command(label="Move Slide Up", command=lambda: self.editor.move_slide(-1), accelerator="Ctrl+Up")
+        slide_menu.add_command(label="Move Slide Down", command=lambda: self.editor.move_slide(1), accelerator="Ctrl+Down")
+        slide_menu.add_separator()
+        slide_menu.add_command(label="Restore All Deleted Slides", command=self.editor.restore_all_deleted_slides)
+        slide_menu.add_command(label="Permanently Delete Masked Slides", command=self.editor.permanently_delete_masked_slides)
+
+        self.menu_container.add_cascade(label="Slide", menu=slide_menu)
+
+    def create_view_menu(self):
+        """Create View menu"""
+        view_menu = tk.Menu(self.menu_container, tearoff=0)
+
+        # Syntax highlighting toggle
+        self.syntax_var = tk.BooleanVar(value=True)
+        view_menu.add_checkbutton(label="Syntax Highlighting", variable=self.syntax_var,
+                                  command=self.toggle_syntax_highlighting)
+
+        # Terminal toggle
+        view_menu.add_command(label="Toggle Terminal", command=self.editor.toggle_terminal, accelerator="Ctrl+T")
+        view_menu.add_separator()
+
+        # Notes mode submenu
+        notes_menu = tk.Menu(view_menu, tearoff=0)
+        self.notes_mode_var = tk.StringVar(value="both")
+
+        notes_menu.add_radiobutton(label="Slides Only", variable=self.notes_mode_var,
+                                   value="slides", command=lambda: self.set_notes_mode("slides"))
+        notes_menu.add_radiobutton(label="Notes Only", variable=self.notes_mode_var,
+                                   value="notes", command=lambda: self.set_notes_mode("notes"))
+        notes_menu.add_radiobutton(label="Slides + Notes", variable=self.notes_mode_var,
+                                   value="both", command=lambda: self.set_notes_mode("both"))
+        view_menu.add_cascade(label="Notes Mode", menu=notes_menu)
+
+        view_menu.add_separator()
+
+        # Show deleted slides toggle
+        self.show_deleted_var = tk.BooleanVar(value=True)
+        view_menu.add_checkbutton(label="Show Deleted Slides", variable=self.show_deleted_var,
+                                  command=self.toggle_show_deleted)
+
+        self.menu_container.add_cascade(label="View", menu=view_menu)
+
+    def toggle_syntax_highlighting(self):
+        """Toggle syntax highlighting"""
+        if hasattr(self.editor, 'syntax_highlighter'):
+            if self.syntax_var.get():
+                self.editor.syntax_highlighter.active = True
+                self.editor.syntax_highlighter.highlight()
+            else:
+                self.editor.syntax_highlighter.active = False
+                self.editor.syntax_highlighter.clear_highlighting()
+
+    def set_notes_mode(self, mode):
+        """Set notes mode"""
+        if hasattr(self.editor, 'set_notes_mode'):
+            self.editor.set_notes_mode(mode)
+
+    def toggle_show_deleted(self):
+        """Toggle showing deleted slides"""
+        if hasattr(self.editor, 'show_deleted_slides'):
+            self.editor.show_deleted_slides = self.show_deleted_var.get()
+            self.editor.update_slide_list()
+
+    def create_insert_menu(self):
+        """Create Insert menu"""
+        insert_menu = tk.Menu(self.menu_container, tearoff=0)
+
+        # LaTeX commands
+        insert_menu.add_command(label="LaTeX Command Index...", command=self.editor.show_enhanced_command_index)
+        insert_menu.add_separator()
+
+        # List elements
+        insert_menu.add_command(label="Bullet Point", command=lambda: self.insert_into_focused("- "))
+        insert_menu.add_command(label="Itemize Environment", command=lambda: self.insert_into_focused("\\begin{itemize}\n\\item \n\\end{itemize}"))
+        insert_menu.add_command(label="Enumerate Environment", command=lambda: self.insert_into_focused("\\begin{enumerate}\n\\item \n\\end{enumerate}"))
+        insert_menu.add_separator()
+
+        # Text formatting
+        format_menu = tk.Menu(insert_menu, tearoff=0)
+        format_menu.add_command(label="Bold", command=lambda: self.wrap_selection(r'\textbf{', '}'))
+        format_menu.add_command(label="Italic", command=lambda: self.wrap_selection(r'\textit{', '}'))
+        format_menu.add_command(label="Color", command=self.insert_color_command)
+        format_menu.add_command(label="Highlight", command=lambda: self.wrap_selection(r'\hl{', '}'))
+        insert_menu.add_cascade(label="Text Formatting", menu=format_menu)
+
+        insert_menu.add_separator()
+
+        # Media
+        media_menu = tk.Menu(insert_menu, tearoff=0)
+        media_menu.add_command(label="Local File...", command=self.editor.browse_media)
+        media_menu.add_command(label="YouTube Video...", command=self.editor.youtube_dialog)
+        media_menu.add_command(label="Search Images...", command=self.editor.search_images)
+        media_menu.add_command(label="Screen Capture...", command=self.editor.capture_screen)
+        media_menu.add_command(label="Camera Capture...", command=self.editor.open_camera)
+        insert_menu.add_cascade(label="Media", menu=media_menu)
+
+        insert_menu.add_separator()
+
+        # TikZ elements
+        tikz_menu = tk.Menu(insert_menu, tearoff=0)
+        tikz_menu.add_command(label="TikZ Color Helper...", command=self.editor.show_tikz_color_helper)
+        tikz_menu.add_command(label="Basic Node", command=lambda: self.insert_into_focused("\\node[fill=airis4d_blue, text=white] {Text};"))
+        tikz_menu.add_command(label="Simple Diagram", command=self.insert_tikz_diagram)
+        insert_menu.add_cascade(label="TikZ Elements", menu=tikz_menu)
+
+        self.menu_container.add_cascade(label="Insert", menu=insert_menu)
+
+    def insert_into_focused(self, text):
+        """Insert text into focused editor"""
+        focused = self.editor.focus_get()
+        if focused in [self.editor.content_editor._textbox, self.editor.notes_editor._textbox]:
+            focused.insert("insert", text)
+        elif focused == self.editor.title_entry:
+            focused.insert("insert", text)
+
+    def wrap_selection(self, prefix, suffix):
+        """Wrap selected text with prefix and suffix"""
+        focused = self.editor.focus_get()
+        if focused in [self.editor.content_editor._textbox, self.editor.notes_editor._textbox]:
+            try:
+                selection = focused.get('sel.first', 'sel.last')
+                focused.delete('sel.first', 'sel.last')
+                focused.insert('insert', f'{prefix}{selection}{suffix}')
+            except tk.TclError:
+                focused.insert('insert', f'{prefix}{suffix}')
+
+    def insert_color_command(self):
+        """Insert textcolor command"""
+        from tkinter import simpledialog
+        color = simpledialog.askstring("Color", "Enter color name or RGB (e.g., red, blue, #FF0000):")
+        if color:
+            self.wrap_selection(f'\\textcolor{{{color}}}{{', '}')
+
+    def insert_tikz_diagram(self):
+        """Insert a simple TikZ diagram template"""
+        diagram = """\\begin{tikzpicture}
+    \\draw[fill=airis4d_blue] (0,0) rectangle (2,1);
+    \\node[text=white] at (1,0.5) {Label};
+\\end{tikzpicture}"""
+        self.insert_into_focused(diagram)
+
+    def create_tools_menu(self):
+        """Create Tools menu"""
+        tools_menu = tk.Menu(self.menu_container, tearoff=0)
+
+        tools_menu.add_command(label="Presentation Settings...", command=self.editor.show_settings_dialog)
+        tools_menu.add_command(label="Edit Preamble...", command=self.editor.edit_preamble)
+        tools_menu.add_separator()
+
+        # Generation
+        gen_menu = tk.Menu(tools_menu, tearoff=0)
+        gen_menu.add_command(label="Generate PDF", command=self.editor.generate_pdf)
+        gen_menu.add_command(label="Convert to TeX", command=self.editor.convert_to_tex)
+        gen_menu.add_command(label="Preview PDF", command=self.editor.preview_pdf)
+        gen_menu.add_command(label="Present with Notes", command=self.editor.present_with_notes)
+        tools_menu.add_cascade(label="Generation", menu=gen_menu)
+
+        tools_menu.add_separator()
+
+        # Grammarly
+        self.grammarly_var = tk.BooleanVar(value=False)
+        tools_menu.add_checkbutton(label="Grammarly Integration", variable=self.grammarly_var,
+                                   command=self.toggle_grammarly)
+        tools_menu.add_command(label="Setup Grammarly...", command=self.setup_grammarly)
+
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Spell Check Settings...", command=self.editor.show_spellcheck_settings)
+
+        self.menu_container.add_cascade(label="Tools", menu=tools_menu)
+
+    def toggle_grammarly(self):
+        """Toggle Grammarly integration"""
+        if hasattr(self.editor, 'toggle_grammarly'):
+            self.editor.toggle_grammarly()
+            # Update button state if needed
+            if hasattr(self.editor, 'grammarly_button'):
+                self.grammarly_var.set(self.editor.grammarly.grammarly_enabled)
+
+    def setup_grammarly(self):
+        """Setup Grammarly integration"""
+        if hasattr(self.editor, 'setup_grammarly_manually'):
+            self.editor.setup_grammarly_manually()
+
+    def create_help_menu(self):
+        """Create Help menu"""
+        help_menu = tk.Menu(self.menu_container, tearoff=0)
+
+        help_menu.add_command(label="LaTeX Command Reference...", command=self.editor.show_enhanced_command_index)
+        help_menu.add_command(label="Keyboard Shortcuts...", command=self.show_shortcuts)
+        help_menu.add_separator()
+        help_menu.add_command(label="About BSG-IDE", command=self.editor.create_about_dialog)
+
+        self.menu_container.add_cascade(label="Help", menu=help_menu)
+
+    def show_shortcuts(self):
+        """Show keyboard shortcuts dialog"""
+        shortcuts_text = """
+        Keyboard Shortcuts:
+
+        File Operations:
+        Ctrl+N - New presentation
+        Ctrl+O - Open file
+        Ctrl+S - Save file
+        Ctrl+Q - Exit
+
+        Edit Operations:
+        Ctrl+Z - Undo
+        Ctrl+Y - Redo
+        Ctrl+X/C/V - Cut/Copy/Paste
+        Ctrl+F - Find/Replace
+        Ctrl+Delete - Mask/Unmask current line
+
+        Slide Navigation:
+        Ctrl+Up/Down - Move current slide
+        Ctrl+Left/Right - Navigate to previous/next slide
+        Delete - Delete/mask current slide
+        Ctrl+Shift+R - Restore deleted slide
+
+        View Operations:
+        Ctrl+T - Toggle terminal
+
+        Slide Creation:
+        Ctrl+N - New slide
+        Ctrl+I - Insert slide below
+        Ctrl+D - Duplicate slide
+        """
+
+        dialog = ctk.CTkToplevel(self.editor)
+        dialog.title("Keyboard Shortcuts")
+        dialog.geometry("500x500")
+        dialog.transient(self.editor)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 500) // 2
+        y = (dialog.winfo_screenheight() - 500) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        text_widget = ctk.CTkTextbox(dialog, font=("Courier", 11))
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+        text_widget.insert("1.0", shortcuts_text)
+        text_widget.configure(state="disabled")
+
+        ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(pady=10)
+
+
 class BeamerSlideEditor(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -7049,7 +7431,7 @@ class BeamerSlideEditor(ctk.CTk):
       / /\\ \\
      /_/  \\_\\ LABS
     """
-        self.__version__ = "4.6.4"
+        self.__version__ = "5.6.4"
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
@@ -7262,6 +7644,9 @@ class BeamerSlideEditor(ctk.CTk):
 
         # Add to the __init__ method of BeamerSlideEditor
         self._current_citation_map = {}  # For bibliography back-references
+
+        # Create menu bar
+        self.menu_bar = MenuBar(self, self)
 
     def create_line_context_menu(self):
         """Create context menu for line operations in editors"""
