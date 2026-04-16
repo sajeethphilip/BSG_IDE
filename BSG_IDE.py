@@ -139,7 +139,13 @@ working_folder=os.path.expanduser("~")
 global original_dir
 original_dir = os.path.expanduser("~")
 from tkinter import messagebox
-
+try:
+    from EnhancedCommandDialog import LatexCommandHelper, CommandTooltip
+    ENHANCED_FEATURES_AVAILABLE = True
+except ImportError:
+    from Grammarly import LatexCommandHelper
+    CommandTooltip = None
+    ENHANCED_FEATURES_AVAILABLE = False
 import logging
 
 # Setup logging
@@ -1555,6 +1561,533 @@ class DynamicToolbar:
             if self.more_button and self.more_button.winfo_ismapped():
                 self.more_button.pack_forget()
 
+class LocalPackageInstaller:
+    """Install packages locally without requiring sudo/root permissions"""
+
+    def __init__(self, parent=None, verbose=True):
+        self.parent = parent
+        self.verbose = verbose
+        self.local_texmf = Path.home() / 'texmf'
+        self.local_texmf.mkdir(parents=True, exist_ok=True)
+
+    def write(self, text, color="white"):
+        """Write message to terminal or parent"""
+        if self.parent and hasattr(self.parent, 'write'):
+            self.parent.write(text, color)
+        elif self.verbose:
+            print(text)
+
+    def install_latex_package_local(self, package_name: str) -> bool:
+        """Install LaTeX package locally (no sudo required) - with multiple methods"""
+        try:
+            self.write(f"\n📦 Installing {package_name} locally...", "cyan")
+
+            # Method 1: Try tlmgr with --user option (TeX Live)
+            if shutil.which('tlmgr'):
+                success = self._install_with_tlmgr_user(package_name)
+                if success:
+                    return True
+
+            # Method 2: Try manual download from CTAN
+            success = self._install_from_ctan_local(package_name)
+            if success:
+                return True
+
+            # Method 3: Try to find and copy from system texmf
+            success = self._copy_from_system_texmf(package_name)
+            if success:
+                return True
+
+            # Method 4: Try using wget/curl to download manually
+            success = self._install_with_wget_curl(package_name)
+            if success:
+                return True
+
+            self.write(f"✗ Could not install {package_name} locally", "red")
+            return False
+
+        except Exception as e:
+            self.write(f"✗ Local installation error: {str(e)}", "red")
+            return False
+
+    def _install_with_tlmgr_user(self, package_name: str) -> bool:
+        """Install using tlmgr with --user option (no sudo)"""
+        try:
+            # Check if tlmgr supports --user
+            result = subprocess.run(
+                ['tlmgr', '--help'],
+                capture_output=True, text=True, timeout=10
+            )
+
+            if '--user' in result.stdout:
+                self.write("  Using tlmgr --user...", "cyan")
+                result = subprocess.run(
+                    ['tlmgr', '--user', 'install', package_name],
+                    capture_output=True, text=True, timeout=120
+                )
+
+                if result.returncode == 0:
+                    self.write(" ✓ Installed with tlmgr --user", "green")
+                    self._refresh_texmf_local()
+                    return True
+                else:
+                    self.write(f"  tlmgr --user failed: {result.stderr[:100]}", "yellow")
+
+            return False
+
+        except Exception as e:
+            self.write(f"  tlmgr user install failed: {str(e)}", "yellow")
+            return False
+
+    def _install_from_ctan_local(self, package_name: str) -> bool:
+        """Download and install from CTAN to local texmf directory - FIXED for Manjaro Linux"""
+        import urllib.request
+        import urllib.error
+        import tarfile
+        import zipfile
+        import tempfile
+        import glob
+
+        try:
+            # Map common package names to CTAN paths
+            ctan_map = {
+                'siunitx': 'siunitx',
+                'textcomp': 'textcomp',
+                'amsmath': 'amsmath',
+                'amssymb': 'amsfonts',
+                'xcolor': 'xcolor',
+                'booktabs': 'booktabs',
+                'pgfplots': 'pgfplots',
+                'pgf': 'pgf',
+                'tikz': 'pgf',
+                'soul': 'soul',
+                'hyperref': 'hyperref',
+                'geometry': 'geometry',
+                'beamer': 'beamer',
+                'tcolorbox': 'tcolorbox',
+                'listings': 'listings',
+                'fancyvrb': 'fancyvrb',
+                'caption': 'caption',
+                'subcaption': 'subcaption',
+            }
+
+            ctan_name = ctan_map.get(package_name, package_name)
+
+            # Create temporary directory for download
+            temp_dir = tempfile.mkdtemp()
+
+            # Try multiple CTAN mirrors with correct URL patterns
+            mirrors = [
+                # Primary CTAN mirror (Germany)
+                f"https://mirror.ctan.org/systems/texlive/tlnet/archive/{ctan_name}.tar.xz",
+                f"https://mirror.ctan.org/macros/latex/contrib/{ctan_name}.zip",
+                f"https://mirror.ctan.org/macros/latex/contrib/{ctan_name}.tar.xz",
+                # Czech mirror
+                f"https://ftp.cvut.cz/tex-archive/macros/latex/contrib/{ctan_name}.zip",
+                # USA mirror
+                f"https://mirrors.ibiblio.org/CTAN/macros/latex/contrib/{ctan_name}.zip",
+                # UK mirror
+                f"https://www.texlive.info/CTAN/macros/latex/contrib/{ctan_name}.zip",
+            ]
+
+            downloaded_file = None
+            file_type = None
+
+            for url in mirrors:
+                try:
+                    self.write(f"  Trying {url[:80]}...", "cyan")
+
+                    # Create request with proper headers
+                    req = urllib.request.Request(
+                        url,
+                        headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64)'}
+                    )
+
+                    # Download with timeout
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        if response.status == 200:
+                            # Determine file extension from URL
+                            if url.endswith('.tar.xz'):
+                                downloaded_file = os.path.join(temp_dir, f"{ctan_name}.tar.xz")
+                                file_type = 'tar.xz'
+                            elif url.endswith('.zip'):
+                                downloaded_file = os.path.join(temp_dir, f"{ctan_name}.zip")
+                                file_type = 'zip'
+                            else:
+                                continue
+
+                            # Save file
+                            with open(downloaded_file, 'wb') as f:
+                                f.write(response.read())
+
+                            self.write(" ✓ Downloaded", "green")
+                            break
+                        else:
+                            self.write(f" HTTP {response.status}", "yellow")
+
+                except urllib.error.HTTPError as e:
+                    self.write(f" HTTP {e.code}", "yellow")
+                    continue
+                except urllib.error.URLError as e:
+                    self.write(f" Connection error", "yellow")
+                    continue
+                except Exception as e:
+                    self.write(f" Error: {str(e)[:30]}", "yellow")
+                    continue
+
+            if not downloaded_file or not os.path.exists(downloaded_file):
+                self.write("  ✗ Could not download from any mirror", "red")
+                return False
+
+            # Extract based on file type
+            self.write(f"  Extracting to {self.local_texmf}...", "cyan")
+
+            # Determine correct destination directory
+            if package_name in ['siunitx', 'xcolor', 'booktabs', 'soul', 'tcolorbox']:
+                dest = self.local_texmf / 'tex' / 'latex' / package_name
+            else:
+                dest = self.local_texmf / 'tex' / 'latex' / ctan_name
+
+            dest.mkdir(parents=True, exist_ok=True)
+
+            try:
+                if file_type == 'zip':
+                    with zipfile.ZipFile(downloaded_file, 'r') as zip_ref:
+                        # Extract only .sty, .cls, .def, .fd, .cfg, .tex files
+                        extracted_count = 0
+                        for file in zip_ref.namelist():
+                            if file.endswith(('.sty', '.cls', '.def', '.fd', '.cfg', '.tex', '.dtx', '.ins')):
+                                # Get just the filename (strip directories)
+                                filename = os.path.basename(file)
+                                if filename and not filename.startswith('.'):
+                                    try:
+                                        source = zip_ref.open(file)
+                                        target = dest / filename
+                                        with open(target, 'wb') as f:
+                                            f.write(source.read())
+                                        extracted_count += 1
+                                    except Exception as e:
+                                        self.write(f"\n    Warning: Could not extract {filename}: {e}", "yellow")
+
+                        self.write(f" Extracted {extracted_count} files", "green")
+
+                elif file_type == 'tar.xz':
+                    with tarfile.open(downloaded_file, 'r:xz') as tar_ref:
+                        extracted_count = 0
+                        for member in tar_ref.getmembers():
+                            if member.name.endswith(('.sty', '.cls', '.def', '.fd', '.cfg', '.tex', '.dtx', '.ins')):
+                                # Get just the filename
+                                filename = os.path.basename(member.name)
+                                if filename and not filename.startswith('.'):
+                                    try:
+                                        # Extract to destination
+                                        source = tar_ref.extractfile(member)
+                                        if source:
+                                            target = dest / filename
+                                            with open(target, 'wb') as f:
+                                                f.write(source.read())
+                                            extracted_count += 1
+                                    except Exception as e:
+                                        self.write(f"\n    Warning: Could not extract {filename}: {e}", "yellow")
+
+                        self.write(f" Extracted {extracted_count} files", "green")
+
+                # If we extracted files, also try to run if the package needs generation
+                if extracted_count > 0:
+                    # Check if we need to generate .sty from .dtx
+                    dtx_files = list(dest.glob('*.dtx'))
+                    if dtx_files:
+                        self.write("\n  Generating package files from .dtx...", "cyan")
+                        for dtx in dtx_files:
+                            try:
+                                # Run pdflatex on dtx file to generate .sty
+                                subprocess.run(
+                                    ['pdflatex', '-interaction=nonstopmode', str(dtx)],
+                                    cwd=dest,
+                                    capture_output=True,
+                                    timeout=60
+                                )
+                                self.write(f" ✓ Generated from {dtx.name}", "green")
+                            except Exception as e:
+                                self.write(f" ⚠ Could not generate from {dtx.name}: {e}", "yellow")
+
+                # Clean up
+                os.remove(downloaded_file)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+                # Refresh TeX database
+                self._refresh_texmf_local()
+
+                if extracted_count > 0:
+                    self.write(f"  ✓ Successfully installed {package_name} to local texmf", "green")
+                    return True
+                else:
+                    self.write(f"  ✗ No files extracted for {package_name}", "red")
+                    return False
+
+            except Exception as e:
+                self.write(f"\n  ✗ Extraction error: {str(e)}", "red")
+                return False
+
+        except Exception as e:
+            self.write(f"\n  ✗ CTAN install error: {str(e)}", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _copy_from_system_texmf(self, package_name: str) -> bool:
+        """Try to copy package from system texmf to local texmf"""
+        try:
+            # Common system texmf paths
+            system_paths = [
+                Path('/usr/share/texmf-dist/tex/latex'),
+                Path('/usr/local/share/texmf-dist/tex/latex'),
+                Path('/var/lib/texmf/tex/latex'),
+            ]
+
+            for system_path in system_paths:
+                pkg_dir = system_path / package_name
+                if pkg_dir.exists():
+                    self.write(f"  Found {package_name} in system, copying locally...", "cyan")
+
+                    # Copy to local texmf
+                    dest = self.local_texmf / 'tex' / 'latex' / package_name
+                    shutil.copytree(pkg_dir, dest, dirs_exist_ok=True)
+
+                    self._refresh_texmf_local()
+                    self.write(f"  ✓ Copied {package_name} from system", "green")
+                    return True
+
+                # Also check for .sty files directly
+                sty_file = system_path / f"{package_name}.sty"
+                if sty_file.exists():
+                    dest = self.local_texmf / 'tex' / 'latex' / package_name
+                    dest.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(sty_file, dest / f"{package_name}.sty")
+
+                    self._refresh_texmf_local()
+                    self.write(f"  ✓ Copied {package_name}.sty from system", "green")
+                    return True
+
+            return False
+
+        except Exception as e:
+            self.write(f"  Copy from system failed: {str(e)}", "yellow")
+            return False
+
+    def _refresh_texmf_local(self):
+        """Refresh local TeX database"""
+        try:
+            # Try different commands to refresh
+            if shutil.which('texhash'):
+                subprocess.run(['texhash', str(self.local_texmf)],
+                             capture_output=True, timeout=30)
+                self.write("  ✓ Refreshed local texmf database", "green")
+            elif shutil.which('mktexlsr'):
+                subprocess.run(['mktexlsr', str(self.local_texmf)],
+                             capture_output=True, timeout=30)
+                self.write("  ✓ Refreshed local texmf database", "green")
+            else:
+                # Create ls-R file manually
+                lsr_file = self.local_texmf / 'ls-R'
+                if not lsr_file.exists():
+                    lsr_file.touch()
+                self.write("  ✓ Created local texmf database marker", "green")
+        except Exception as e:
+            self.write(f"  Warning: Could not refresh database: {e}", "yellow")
+
+    def install_python_package_local(self, package_name: str) -> bool:
+        """Install Python package locally (--user flag)"""
+        try:
+            self.write(f"\n🐍 Installing Python package {package_name} locally...", "cyan")
+
+            # Try with --user flag first
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '--user', package_name],
+                capture_output=True, text=True, timeout=120
+            )
+
+            if result.returncode == 0:
+                self.write(f"  ✓ Installed {package_name} with --user", "green")
+                return True
+
+            # Try without --user as fallback (might still work without sudo)
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', package_name],
+                capture_output=True, text=True, timeout=120
+            )
+
+            if result.returncode == 0:
+                self.write(f"  ✓ Installed {package_name}", "green")
+                return True
+
+            self.write(f"  ✗ Failed to install {package_name}", "red")
+            return False
+
+        except Exception as e:
+            self.write(f"  ✗ Python install error: {str(e)}", "red")
+            return False
+
+    def ensure_package_available(self, package_name: str, pkg_type: str = 'latex') -> bool:
+        """Ensure a package is available, installing locally if needed"""
+
+        # First check if already available
+        if self._is_package_available(package_name, pkg_type):
+            self.write(f"✓ {package_name} is already available", "green")
+            return True
+
+        self.write(f"⚠ {package_name} not found, attempting local installation...", "yellow")
+
+        # Try local installation
+        if pkg_type == 'latex':
+            success = self.install_latex_package_local(package_name)
+        elif pkg_type == 'python':
+            success = self.install_python_package_local(package_name)
+        else:
+            success = False
+
+        if success:
+            # Verify installation
+            if self._is_package_available(package_name, pkg_type):
+                self.write(f"✓ {package_name} successfully installed locally", "green")
+                return True
+            else:
+                self.write(f"⚠ {package_name} installed but not yet available", "yellow")
+                # Provide manual instructions
+                self._show_manual_instructions(package_name, pkg_type)
+                return False
+        else:
+            self.write(f"✗ Could not install {package_name} locally", "red")
+            self._show_manual_instructions(package_name, pkg_type)
+            return False
+
+    def _is_package_available(self, package_name: str, pkg_type: str) -> bool:
+        """Check if package is available (including local texmf)"""
+        try:
+            if pkg_type == 'latex':
+                # Check in local texmf first
+                local_sty = self.local_texmf / 'tex' / 'latex' / package_name / f"{package_name}.sty"
+                if local_sty.exists():
+                    return True
+
+                # Check system with kpsewhich
+                result = subprocess.run(
+                    ['kpsewhich', f'{package_name}.sty'],
+                    capture_output=True, text=True, timeout=10
+                )
+                return result.returncode == 0 and result.stdout.strip()
+
+            elif pkg_type == 'python':
+                import importlib
+                module_name = package_name.replace('-', '_')
+                if module_name == 'opencv_python':
+                    module_name = 'cv2'
+                elif module_name == 'Pillow':
+                    module_name = 'PIL'
+                importlib.import_module(module_name)
+                return True
+
+            return False
+
+        except Exception:
+            return False
+
+    def _show_manual_instructions(self, package_name: str, pkg_type: str):
+        """Show manual installation instructions"""
+        self.write(f"\n📝 Manual installation instructions:", "cyan")
+
+        if pkg_type == 'latex':
+            self.write(f"  For LaTeX package '{package_name}':", "yellow")
+            self.write(f"    1. Download from: https://ctan.org/pkg/{package_name}", "white")
+            self.write(f"    2. Extract to: {self.local_texmf}/tex/latex/{package_name}/", "white")
+            self.write(f"    3. Run: texhash ~/texmf", "white")
+        else:
+            self.write(f"  For Python package '{package_name}':", "yellow")
+            self.write(f"    pip install --user {package_name}", "white")
+
+        self.write(f"\n  Or ask your system administrator to install it system-wide.\n", "yellow")
+
+    def _install_with_tlmgr_user(self, package_name: str) -> bool:
+        """Install using tlmgr with user mode (no sudo)"""
+        try:
+            # Check if tlmgr is available
+            if not shutil.which('tlmgr'):
+                return False
+
+            # Try with --user option (TeX Live 2019+)
+            self.write("  Trying tlmgr --user...", "cyan")
+            result = subprocess.run(
+                ['tlmgr', '--user', 'install', package_name],
+                capture_output=True, text=True, timeout=120
+            )
+
+            if result.returncode == 0:
+                self.write(" ✓ Installed with tlmgr --user", "green")
+                self._refresh_texmf_local()
+                return True
+
+            # Try without --user but with custom TEXMFHOME
+            self.write("  Trying tlmgr with custom TEXMFHOME...", "cyan")
+
+            env = os.environ.copy()
+            env['TEXMFHOME'] = str(self.local_texmf)
+
+            result = subprocess.run(
+                ['tlmgr', 'install', '--force', package_name],
+                capture_output=True, text=True, timeout=120,
+                env=env
+            )
+
+            if result.returncode == 0:
+                self.write(" ✓ Installed with custom TEXMFHOME", "green")
+                self._refresh_texmf_local()
+                return True
+
+            return False
+
+        except Exception as e:
+            self.write(f"  tlmgr user install failed: {str(e)}", "yellow")
+            return False
+
+    def _install_with_wget_curl(self, package_name: str) -> bool:
+        """Try using wget or curl as fallback"""
+        try:
+            import urllib.request
+
+            # Try to download just the .sty file directly
+            sty_url = f"https://raw.githubusercontent.com/latex3/siunitx/master/siunitx.sty"
+            if package_name == 'siunitx':
+                sty_url = "https://raw.githubusercontent.com/latex3/siunitx/master/siunitx.sty"
+            elif package_name == 'soul':
+                sty_url = "http://mirrors.ctan.org/macros/latex/contrib/soul/soul.sty"
+            else:
+                sty_url = f"https://mirrors.ctan.org/macros/latex/contrib/{package_name}/{package_name}.sty"
+
+            self.write(f"  Trying direct .sty download...", "cyan")
+
+            dest = self.local_texmf / 'tex' / 'latex' / package_name
+            dest.mkdir(parents=True, exist_ok=True)
+
+            req = urllib.request.Request(
+                sty_url,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                if response.status == 200:
+                    sty_file = dest / f"{package_name}.sty"
+                    with open(sty_file, 'wb') as f:
+                        f.write(response.read())
+                    self.write(f" ✓ Downloaded {package_name}.sty", "green")
+                    self._refresh_texmf_local()
+                    return True
+
+            return False
+
+        except Exception as e:
+            self.write(f"  Direct download failed: {str(e)}", "yellow")
+            return False
+
 #---------------Helper Utils ------------------------------
 class SessionManager:
     """Manages persistence of session data between IDE launches"""
@@ -1653,6 +2186,1160 @@ class SessionManager:
         except Exception as e:
             print(f"Warning: Could not save session data: {str(e)}")
 
+class SearchReplacePanel(ctk.CTkToplevel):
+    """Search and replace panel for the Error Editor"""
+
+    def __init__(self, parent, editor_widget):
+        super().__init__(parent)
+        self.editor = editor_widget
+        self.title("Search and Replace")
+        self.geometry("500x200")
+        self.transient(parent)
+        self.grab_set()
+
+        # Center the window
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 500) // 2
+        y = (self.winfo_screenheight() - 200) // 2
+        self.geometry(f"+{x}+{y}")
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        """Create search and replace widgets"""
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Search section
+        search_frame = ctk.CTkFrame(main_frame)
+        search_frame.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(search_frame, text="Search:", width=60).pack(side="left", padx=5)
+        self.search_entry = ctk.CTkEntry(search_frame, width=300)
+        self.search_entry.pack(side="left", padx=5, fill="x", expand=True)
+        self.search_entry.bind('<KeyRelease>', self.on_search_change)
+
+        # Search options frame
+        options_frame = ctk.CTkFrame(main_frame)
+        options_frame.pack(fill="x", pady=5)
+
+        self.case_sensitive = ctk.BooleanVar(value=False)
+        case_check = ctk.CTkCheckBox(
+            options_frame,
+            text="Case sensitive",
+            variable=self.case_sensitive,
+            command=self.on_search_change
+        )
+        case_check.pack(side="left", padx=10)
+
+        self.whole_word = ctk.BooleanVar(value=False)
+        word_check = ctk.CTkCheckBox(
+            options_frame,
+            text="Whole word",
+            variable=self.whole_word,
+            command=self.on_search_change
+        )
+        word_check.pack(side="left", padx=10)
+
+        self.use_regex = ctk.BooleanVar(value=False)
+        regex_check = ctk.CTkCheckBox(
+            options_frame,
+            text="Regular expression",
+            variable=self.use_regex,
+            command=self.on_search_change
+        )
+        regex_check.pack(side="left", padx=10)
+
+        # Replace section
+        replace_frame = ctk.CTkFrame(main_frame)
+        replace_frame.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(replace_frame, text="Replace:", width=60).pack(side="left", padx=5)
+        self.replace_entry = ctk.CTkEntry(replace_frame, width=300)
+        self.replace_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        # Status label
+        self.status_label = ctk.CTkLabel(main_frame, text="", font=("Arial", 10))
+        self.status_label.pack(fill="x", pady=5)
+
+        # Buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", pady=10)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Find Next",
+            command=self.find_next,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Replace",
+            command=self.replace_current,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Replace All",
+            command=self.replace_all,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Close",
+            command=self.destroy,
+            width=80
+        ).pack(side="right", padx=5)
+
+        # Bind Escape key to close
+        self.bind('<Escape>', lambda e: self.destroy())
+
+    def get_search_pattern(self):
+        """Get the search pattern based on options"""
+        search_text = self.search_entry.get()
+        if not search_text:
+            return None
+
+        if self.use_regex.get():
+            try:
+                flags = 0 if self.case_sensitive.get() else re.IGNORECASE
+                return re.compile(search_text, flags)
+            except re.error:
+                self.status_label.configure(text="Invalid regular expression", text_color="red")
+                return None
+        else:
+            return search_text
+
+    def on_search_change(self, event=None):
+        """Handle search text change - clear highlights and update status"""
+        self.editor.tag_remove('search_highlight', '1.0', 'end')
+        self.status_label.configure(text="", text_color="white")
+
+    def find_next(self):
+        """Find the next occurrence of search text"""
+        pattern = self.get_search_pattern()
+        if not pattern:
+            return
+
+        # Get current cursor position
+        cursor_pos = self.editor.index('insert')
+
+        # Search from cursor position
+        if isinstance(pattern, str):
+            # Plain text search
+            start_pos = cursor_pos
+            while True:
+                start_pos = self.editor.search(pattern, start_pos, stopindex="end",
+                                               nocase=not self.case_sensitive.get(),
+                                               exact=not self.use_regex.get())
+                if not start_pos:
+                    # Wrap around to beginning
+                    start_pos = self.editor.search(pattern, "1.0", stopindex=cursor_pos,
+                                                   nocase=not self.case_sensitive.get(),
+                                                   exact=not self.use_regex.get())
+                    if not start_pos:
+                        self.status_label.configure(text="No more matches found", text_color="yellow")
+                        return
+                    else:
+                        self.status_label.configure(text="Search wrapped to beginning", text_color="cyan")
+                        break
+                else:
+                    break
+        else:
+            # Regex search
+            content = self.editor.get("1.0", "end-1c")
+            matches = list(pattern.finditer(content))
+            if not matches:
+                self.status_label.configure(text="No matches found", text_color="yellow")
+                return
+
+            # Find match after cursor
+            cursor_index = int(self.editor.index(cursor_pos).split('.')[0])
+            for match in matches:
+                match_start_line = content[:match.start()].count('\n') + 1
+                if match_start_line >= cursor_index:
+                    start_pos = f"{match_start_line}.{match.start() - content[:match.start()].rfind('\n') - 1}"
+                    break
+            else:
+                # Wrap to first match
+                match = matches[0]
+                start_pos = f"{content[:match.start()].count('\n') + 1}.{match.start() - content[:match.start()].rfind('\n') - 1}"
+                self.status_label.configure(text="Search wrapped to beginning", text_color="cyan")
+
+        # Highlight the match
+        end_pos = f"{start_pos}+{len(pattern) if isinstance(pattern, str) else len(match.group(0))}c"
+        self.editor.tag_remove('search_highlight', '1.0', 'end')
+        self.editor.tag_add('search_highlight', start_pos, end_pos)
+        self.editor.tag_config('search_highlight', background='#FFB86C', foreground='black')
+        self.editor.see(start_pos)
+        self.editor.mark_set('insert', start_pos)
+
+        match_text = self.editor.get(start_pos, end_pos)
+        self.status_label.configure(text=f"Found: '{match_text}'", text_color="green")
+
+    def replace_current(self):
+        """Replace the current match"""
+        # Get the current selection
+        try:
+            sel_start = self.editor.index('sel.first')
+            sel_end = self.editor.index('sel.last')
+
+            # Check if selection is a search highlight
+            tags = self.editor.tag_names(sel_start)
+            if 'search_highlight' in tags:
+                replace_text = self.replace_entry.get()
+                self.editor.delete(sel_start, sel_end)
+                self.editor.insert(sel_start, replace_text)
+                self.status_label.configure(text="Replaced", text_color="green")
+                self.find_next()
+            else:
+                self.find_next()
+        except tk.TclError:
+            self.find_next()
+
+    def replace_all(self):
+        """Replace all occurrences"""
+        pattern = self.get_search_pattern()
+        if not pattern:
+            return
+
+        content = self.editor.get("1.0", "end-1c")
+        replace_text = self.replace_entry.get()
+
+        if isinstance(pattern, str):
+            # Plain text replacement
+            if self.case_sensitive.get():
+                new_content = content.replace(pattern, replace_text)
+            else:
+                # Case-insensitive replacement
+                import re
+                new_content = re.compile(re.escape(pattern), re.IGNORECASE).sub(replace_text, content)
+        else:
+            # Regex replacement
+            new_content = pattern.sub(replace_text, content)
+
+        # Count replacements
+        count = content.count(pattern) if isinstance(pattern, str) else len(pattern.findall(content))
+
+        if count > 0:
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", new_content)
+            self.status_label.configure(text=f"Replaced {count} occurrence(s)", text_color="green")
+            # Mark as modified
+            if hasattr(self.master, 'modified'):
+                self.master.modified = True
+        else:
+            self.status_label.configure(text="No matches found", text_color="yellow")
+
+class CrossPlatformPackageManager:
+    """
+    Unified package manager for installing missing dependencies across platforms.
+    Handles Python packages (PyPI), R packages (CRAN), LaTeX packages (MiKTeX/TeX Live/CTAN),
+    and system packages (apt, brew, chocolatey, etc.)
+    """
+
+    def __init__(self, parent=None, verbose=True):
+        self.parent = parent
+        self.verbose = verbose
+        self.system = platform.system()
+        self.install_history = []
+
+        # Package source mappings
+        self.package_sources = {
+            # Python packages
+            'python': {
+                'primary': 'pypi',
+                'fallback': ['conda', 'system'],
+                'manager': self._install_python_package
+            },
+            # R packages
+            'r': {
+                'primary': 'cran',
+                'fallback': [],
+                'manager': self._install_r_package
+            },
+            # LaTeX packages
+            'latex': {
+                'primary': 'auto',
+                'fallback': ['ctan', 'miktex', 'texlive'],
+                'manager': self._install_latex_package
+            },
+            # System packages
+            'system': {
+                'primary': 'auto',
+                'fallback': [],
+                'manager': self._install_system_package
+            }
+        }
+
+        # Known package mappings (what to install for what error)
+        self.package_mappings = {
+            # LaTeX packages
+            'siunitx': {'type': 'latex', 'name': 'siunitx', 'alternatives': ['siunitx']},
+            'textcomp': {'type': 'latex', 'name': 'textcomp', 'alternatives': ['textcomp']},
+            'amsmath': {'type': 'latex', 'name': 'amsmath', 'alternatives': ['amsmath']},
+            'amssymb': {'type': 'latex', 'name': 'amssymb', 'alternatives': ['amssymb', 'amsfonts']},
+            'graphicx': {'type': 'latex', 'name': 'graphicx', 'alternatives': ['graphics']},
+            'xcolor': {'type': 'latex', 'name': 'xcolor', 'alternatives': ['xcolor']},
+            'tikz': {'type': 'latex', 'name': 'pgf', 'alternatives': ['pgf', 'tikz']},
+            'pgfplots': {'type': 'latex', 'name': 'pgfplots', 'alternatives': ['pgfplots']},
+            'booktabs': {'type': 'latex', 'name': 'booktabs', 'alternatives': ['booktabs']},
+            'hyperref': {'type': 'latex', 'name': 'hyperref', 'alternatives': ['hyperref']},
+            'geometry': {'type': 'latex', 'name': 'geometry', 'alternatives': ['geometry']},
+            'beamer': {'type': 'latex', 'name': 'beamer', 'alternatives': ['beamer']},
+
+            # Python packages (keep existing)
+            'customtkinter': {'type': 'python', 'name': 'customtkinter', 'alternatives': []},
+            'Pillow': {'type': 'python', 'name': 'Pillow', 'alternatives': ['PIL']},
+            # ... rest of existing mappings ...
+        }
+
+
+        # System package managers per platform
+        self.system_managers = {
+            'Linux': {
+                'apt': {'cmd': 'apt', 'install': 'install', 'sudo': True, 'packages': {}},
+                'dnf': {'cmd': 'dnf', 'install': 'install', 'sudo': True, 'packages': {}},
+                'yum': {'cmd': 'yum', 'install': 'install', 'sudo': True, 'packages': {}},
+                'pacman': {'cmd': 'pacman', 'install': '-S', 'sudo': True, 'packages': {}},
+                'zypper': {'cmd': 'zypper', 'install': 'install', 'sudo': True, 'packages': {}}
+            },
+            'Windows': {
+                'choco': {'cmd': 'choco', 'install': 'install', 'sudo': False, 'packages': {}},
+                'winget': {'cmd': 'winget', 'install': 'install', 'sudo': False, 'packages': {}},
+                'scoop': {'cmd': 'scoop', 'install': 'install', 'sudo': False, 'packages': {}}
+            },
+            'Darwin': {  # macOS
+                'brew': {'cmd': 'brew', 'install': 'install', 'sudo': False, 'packages': {}},
+                'port': {'cmd': 'port', 'install': 'install', 'sudo': True, 'packages': {}}
+            }
+        }
+
+        # Initialize system package mappings
+        self._init_system_package_mappings()
+
+        # Initialize local installer
+        self.local_installer = LocalPackageInstaller(parent, verbose)
+
+    def install_package(self, package_info: dict, auto_confirm: bool = False) -> bool:
+        """Install a package using local installation first, fallback to system"""
+        if not package_info:
+            return False
+
+        pkg_type = package_info.get('type', 'python')
+        pkg_name = package_info.get('name', '')
+
+        if not pkg_name:
+            return False
+
+        # Check if already installed
+        if self.is_package_installed(pkg_name, pkg_type):
+            self.write(f"✓ {pkg_name} is already installed", "green")
+            return True
+
+        # Ask for confirmation
+        if not auto_confirm and self.parent:
+            response = messagebox.askyesno(
+                "Install Package Locally",
+                f"The {pkg_type} package '{pkg_name}' is required.\n\n"
+                f"Would you like to install it locally (no admin privileges required)?\n\n"
+                f"This will install to your home directory only."
+            )
+            if not response:
+                return False
+
+        # Try local installation first (no sudo required)
+        self.write(f"\n📦 Attempting local installation of {pkg_name}...", "cyan")
+        success = self.local_installer.ensure_package_available(pkg_name, pkg_type)
+
+        if success:
+            self.install_history.append({
+                'package': pkg_name,
+                'type': pkg_type,
+                'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+                'success': True,
+                'method': 'local'
+            })
+            return True
+
+        # Fallback to system installation (may require sudo)
+        self.write(f"\n⚠ Local installation failed, trying system installation...", "yellow")
+
+        if not auto_confirm and self.parent:
+            response = messagebox.askyesno(
+                "System Installation Required",
+                f"Local installation of '{pkg_name}' failed.\n\n"
+                f"Would you like to try system-wide installation?\n"
+                f"This may require administrator (sudo) privileges."
+            )
+            if not response:
+                return False
+
+        # Use existing system installation methods
+        manager = self.package_sources[pkg_type]['manager']
+        success = manager(pkg_name, package_info)
+
+        self.install_history.append({
+            'package': pkg_name,
+            'type': pkg_type,
+            'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
+            'success': success,
+            'method': 'system' if success else 'failed'
+        })
+
+        return success
+
+    def _install_latex_package(self, package_name: str, package_info: dict) -> bool:
+        """Modified to use local installation first"""
+        # First try local installation (handled by install_package)
+        # This method is called as fallback
+        system = self.system
+
+        # Try system installation as fallback
+        if system == "Windows":
+            return self._install_miktex_package(package_name)
+        elif system == "Linux":
+            return self._install_texlive_package(package_name)
+        elif system == "Darwin":
+            return self._install_mactex_package(package_name)
+        else:
+            return self._install_from_ctan(package_name)
+
+    def _init_system_package_mappings(self):
+        """Initialize system package name mappings for different distributions"""
+        # Linux package mappings
+        self.system_managers['Linux']['apt']['packages'] = {
+            'pdflatex': 'texlive-latex-base',
+            'latex': 'texlive-full',
+            'python3-pip': 'python3-pip',
+            'python3-venv': 'python3-venv',
+            'git': 'git',
+            'ffmpeg': 'ffmpeg',
+            'portaudio': 'portaudio19-dev',
+            'opencv': 'python3-opencv'
+        }
+
+        self.system_managers['Linux']['dnf']['packages'] = {
+            'pdflatex': 'texlive-scheme-basic',
+            'latex': 'texlive-scheme-full',
+            'python3-pip': 'python3-pip',
+            'git': 'git'
+        }
+
+        self.system_managers['Linux']['pacman']['packages'] = {
+            'pdflatex': 'texlive-basic',
+            'latex': 'texlive-most',
+            'python-pip': 'python-pip',
+            'git': 'git'
+        }
+
+        # Windows package mappings (Chocolatey)
+        self.system_managers['Windows']['choco']['packages'] = {
+            'miktex': 'miktex',
+            'python': 'python',
+            'git': 'git',
+            'ffmpeg': 'ffmpeg',
+            'opencv': 'opencv'
+        }
+
+        # macOS package mappings (Homebrew)
+        self.system_managers['Darwin']['brew']['packages'] = {
+            'pdflatex': 'mactex',
+            'latex': 'mactex',
+            'python': 'python',
+            'git': 'git',
+            'ffmpeg': 'ffmpeg',
+            'opencv': 'opencv'
+        }
+
+    def write(self, text: str, color: str = "white"):
+        """Write message to terminal or parent"""
+        if self.parent and hasattr(self.parent, 'write'):
+            self.parent.write(text, color)
+        elif self.verbose:
+            print(text)
+
+    def detect_missing_package(self, error_message: str, context: str = "") -> dict:
+        """
+        Detect missing package from error message
+        Returns: dict with 'type', 'name', 'confidence'
+        """
+        error_lower = error_message.lower()
+        context_lower = context.lower()
+
+        # LaTeX missing package patterns
+        latex_patterns = [
+            (r"file `([^']+)\.sty' not found", 0.95),
+            (r"! latex error: missing `([^']+)' package", 0.90),
+            (r"! i can't find file `([^']+)'", 0.85),
+            (r"package ([^\s]+) not found", 0.80),
+            (r"undefined control sequence.*\\usepackage\{([^}]+)\}", 0.75),
+        ]
+
+        # Python missing module patterns
+        python_patterns = [
+            (r"modulenotfounderror: no module named '([^']+)'", 0.95),
+            (r"importerror: no module named '([^']+)'", 0.95),
+            (r"cannot import name '([^']+)'", 0.70),
+        ]
+
+        # R missing package patterns
+        r_patterns = [
+            (r"there is no package called '([^']+)'", 0.95),
+            (r"error in library\(([^)]+)\) : there is no package called", 0.90),
+        ]
+
+        # Try to match patterns
+        for pattern, confidence in latex_patterns:
+            match = re.search(pattern, error_lower)
+            if match:
+                pkg_name = match.group(1)
+                if pkg_name in self.package_mappings:
+                    return self.package_mappings[pkg_name]
+                return {'type': 'latex', 'name': pkg_name, 'confidence': confidence}
+
+        for pattern, confidence in python_patterns:
+            match = re.search(pattern, error_lower)
+            if match:
+                pkg_name = match.group(1)
+                # Handle common import name vs package name differences
+                if pkg_name == 'cv2':
+                    pkg_name = 'opencv-python'
+                elif pkg_name == 'PIL':
+                    pkg_name = 'Pillow'
+                elif pkg_name == 'fitz':
+                    pkg_name = 'PyMuPDF'
+
+                if pkg_name in self.package_mappings:
+                    return self.package_mappings[pkg_name]
+                return {'type': 'python', 'name': pkg_name, 'confidence': confidence}
+
+        for pattern, confidence in r_patterns:
+            match = re.search(pattern, error_lower)
+            if match:
+                pkg_name = match.group(1)
+                if pkg_name in self.package_mappings:
+                    return self.package_mappings[pkg_name]
+                return {'type': 'r', 'name': pkg_name, 'confidence': confidence}
+
+        return None
+
+    def is_package_installed(self, name: str, pkg_type: str) -> bool:
+        """Check if a package is already installed"""
+        try:
+            if pkg_type == 'python':
+                # Try to import the package
+                import importlib
+                # Handle special cases
+                if name == 'opencv-python':
+                    module_name = 'cv2'
+                elif name == 'Pillow':
+                    module_name = 'PIL'
+                elif name == 'PyMuPDF':
+                    module_name = 'fitz'
+                else:
+                    module_name = name.replace('-', '_')
+
+                importlib.import_module(module_name)
+                return True
+
+            elif pkg_type == 'latex':
+                # Check if LaTeX package exists
+                result = subprocess.run(
+                    ['kpsewhich', f'{name}.sty'],
+                    capture_output=True, text=True
+                )
+                return result.returncode == 0 and result.stdout.strip()
+
+            elif pkg_type == 'r':
+                # Check if R package is installed
+                result = subprocess.run(
+                    ['R', '--vanilla', '-e', f'library({name}, character.only=TRUE)'],
+                    capture_output=True, text=True
+                )
+                return result.returncode == 0
+
+            elif pkg_type == 'system':
+                # Check if system command exists
+                return shutil.which(name) is not None
+
+        except Exception:
+            return False
+
+        return False
+
+    def _install_python_package(self, package_name: str, package_info: dict) -> bool:
+        """Install Python package from PyPI or conda"""
+        methods = [
+            ('pip', self._install_with_pip),
+            ('pip3', self._install_with_pip),
+            ('conda', self._install_with_conda),
+            ('python -m pip', self._install_with_pip)
+        ]
+
+        for method_name, method_func in methods:
+            if method_name == 'pip' or method_name == 'pip3' or method_name == 'python -m pip':
+                if method_func(package_name):
+                    return True
+
+        return False
+
+    def _install_with_pip(self, package_name: str) -> bool:
+        """Install using pip"""
+        try:
+            # Try user installation first (no admin required)
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '--user', package_name],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if result.returncode == 0:
+                return True
+
+            # Try without --user (may need admin)
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', package_name],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            return result.returncode == 0
+
+        except Exception as e:
+            self.write(f"Pip install error: {e}", "red")
+            return False
+
+    def _install_with_conda(self, package_name: str) -> bool:
+        """Install using conda if available"""
+        if not shutil.which('conda'):
+            return False
+
+        try:
+            result = subprocess.run(
+                ['conda', 'install', '-y', package_name],
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _install_r_package(self, package_name: str, package_info: dict) -> bool:
+        """Install R package from CRAN"""
+        if not shutil.which('R'):
+            self.write("R is not installed. Please install R from https://cran.r-project.org/", "red")
+            return False
+
+        try:
+            # Install from CRAN
+            r_script = f'install.packages("{package_name}", repos="https://cran.r-project.org")'
+            result = subprocess.run(
+                ['R', '--vanilla', '-e', r_script],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            return result.returncode == 0
+        except Exception as e:
+            self.write(f"R package install error: {e}", "red")
+            return False
+
+    def _install_miktex_package(self, package_name: str) -> bool:
+        """Install using MiKTeX package manager - IMPROVED VERSION"""
+        try:
+            # Find MiKTeX executable
+            miktex_paths = [
+                r'C:\Program Files\MiKTeX\miktex\bin\x64\mpm.exe',
+                r'C:\Program Files\MiKTeX\miktex\bin\mpm.exe',
+                r'C:\Program Files (x86)\MiKTeX\miktex\bin\mpm.exe'
+            ]
+
+            mpm_path = None
+            for path in miktex_paths:
+                if os.path.exists(path):
+                    mpm_path = path
+                    break
+
+            if not mpm_path:
+                # Try to find via registry
+                try:
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\MiKTeX\Current") as key:
+                        miktex_root = winreg.QueryValueEx(key, "InstallRoot")[0]
+                        mpm_path = os.path.join(miktex_root, "miktex", "bin", "x64", "mpm.exe")
+                except:
+                    pass
+
+            if not mpm_path or not os.path.exists(mpm_path):
+                self.write("MiKTeX package manager not found", "red")
+                return False
+
+            # Try without admin first
+            self.write(f"  Installing {package_name}...", "cyan")
+            result = subprocess.run(
+                [mpm_path, "--install", package_name],
+                capture_output=True, text=True, timeout=120
+            )
+
+            if result.returncode == 0:
+                self.write(f" ✓ Success\n", "green")
+                return True
+
+            # Try with admin
+            self.write("  Trying with admin...", "yellow")
+            result = subprocess.run(
+                [mpm_path, "--admin", "--install", package_name],
+                capture_output=True, text=True, timeout=120
+            )
+
+            if result.returncode == 0:
+                self.write(f" ✓ Success with admin\n", "green")
+                return True
+
+            self.write(f" ✗ Failed\n", "red")
+            return False
+
+        except Exception as e:
+            self.write(f" ✗ MiKTeX install error: {e}\n", "red")
+            return False
+
+    def _install_mactex_package(self, package_name: str) -> bool:
+        """Install using MacTeX's tlmgr"""
+        return self._install_texlive_package(package_name)
+
+    def _install_texlive_package(self, package_name: str) -> bool:
+        """Install using TeX Live's tlmgr - IMPROVED VERSION"""
+        if not shutil.which('tlmgr'):
+            self.write("tlmgr not found. Please install TeX Live first.", "red")
+            return False
+
+        try:
+            # First check if already installed
+            check_result = subprocess.run(
+                ['tlmgr', 'info', package_name],
+                capture_output=True, text=True, timeout=30
+            )
+
+            if 'installed: Yes' in check_result.stdout:
+                self.write(f"  ✓ {package_name} is already installed\n", "green")
+                return True
+
+            # Try without sudo first
+            self.write(f"  Installing {package_name}...", "cyan")
+            result = subprocess.run(
+                ['tlmgr', 'install', package_name],
+                capture_output=True, text=True, timeout=120
+            )
+
+            if result.returncode == 0:
+                self.write(f" ✓ Success\n", "green")
+                # Refresh filename database
+                subprocess.run(['texhash'], capture_output=True, timeout=60)
+                return True
+
+            # Try with sudo if permission denied
+            if 'permission' in result.stderr.lower() or 'cannot' in result.stderr.lower():
+                self.write("  Need permissions, trying with sudo...", "yellow")
+                result = subprocess.run(
+                    ['sudo', 'tlmgr', 'install', package_name],
+                    capture_output=True, text=True, timeout=120
+                )
+                if result.returncode == 0:
+                    self.write(f" ✓ Success with sudo\n", "green")
+                    subprocess.run(['sudo', 'texhash'], capture_output=True, timeout=60)
+                    return True
+
+            self.write(f" ✗ Failed\n", "red")
+            return False
+
+        except subprocess.TimeoutExpired:
+            self.write(f" ✗ Installation timed out\n", "red")
+            return False
+        except Exception as e:
+            self.write(f" ✗ Error: {str(e)}\n", "red")
+            return False
+
+    def _install_from_ctan(self, package_name: str) -> bool:
+        """Download and install from CTAN as fallback - IMPROVED VERSION"""
+        import urllib.request
+        import zipfile
+        import tempfile
+
+        try:
+            # Map to CTAN package names
+            ctan_map = {
+                'siunitx': 'siunitx',
+                'textcomp': 'textcomp',
+                'amsmath': 'amsmath',
+                'amssymb': 'amsfonts',
+                'xcolor': 'xcolor',
+                'booktabs': 'booktabs',
+                'pgfplots': 'pgfplots',
+                'pgf': 'pgf',
+            }
+
+            ctan_name = ctan_map.get(package_name, package_name)
+
+            # Try multiple CTAN mirrors
+            mirrors = [
+                f"https://mirrors.ctan.org/macros/latex/contrib/{ctan_name}.zip",
+                f"https://www.ctan.org/tex-archive/macros/latex/contrib/{ctan_name}.zip",
+                f"https://mirror.ctan.org/systems/texlive/tlnet/archive/{ctan_name}.tar.xz",
+            ]
+
+            zip_path = os.path.join(tempfile.gettempdir(), f"{ctan_name}.zip")
+
+            for url in mirrors:
+                try:
+                    self.write(f"  Trying {url[:60]}...", "cyan")
+                    urllib.request.urlretrieve(url, zip_path, timeout=30)
+                    self.write(" Downloaded\n", "green")
+                    break
+                except:
+                    continue
+            else:
+                self.write(" ✗ Could not download from any mirror\n", "red")
+                return False
+
+            # Extract to texmf directory
+            texmf_home = os.path.expanduser("~/texmf")
+            os.makedirs(texmf_home, exist_ok=True)
+
+            self.write(f"  Extracting to {texmf_home}...", "cyan")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(texmf_home)
+            self.write(" Done\n", "green")
+
+            # Refresh TeX database
+            if shutil.which('texhash'):
+                subprocess.run(['texhash'], capture_output=True, timeout=60)
+            elif shutil.which('mktexlsr'):
+                subprocess.run(['mktexlsr'], capture_output=True, timeout=60)
+
+            os.remove(zip_path)
+            self.write(f"  ✓ Successfully installed {package_name} from CTAN\n", "green")
+            return True
+
+        except Exception as e:
+            self.write(f" ✗ CTAN install error: {e}\n", "red")
+            return False
+
+    def _install_system_package(self, package_name: str, package_info: dict) -> bool:
+        """Install system package using native package manager"""
+        manager = self._detect_system_package_manager()
+        if not manager:
+            self.write("No supported package manager found", "red")
+            return False
+
+        manager_info = self.system_managers[self.system][manager]
+
+        # Get the actual package name for this manager
+        pkg_mappings = manager_info['packages']
+        actual_pkg = pkg_mappings.get(package_name, package_name)
+
+        # Build command
+        cmd = [manager_info['cmd']]
+        if manager_info.get('sudo', False) and self.system != "Windows":
+            cmd = ['sudo'] + cmd
+        cmd.append(manager_info['install'])
+        cmd.append(actual_pkg)
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            return result.returncode == 0
+        except Exception as e:
+            self.write(f"System package install error: {e}", "red")
+            return False
+
+    def _detect_system_package_manager(self) -> str:
+        """Detect which system package manager is available"""
+        for manager in self.system_managers[self.system]:
+            if shutil.which(manager):
+                return manager
+        return None
+
+    def install_from_error(self, error_message: str, context: str = "", auto_confirm: bool = False) -> bool:
+        """
+        Detect missing package from error and install it
+        """
+        package_info = self.detect_missing_package(error_message, context)
+        if package_info:
+            return self.install_package(package_info, auto_confirm)
+        return False
+
+    def ensure_latex_preamble_packages(self, tex_content: str) -> list:
+        """
+        Parse LaTeX preamble and ensure all required packages are installed.
+        Returns list of missing packages that were installed.
+        """
+        import re
+
+        # Find all \usepackage commands
+        usepackage_pattern = r'\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}'
+        matches = re.findall(usepackage_pattern, tex_content)
+
+        packages_needed = set()
+        for match in matches:
+            # Handle multiple packages in one command
+            for pkg in match.split(','):
+                pkg = pkg.strip()
+                packages_needed.add(pkg)
+
+        # Also check for \RequirePackage
+        require_pattern = r'\\RequirePackage(?:\[[^\]]*\])?\{([^}]+)\}'
+        matches = re.findall(require_pattern, tex_content)
+        for match in matches:
+            for pkg in match.split(','):
+                pkg = pkg.strip()
+                packages_needed.add(pkg)
+
+        # Special check for siunitx (often used for units)
+        if 'siunitx' not in packages_needed and ('Ω' in tex_content or '\\Omega' in tex_content):
+            packages_needed.add('siunitx')
+            self.write("  ℹ Detected Ohm symbol (Ω) - adding siunitx package\n", "cyan")
+
+        installed_packages = []
+        for pkg in packages_needed:
+            # Normalize package name
+            pkg_normalized = pkg.lower()
+
+            if not self.is_package_installed(pkg_normalized, 'latex'):
+                self.write(f"  Missing LaTeX package: {pkg_normalized}\n", "yellow")
+                if self.install_package({'type': 'latex', 'name': pkg_normalized}, auto_confirm=False):
+                    installed_packages.append(pkg_normalized)
+                    self.write(f"  ✓ Installed {pkg_normalized}\n", "green")
+                else:
+                    self.write(f"  ✗ Failed to install {pkg_normalized}\n", "red")
+
+        return installed_packages
+
+class LaTeXErrorAnalyzer:
+    """Analyze LaTeX errors and suggest corrections - ENHANCED VERSION"""
+
+    # Add more patterns to the existing PACKAGE_MAP
+    PACKAGE_MAP = {
+        # Existing mappings...
+        'toprule': 'booktabs',
+        'midrule': 'booktabs',
+        'bottomrule': 'booktabs',
+        'cmidrule': 'booktabs',
+        'multirow': 'multirow',
+        'makecell': 'makecell',
+        'thead': 'makecell',
+        'SI': 'siunitx',
+        'num': 'siunitx',
+        'qty': 'physics',
+        'dv': 'physics',
+        'pdv': 'physics',
+        'grad': 'physics',
+        'div': 'physics',
+        'curl': 'physics',
+    }
+
+    @staticmethod
+    def analyze_error(error_msg: str, context_lines: list, tex_content: str = "",
+                      line_num: int = None, tex_lines: list = None) -> dict:
+        """Analyze a LaTeX error and return suggested fixes - ENHANCED"""
+
+        # Check for Extra } or forgotten $ (NEW)
+        if 'Extra }' in error_msg or 'forgotten $' in error_msg:
+            return LaTeXErrorAnalyzer._analyze_extra_brace_error(error_msg, tex_lines, line_num)
+
+        # Check for unclosed math mode in title (NEW)
+        if 'Missing $ inserted' in error_msg and line_num and tex_lines:
+            # Look at the line before the error
+            prev_line = tex_lines[line_num - 2] if line_num >= 2 else ""
+            if '\\title' in prev_line and prev_line.count('$') % 2 != 0:
+                return {
+                    'error_type': 'unclosed_math_in_title',
+                    'suggestion': 'Missing closing $ in title. Add $ at the end of the title line.',
+                    'auto_fixable': True,
+                    'fix_type': 'fix_title_math',
+                    'line': line_num - 1
+                }
+
+        # Check for runaway argument / missing brace
+        if 'Runaway argument' in error_msg or 'File ended while scanning' in error_msg:
+            return LaTeXErrorAnalyzer._analyze_runaway_error(error_msg, tex_lines, line_num)
+
+        # Check for misplaced alignment tab (&) error
+        if any(phrase in error_msg for phrase in [
+            'Misplaced alignment tab character &',
+            'Misplaced &',
+            'alignment tab character &'
+        ]):
+            return LaTeXErrorAnalyzer._analyze_ampersand_error(error_msg, tex_lines, line_num)
+
+        # Check for missing \item error
+        elif 'missing \\item' in error_msg.lower() or "perhaps a missing \\item" in error_msg:
+            return LaTeXErrorAnalyzer._analyze_missing_item_error(error_msg, line_num)
+
+        # Check for undefined control sequence (missing package)
+        elif 'Undefined control sequence' in error_msg:
+            return LaTeXErrorAnalyzer._analyze_undefined_command(error_msg, line_num)
+
+        # Check for missing $ (math mode)
+        elif 'Missing $ inserted' in error_msg:
+            return {
+                'error_type': 'missing_math_mode',
+                'suggestion': 'Math mode may be missing. Add $ around math expressions like $...$ or $$...$$.',
+                'auto_fixable': True,
+                'fix_type': 'fix_math_delimiters',
+                'line': line_num
+            }
+
+        # Check for missing closing brace
+        elif 'Missing } inserted' in error_msg:
+            return {
+                'error_type': 'missing_brace',
+                'suggestion': 'Missing closing brace. Check for unmatched { characters.',
+                'auto_fixable': True,
+                'fix_type': 'fix_braces',
+                'line': line_num
+            }
+
+        return {
+            'error_type': 'unknown',
+            'suggestion': 'Unknown error. Please check the log file.',
+            'auto_fixable': False,
+            'fix_type': 'editor',
+            'line': line_num
+        }
+
+    @staticmethod
+    def _analyze_extra_brace_error(error_msg: str, tex_lines: list, line_num: int) -> dict:
+        """Analyze Extra } or forgotten $ errors"""
+        result = {
+            'error_type': 'extra_brace_or_forgotten_dollar',
+            'suggestion': 'Extra } or forgotten $. Check for unbalanced braces or unclosed math mode.',
+            'auto_fixable': True,
+            'fix_type': 'fix_extra_brace',
+            'line': line_num
+        }
+
+        # Look at the line before the error (often where the actual issue is)
+        if tex_lines and line_num and line_num > 1:
+            prev_line = tex_lines[line_num - 2] if line_num <= len(tex_lines) else ""
+
+            # Check for unclosed math mode
+            if '$' in prev_line and prev_line.count('$') % 2 != 0:
+                result['suggestion'] = 'Unclosed math mode in previous line. Add missing $.'
+                result['fix_data'] = {'type': 'unclosed_math', 'line': line_num - 1}
+
+            # Check for unclosed braces
+            elif prev_line.count('{') != prev_line.count('}'):
+                result['suggestion'] = 'Unclosed brace in previous line. Add missing }.'
+                result['fix_data'] = {'type': 'unclosed_brace', 'line': line_num - 1}
+
+            # Check for title with unclosed math
+            elif '\\title' in prev_line and prev_line.count('$') % 2 != 0:
+                result['suggestion'] = 'Missing $ in title. Add $ at the end of the title.'
+                result['fix_data'] = {'type': 'title_math', 'line': line_num - 1}
+
+        return result
+
+    @staticmethod
+    def apply_fix(tex_lines: list, analysis: dict, error_line: int = None) -> tuple:
+        """Apply the suggested fix to the TeX lines - ENHANCED"""
+        fix_type = analysis.get('fix_type')
+        fixed_lines = tex_lines.copy()
+        fix_description = ""
+        fix_count = 0
+
+        if fix_type == 'fix_title_math':
+            fixed_lines, fix_count, fix_description = LaTeXErrorAnalyzer._fix_title_math(
+                fixed_lines, analysis.get('line', error_line)
+            )
+
+        elif fix_type == 'fix_extra_brace':
+            fixed_lines, fix_count, fix_description = LaTeXErrorAnalyzer._fix_extra_brace(
+                fixed_lines, analysis, error_line
+            )
+
+        elif fix_type == 'escape_ampersand':
+            fixed_lines, fix_count = LaTeXErrorAnalyzer._fix_ampersands(fixed_lines, error_line)
+            fix_description = f"Escaped {fix_count} ampersand(s)"
+
+        elif fix_type == 'add_item' and error_line:
+            fixed_lines, fix_count = LaTeXErrorAnalyzer._fix_missing_item(fixed_lines, error_line)
+            fix_description = f"Added {fix_count} \\item command(s)"
+
+        elif fix_type == 'add_package':
+            package = analysis.get('fix_data')
+            if package:
+                fixed_lines, fix_count = LaTeXErrorAnalyzer._add_package(fixed_lines, package)
+                fix_description = f"Added \\usepackage{{{package}}}"
+
+        elif fix_type in ['fix_runaway', 'fix_math_delimiters', 'fix_braces']:
+            fixed_lines, fix_count, fix_description = LaTeXErrorAnalyzer._fix_runaway_error(
+                fixed_lines, analysis, error_line
+            )
+
+        return fixed_lines, fix_description, fix_count
+
+    @staticmethod
+    def _fix_title_math(tex_lines: list, line_num: int) -> tuple:
+        """Fix unclosed math in title"""
+        fixed_lines = tex_lines.copy()
+        fix_count = 0
+        fix_description = ""
+
+        if line_num and 1 <= line_num <= len(fixed_lines):
+            line = fixed_lines[line_num - 1]
+            if '\\title' in line:
+                # Add missing $ at the end of the line
+                if line.count('$') % 2 != 0:
+                    fixed_lines[line_num - 1] = line.rstrip() + '$'
+                    fix_count = 1
+                    fix_description = "Added missing $ to close math mode in title"
+
+        return fixed_lines, fix_count, fix_description
+
+    @staticmethod
+    def _fix_extra_brace(tex_lines: list, analysis: dict, error_line: int = None) -> tuple:
+        """Fix Extra } or forgotten $ errors"""
+        fixed_lines = tex_lines.copy()
+        fix_count = 0
+        fix_description = ""
+
+        fix_data = analysis.get('fix_data', {})
+        error_type = fix_data.get('type', '')
+        target_line = fix_data.get('line', error_line)
+
+        if target_line and 1 <= target_line <= len(fixed_lines):
+            line = fixed_lines[target_line - 1]
+            original_line = line
+
+            if error_type == 'unclosed_math':
+                # Add missing $ at the end of the line
+                fixed_lines[target_line - 1] = line.rstrip() + ' $'
+                fix_count = 1
+                fix_description = "Added missing $ to close math mode"
+
+            elif error_type == 'unclosed_brace':
+                # Add missing }
+                open_count = line.count('{')
+                close_count = line.count('}')
+                if open_count > close_count:
+                    fixed_lines[target_line - 1] = line.rstrip() + ' ' + '}' * (open_count - close_count)
+                    fix_count = 1
+                    fix_description = f"Added {open_count - close_count} missing closing brace(s)"
+
+            elif error_type == 'title_math':
+                # Add missing $ at the end of title line
+                if line.count('$') % 2 != 0:
+                    fixed_lines[target_line - 1] = line.rstrip() + '$'
+                    fix_count = 1
+                    fix_description = "Added missing $ to close math mode in title"
+
+        return fixed_lines, fix_count, fix_description
 
 class MediaURLDialog(ctk.CTkToplevel):
     def __init__(self, parent, slide_index, media_entry):
@@ -3835,10 +5522,10 @@ class BeamerSyntaxHighlighter:
             self.ctk_text.master.check_spelling()
 
 class LaTeXErrorEditor(ctk.CTkToplevel):
-    """Interactive editor for fixing LaTeX compilation errors - works with TXT files directly"""
+    r"""Interactive editor for fixing LaTeX compilation errors - works with TXT files directly"""
 
     def __init__(self, parent, file_path, error_line_num, error_message, error_context,
-                 log_content=None, exact_line_content=None, is_txt_file=False):
+                 log_content=None, exact_line_content=None, is_txt_file=False, slide_num=0):
         # Handle different parent types gracefully
         if hasattr(parent, 'root') and isinstance(parent.root, (ctk.CTk, tk.Tk)):
             actual_parent = parent.root
@@ -3853,6 +5540,7 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.is_txt_file = is_txt_file
         self.tex_file_path = file_path.replace('.txt', '.tex') if is_txt_file else file_path
         self.error_line_num = error_line_num
+        self.slide_num = slide_num
         self.error_message = error_message
         self.error_context = error_context
         self.log_content = log_content
@@ -3863,34 +5551,231 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.original_content = None
         self.parent_editor = parent
 
-        self.title(f"LaTeX Error Editor - Editing {os.path.basename(file_path)}")
-        self.geometry("1000x700")
+        # Update title with slide information
+        if slide_num > 0:
+            self.title(f"LaTeX Error Editor - Slide {slide_num}, Line {error_line_num} - {os.path.basename(file_path)}")
+        else:
+            self.title(f"LaTeX Error Editor - Line {error_line_num} - {os.path.basename(file_path)}")
 
-        # Make dialog modal
+        # Increase window size to show all buttons
+        self.geometry("1000x800")
+
+        # Make dialog modal and bring to top
         try:
             self.transient(actual_parent)
             self.grab_set()
+            self.lift()
+            self.focus_force()
+            self.attributes('-topmost', True)
+            self.after(100, lambda: self.attributes('-topmost', False))
         except:
             pass
 
         # Center window
         self.update_idletasks()
         x = (self.winfo_screenwidth() - 1000) // 2
-        y = (self.winfo_screenheight() - 700) // 2
+        y = (self.winfo_screenheight() - 800) // 2
         self.geometry(f"+{x}+{y}")
 
         self.create_widgets()
         self.load_file()
+        self.setup_brace_matching()
+        # Setup enhanced help system (NEW)
+        self.setup_enhanced_help_system()
+        if self.slide_num > 0:
+            self.after(100, self.navigate_to_error_slide)
+            self.status_label.configure(
+                text=f"⚠ Error in Slide {self.slide_num} - Scroll to highlighted area",
+                text_color="#FFB86C"
+            )
+        else:
+            self.setup_brace_matching()
+
+
+    def write(self, text, color="white"):
+        """Write to parent's terminal if available"""
+        if hasattr(self.parent_editor, 'write'):
+            self.parent_editor.write(text, color)
+        else:
+            print(text)
+
+    # ========== SCROLLING METHODS ==========
+
+    def on_scroll(self, *args):
+        """Sync scrolling between editor and line numbers"""
+        try:
+            self.editor.yview(*args)
+            self.line_numbers.yview(*args)
+        except:
+            pass
+
+    def on_mousewheel(self, event):
+        """Handle mousewheel scrolling"""
+        try:
+            if event.num == 4:
+                delta = -1
+            elif event.num == 5:
+                delta = 1
+            else:
+                delta = -1 * (event.delta // 120)
+            self.editor.yview_scroll(delta, "units")
+            self.line_numbers.yview_scroll(delta, "units")
+        except:
+            pass
+        return "break"
+
+    # ========== BRACE MATCHING METHODS ==========
+
+    def setup_brace_matching(self):
+        """Setup brace matching for the editor"""
+        try:
+            self.editor.bind('<KeyRelease>', self.on_brace_match)
+            self.editor.bind('<ButtonRelease-1>', self.on_brace_match)
+            self.editor.bind('<Motion>', self.on_hover_brace_match)
+
+            self.editor.tag_config('matching_brace', background='#4A90E2', foreground='white')
+            self.editor.tag_config('matching_brace_hover', background='#FFB86C', foreground='black')
+        except:
+            pass
+
+    def find_matching_brace(self, text_widget, pos):
+        """Find matching brace for {, [, or ( at given position"""
+        try:
+            char = text_widget.get(pos, f"{pos}+1c")
+            open_braces = {'{': '}', '[': ']', '(': ')'}
+            close_braces = {'}': '{', ']': '[', ')': '('}
+
+            if char in open_braces:
+                open_char = char
+                close_char = open_braces[open_char]
+                count = 1
+                pos_index = text_widget.index(pos)
+
+                while True:
+                    pos_index = text_widget.index(f"{pos_index}+1c")
+                    if pos_index == "end":
+                        break
+                    next_char = text_widget.get(pos_index, f"{pos_index}+1c")
+                    if next_char == open_char:
+                        count += 1
+                    elif next_char == close_char:
+                        count -= 1
+                        if count == 0:
+                            return pos_index
+                return None
+
+            elif char in close_braces:
+                close_char = char
+                open_char = close_braces[close_char]
+                count = 1
+                pos_index = text_widget.index(pos)
+
+                while True:
+                    if pos_index == "1.0":
+                        break
+                    pos_index = text_widget.index(f"{pos_index}-1c")
+                    prev_char = text_widget.get(pos_index, f"{pos_index}+1c")
+                    if prev_char == close_char:
+                        count += 1
+                    elif prev_char == open_char:
+                        count -= 1
+                        if count == 0:
+                            return pos_index
+                return None
+            return None
+        except:
+            return None
+
+    def on_brace_match(self, event=None):
+        """Highlight matching brace when clicked or typed"""
+        try:
+            self.editor.tag_remove('matching_brace', '1.0', 'end')
+            cursor_pos = self.editor.index('insert')
+            char_pos = self.editor.index(f"{cursor_pos}-1c")
+            match_pos = self.find_matching_brace(self.editor, char_pos)
+
+            if match_pos:
+                self.editor.tag_add('matching_brace', char_pos, f"{char_pos}+1c")
+                self.editor.tag_add('matching_brace', match_pos, f"{match_pos}+1c")
+        except:
+            pass
+
+    def on_hover_brace_match(self, event=None):
+        """Highlight matching brace on hover"""
+        try:
+            self.editor.tag_remove('matching_brace_hover', '1.0', 'end')
+            index = self.editor.index(f"@{event.x},{event.y}")
+            match_pos = self.find_matching_brace(self.editor, index)
+
+            if match_pos:
+                self.editor.tag_add('matching_brace_hover', index, f"{index}+1c")
+                self.editor.tag_add('matching_brace_hover', match_pos, f"{match_pos}+1c")
+        except:
+            pass
+
+    # ========== SLIDE MASKING METHOD ==========
+
+    def mask_current_slide(self):
+        """Mask out the current slide (comment out the entire slide)"""
+        try:
+            cursor_pos = self.editor.index('insert')
+            line_num = int(cursor_pos.split('.')[0])
+
+            lines = self.editor.get('1.0', 'end-1c').split('\n')
+
+            # Find slide start
+            slide_start = line_num - 1
+            for i in range(line_num - 1, -1, -1):
+                if i < len(lines) and lines[i].strip().startswith('\\title'):
+                    slide_start = i
+                    break
+
+            # Find slide end
+            slide_end = len(lines) - 1
+            for i in range(slide_start + 1, len(lines)):
+                if lines[i].strip().startswith('\\title'):
+                    slide_end = i - 1
+                    break
+
+            slide_count = slide_end - slide_start + 1
+
+            if messagebox.askyesno("Mask Slide",
+                                   f"Mask slide at line {slide_start + 1}? ({slide_count} lines)\n\n"
+                                   f"The slide will be commented out and hidden from PDF."):
+
+                masked_lines = []
+                for i in range(slide_start, slide_end + 1):
+                    line = lines[i]
+                    if line.strip() and not line.strip().startswith('%'):
+                        masked_lines.append(f"% {line}")
+                    else:
+                        masked_lines.append(line)
+
+                start_index = f"{slide_start + 1}.0"
+                end_index = f"{slide_end + 2}.0"
+
+                self.editor.delete(start_index, end_index)
+                self.editor.insert(start_index, '\n'.join(masked_lines) + '\n')
+
+                self.modified = True
+                self.status_label.configure(text=f"✓ Masked slide at line {slide_start + 1}", text_color="#28a745")
+                self.update_line_numbers()
+
+                if messagebox.askyesno("Auto-Save", "Save changes now?"):
+                    self.save_changes()
+        except Exception as e:
+            self.status_label.configure(text=f"Error: {str(e)}", text_color="#dc3545")
+
+    # ========== MAIN EDITOR METHODS ==========
 
     def load_file(self):
-        """Load the file content into the editor."""
+        r"""Load the file content into the editor with proper \None handling."""
         try:
             if not os.path.exists(self.file_path):
                 self.editor.insert("1.0", f"% ERROR: File not found: {self.file_path}\n")
                 self.status_label.configure(text=f"File not found: {self.file_path}", text_color="#dc3545")
                 return
 
-            # Read the entire file
             with open(self.file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 file_content = f.read()
                 lines = file_content.splitlines(keepends=True)
@@ -3900,17 +5785,60 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
                 return
 
             self.original_content = file_content
-
-            # Load the editor content
             self.editor.delete("1.0", "end")
-            self.editor.insert("1.0", file_content)
+
+            # Build a mapping of line numbers to slide numbers
+            self.line_to_slide = {}
+            current_slide = 0
+            for i, line in enumerate(lines, 1):
+                if line.strip().startswith('\\title'):
+                    current_slide += 1
+                self.line_to_slide[i] = current_slide
+
+            processed_content = []
+            in_content_block = False
+            found_first_line = False
+
+            for line in lines:
+                line_str = line.rstrip('\n')
+
+                if re.match(r'^%?\s*\\begin{Content}\s*$', line_str):
+                    in_content_block = True
+                    found_first_line = False
+                    processed_content.append(line_str)
+                    continue
+                elif re.match(r'^%?\s*\\end{Content}\s*$', line_str):
+                    in_content_block = False
+                    processed_content.append(line_str)
+                    continue
+
+                if in_content_block and not found_first_line:
+                    found_first_line = True
+                    is_masked = line_str.lstrip().startswith('%')
+                    if is_masked:
+                        clean_line = re.sub(r'^\s*%\s*', '', line_str)
+                    else:
+                        clean_line = line_str
+
+                    if not clean_line.strip():
+                        if is_masked:
+                            processed_content.append(r"% \None")
+                        else:
+                            processed_content.append(r"\None")
+                    else:
+                        processed_content.append(line_str)
+                else:
+                    processed_content.append(line_str)
+
+            final_content = '\n'.join(processed_content)
+            self.editor.insert("1.0", final_content)
             self.update_line_numbers()
 
-            print(f"Total lines loaded in editor: {len(lines)}")
-            print(f"File loaded: {self.file_path}")
-
-            # Try to find and scroll to the relevant slide if possible
-            self.find_and_scroll_to_relevant_slide(lines)
+            # Enhanced error location with slide information
+            if self.error_line_num:
+                slide_num = self.line_to_slide.get(self.error_line_num, 0)
+                self.highlight_error_line(self.error_line_num, slide_num)
+                self.highlight_specific_issues(self.error_line_num, slide_num)
 
         except Exception as e:
             self.editor.insert("1.0", f"% Error loading file: {e}\n")
@@ -3918,110 +5846,177 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             traceback.print_exc()
             self.status_label.configure(text=f"Error loading file: {str(e)}", text_color="#dc3545")
 
-    def find_and_scroll_to_relevant_slide(self, lines):
-        """Try to find the slide that might contain the error and scroll to it."""
-        # For TXT files, we can look for the slide title from the TeX error context
-        if not self.is_txt_file:
-            return
-
-        # Extract the slide title from the TeX error (if available)
-        tex_title = self.extract_tex_slide_title()
-        if not tex_title:
-            return
-
-        print(f"Looking for slide with title: '{tex_title}'")
-
-        # Find the slide in the TXT file
-        for i, line in enumerate(lines, 1):
-            if line.startswith('\\title '):
-                txt_title = line[7:].strip()
-                txt_title_clean = txt_title.replace('[DELETED]', '').strip()
-                if tex_title == txt_title_clean or tex_title in txt_title_clean:
-                    print(f"Found matching slide at line {i}")
-                    self.scroll_to_line(i, lines)
-                    return
-
-    def extract_tex_slide_title(self):
-        """Extract the slide title from the TeX error context."""
-        import re
-
-        try:
-            if not os.path.exists(self.tex_file_path):
-                return None
-
-            with open(self.tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                tex_lines = f.readlines()
-
-            # Find the error line in the TeX file
-            error_line_idx = self.error_line_num - 1 if self.error_line_num else 0
-            if error_line_idx >= len(tex_lines):
-                error_line_idx = len(tex_lines) - 1
-
-            # Look backwards for a frametitle
-            for i in range(error_line_idx, max(0, error_line_idx - 100), -1):
-                line = tex_lines[i]
-                title_match = re.search(r'\\frametitle\{([^}]+)\}', line)
-                if title_match:
-                    return title_match.group(1).strip()
-                title_match = re.search(r'\\begin{frame}\{([^}]+)\}', line)
-                if title_match:
-                    return title_match.group(1).strip()
-
-            return None
-
-        except Exception as e:
-            print(f"Error extracting TeX title: {e}")
-            return None
-
-    def scroll_to_line(self, line_num, lines):
-        """Scroll to a specific line in the editor."""
+    def highlight_error_line(self, line_num, slide_num=0):
+        """Highlight the error line in the editor with slide information"""
         try:
             start_index = f"{line_num}.0"
-
-            # Clear existing highlights
-            self.editor.tag_remove("error_line", "1.0", "end")
-            self.editor.tag_remove("error_highlight", "1.0", "end")
-
-            # Highlight the line
-            self.editor.tag_add("error_line", start_index, f"{line_num}.end")
-
-            # Scroll to the line
+            end_index = f"{line_num}.end"
+            self.editor.tag_add("error_line", start_index, end_index)
             self.editor.see(start_index)
-            self.editor.mark_set("insert", start_index)
-            self.editor.update_idletasks()
 
-            title_line = lines[line_num - 1].strip() if line_num <= len(lines) else "Unknown"
-            self.status_label.configure(
-                text=f"Scrolled to line {line_num}: {title_line}",
-                text_color="#FFB86C"
-            )
+            # Update status label with slide information
+            if slide_num > 0:
+                self.status_label.configure(
+                    text=f"Error at line {line_num} (Slide {slide_num}) - Use Ctrl+F to search",
+                    text_color="#FFD700"
+                )
+            else:
+                self.status_label.configure(
+                    text=f"Error at line {line_num} - Use Ctrl+F to search",
+                    text_color="#FFD700"
+                )
         except Exception as e:
-            print(f"Error scrolling to line: {e}")
+            print(f"Could not highlight error line: {e}")
+
+    def highlight_specific_issues(self, line_num, slide_num=0):
+        """Highlight specific issues like unclosed braces or math delimiters"""
+        try:
+            line_start = f"{line_num}.0"
+            line_end = f"{line_num}.end"
+            line_content = self.editor.get(line_start, line_end)
+
+            slide_info = f" (Slide {slide_num})" if slide_num > 0 else ""
+
+            # Check for unclosed math mode ($ without matching $)
+            dollar_count = line_content.count('$')
+            if dollar_count % 2 != 0:
+                last_dollar_pos = line_content.rfind('$')
+                if last_dollar_pos != -1:
+                    highlight_start = f"{line_num}.{last_dollar_pos}"
+                    highlight_end = f"{line_num}.{last_dollar_pos + 1}"
+                    self.editor.tag_add("error_highlight", highlight_start, highlight_end)
+                    self.status_label.configure(
+                        text=f"⚠ Unclosed math mode{slide_info}: missing $ after this position",
+                        text_color="#FFB86C"
+                    )
+
+            # Check for unclosed braces
+            open_braces = line_content.count('{')
+            close_braces = line_content.count('}')
+            if open_braces != close_braces:
+                self.editor.tag_add("error_highlight", line_start, line_end)
+                if open_braces > close_braces:
+                    self.status_label.configure(
+                        text=f"⚠ Unclosed brace{slide_info}: missing }} in this line",
+                        text_color="#FFB86C"
+                    )
+                else:
+                    self.status_label.configure(
+                        text=f"⚠ Extra closing brace{slide_info}: too many }} in this line",
+                        text_color="#FFB86C"
+                    )
+
+            # Check for missing closing bracket in math like $V_{oc}
+            import re
+            math_pattern = r'\$[^\$]*\{[^\}]*$'
+            if re.search(math_pattern, line_content):
+                self.editor.tag_add("error_highlight", line_start, line_end)
+                self.status_label.configure(
+                    text=f"⚠ Missing closing brace in math expression{slide_info} (e.g., V_{{oc}} should be V_{{oc}}$)",
+                    text_color="#FFB86C"
+                )
+
+        except Exception as e:
+            print(f"Error highlighting issues: {e}")
+
+    def update_line_numbers(self):
+        """Update line number display with slide indicators"""
+        try:
+            lines = self.editor.get("1.0", "end-1c").split('\n')
+
+            # Build line numbers with slide indicators
+            line_numbers = []
+            current_slide = 0
+            for i, line in enumerate(lines, 1):
+                if line.strip().startswith('\\title'):
+                    current_slide += 1
+                    # Remove [DELETED] prefix for cleaner display
+                    title_display = line.strip()
+                    if '[DELETED]' in title_display:
+                        title_display = '🗑 ' + title_display.replace('[DELETED]', '').strip()
+                    line_numbers.append(f"{i:4d} ▶ Slide {current_slide}")
+                else:
+                    if current_slide > 0:
+                        if i == self.error_line_num:
+                            line_numbers.append(f"{i:4d} ⚠ Slide {current_slide}")
+                        else:
+                            line_numbers.append(f"{i:4d}   Slide {current_slide}")
+                    else:
+                        if i == self.error_line_num:
+                            line_numbers.append(f"{i:4d} ⚠")
+                        else:
+                            line_numbers.append(f"{i:4d}")
+
+            line_numbers_text = '\n'.join(line_numbers)
+            self.line_numbers.configure(state="normal")
+            self.line_numbers.delete("1.0", "end")
+            self.line_numbers.insert("1.0", line_numbers_text)
+            self.line_numbers.configure(state="disabled")
+        except Exception as e:
+            print(f"Error updating line numbers: {e}")
+
+    def on_text_change(self, event=None):
+        """Update line numbers when text changes"""
+        self.update_line_numbers()
+        self.modified = True
+        self.status_label.configure(text="Changes made - Click 'Apply Fix & Recompile' to save", text_color="#FFB86C")
 
     def save_changes(self):
-        """Save changes to file and regenerate TeX if needed."""
+        r"""Save changes to file and regenerate TeX with proper \None handling."""
         try:
             content = self.editor.get("1.0", "end-1c")
 
-            print(f"Saving to file: {self.file_path}")
-            with open(self.file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            lines = content.split('\n')
+            processed_lines = []
+            in_content_block = False
+            found_first_line = False
 
-            # If this is a TXT file, regenerate the TeX file
+            for line in lines:
+                if re.match(r'^%?\s*\\begin{Content}\s*$', line):
+                    in_content_block = True
+                    found_first_line = False
+                    processed_lines.append(line)
+                    continue
+                elif re.match(r'^%?\s*\\end{Content}\s*$', line):
+                    in_content_block = False
+                    processed_lines.append(line)
+                    continue
+
+                if in_content_block and not found_first_line:
+                    found_first_line = True
+                    is_masked = line.lstrip().startswith('%')
+                    if is_masked:
+                        clean_line = re.sub(r'^\s*%\s*', '', line)
+                    else:
+                        clean_line = line
+
+                    if not clean_line.strip() or clean_line.strip() == "\\None":
+                        if is_masked:
+                            processed_lines.append(r"% \None")
+                        else:
+                            processed_lines.append(r"\None")
+                    else:
+                        processed_lines.append(line)
+                else:
+                    processed_lines.append(line)
+
+            final_content = '\n'.join(processed_lines)
+
+            with open(self.file_path, 'w', encoding='utf-8') as f:
+                f.write(final_content)
+
+            self.write(f"✓ Saved changes to {os.path.basename(self.file_path)}\n", "green")
+
             if self.is_txt_file:
                 try:
                     from BeamerSlideGenerator import process_input_file
-                    print(f"Regenerating TeX file: {self.tex_file_path}")
                     process_input_file(self.file_path, self.tex_file_path)
-                    print(f"✓ TeX file regenerated successfully")
+                    self.write(f"✓ Regenerated TeX file\n", "green")
                 except Exception as e:
-                    print(f"Warning: Could not regenerate TeX: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    self.write(f"Warning: Could not regenerate TeX: {e}\n", "yellow")
 
             self.status_label.configure(text="✓ File saved successfully!", text_color="#28a745")
             self.modified = False
-
             return True
 
         except Exception as e:
@@ -4031,8 +6026,16 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             return False
 
     def apply_and_recompile(self):
-        """Apply changes, regenerate TeX, and signal recompile."""
+        """Apply changes, regenerate TeX, reload file in IDE, and signal recompile."""
         if self.save_changes():
+            # Reload the file in the parent IDE to sync slide data
+            if hasattr(self.parent_editor, 'load_file'):
+                self.parent_editor.load_file(self.file_path)
+                self.parent_editor.write(f"✓ Reloaded {os.path.basename(self.file_path)} after fixes\n", "green")
+                # Also update slide list and reload current slide
+                self.parent_editor.update_slide_list()
+                if self.parent_editor.current_slide_index >= 0:
+                    self.parent_editor.load_slide(self.parent_editor.current_slide_index)
             self.result = 'fixed'
             self.destroy()
 
@@ -4056,27 +6059,40 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
             self.update_line_numbers()
 
     def fix_missing_item(self):
-        """Fix missing \item error by adding \item commands."""
+        r"""Fix missing \item error by adding \item commands."""
         content = self.editor.get("1.0", "end-1c")
         lines = content.split('\n')
 
-        for i in range(len(lines) - 1, -1, -1):
-            if '\\end{frame}' in lines[i] and i > 0:
-                if lines[i-1].strip() and not lines[i-1].strip().startswith('\\item'):
-                    indent = re.match(r'^\s*', lines[i-1]).group(0)
-                    lines.insert(i, f"{indent}\\item ")
-                    self.editor.delete("1.0", "end")
-                    self.editor.insert("1.0", '\n'.join(lines))
-                    self.modified = True
-                    self.status_label.configure(text="Added missing \\item", text_color="#28a745")
-                    self.update_line_numbers()
-                    return
+        in_itemize = False
+        fixed_lines = []
+        fixed_count = 0
 
-        cursor_pos = self.editor.index("insert")
-        self.editor.insert(cursor_pos, "\\item ")
-        self.modified = True
-        self.status_label.configure(text="Added \\item at cursor", text_color="#28a745")
-        self.update_line_numbers()
+        for line in lines:
+            stripped = line.strip()
+            if '\\begin{itemize}' in line:
+                in_itemize = True
+                fixed_lines.append(line)
+            elif '\\end{itemize}' in line:
+                in_itemize = False
+                fixed_lines.append(line)
+            elif in_itemize and (stripped.startswith('-') or stripped.startswith('•')):
+                fixed_lines.append('\\item ' + line.lstrip('-•').strip())
+                fixed_count += 1
+            else:
+                fixed_lines.append(line)
+
+        if fixed_count > 0:
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", '\n'.join(fixed_lines))
+            self.modified = True
+            self.status_label.configure(text=f"Added {fixed_count} missing \\item commands", text_color="#28a745")
+            self.update_line_numbers()
+        else:
+            cursor_pos = self.editor.index("insert")
+            self.editor.insert(cursor_pos, "\\item ")
+            self.modified = True
+            self.status_label.configure(text="Added \\item at cursor", text_color="#28a745")
+            self.update_line_numbers()
 
     def toggle_mask_line(self):
         """Mask or unmask the current line."""
@@ -4138,51 +6154,24 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.clipboard_append(self.error_message)
         self.status_label.configure(text="Error copied to clipboard", text_color="#28a745")
 
-    def update_line_numbers(self):
-        """Update line number display."""
-        lines = self.editor.get("1.0", "end-1c").split('\n')
-        line_numbers = '\n'.join(str(i) for i in range(1, len(lines) + 1))
-        self.line_numbers.configure(state="normal")
-        self.line_numbers.delete("1.0", "end")
-        self.line_numbers.insert("1.0", line_numbers)
-        self.line_numbers.configure(state="disabled")
-
-    def on_scroll(self, *args):
-        """Sync scrolling between editor and line numbers."""
-        self.editor.yview(*args)
-        self.line_numbers.yview(*args)
-
-    def on_mousewheel(self, event):
-        """Handle mousewheel scrolling."""
-        if event.num == 4:
-            delta = -1
-        elif event.num == 5:
-            delta = 1
-        else:
-            delta = -1 * (event.delta // 120)
-        self.editor.yview_scroll(delta, "units")
-        self.line_numbers.yview_scroll(delta, "units")
-        return "break"
-
-    def on_text_change(self, event=None):
-        """Update line numbers when text changes."""
-        self.update_line_numbers()
-        self.modified = True
-        self.status_label.configure(text="Changes made - Click 'Apply Fix & Recompile' to save", text_color="#FFB86C")
-
     def create_widgets(self):
-        """Create the editor UI."""
+        """Create the editor UI with additional features"""
         # Main container
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Error info frame
         error_frame = ctk.CTkFrame(main_frame, fg_color="#8B0000")
-        error_frame.pack(fill="x", padx=5, pady=5)
+        error_frame.pack(fill="x", padx=5, pady=(0, 5))
 
-        ctk.CTkLabel(error_frame, text="⚠ ERROR DETECTED", font=("Arial", 14, "bold"), text_color="white").pack(anchor="w", padx=10, pady=5)
-        ctk.CTkLabel(error_frame, text=self.error_message[:200], font=("Arial", 11), text_color="#FFB6C1", wraplength=950).pack(anchor="w", padx=10, pady=5)
-        ctk.CTkLabel(error_frame, text=f"Location: TeX line {self.error_line_num}", font=("Arial", 10), text_color="#FFD700").pack(anchor="w", padx=10, pady=5)
+        ctk.CTkLabel(error_frame, text="⚠ ERROR DETECTED", font=("Arial", 14, "bold"), text_color="white").pack(anchor="w", padx=10, pady=(5, 2))
+
+        # Error message with slide info
+        if self.slide_num > 0:
+            error_header = f"Slide {self.slide_num}, Line {self.error_line_num}"
+            ctk.CTkLabel(error_frame, text=error_header, font=("Arial", 11), text_color="#FFD700").pack(anchor="w", padx=10, pady=(0, 2))
+
+        ctk.CTkLabel(error_frame, text=self.error_message[:200], font=("Arial", 11), text_color="#FFB6C1", wraplength=950).pack(anchor="w", padx=10, pady=(0, 5))
 
         # Editor frame
         editor_frame = ctk.CTkFrame(main_frame)
@@ -4193,13 +6182,13 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
 
         # Left side - Editor
         left_frame = tk.Frame(paned)
-        paned.add(left_frame, width=500)
+        paned.add(left_frame, width=600)
 
-        line_number_frame = tk.Frame(left_frame, bg="#1e1e1e", width=50)
+        line_number_frame = tk.Frame(left_frame, bg="#1e1e1e", width=70)
         line_number_frame.pack(side="left", fill="y")
         line_number_frame.pack_propagate(False)
 
-        self.line_numbers = tk.Text(line_number_frame, width=4, padx=3, takefocus=0, border=0,
+        self.line_numbers = tk.Text(line_number_frame, width=8, padx=3, takefocus=0, border=0,
                                     background="#1e1e1e", foreground="#858585", font=("Courier", 11),
                                     wrap="none", state="disabled")
         self.line_numbers.pack(side="left", fill="y")
@@ -4216,48 +6205,710 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
         self.editor.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=self.on_scroll)
 
+        # Configure tags
         self.editor.tag_config("error_line", background="#8B0000", foreground="white")
         self.editor.tag_config("error_highlight", background="#FF4444", foreground="white")
         self.editor.tag_config("commented_line", background="#2d2d2d", foreground="#6a9955")
 
+        # Bind events
         self.editor.bind("<KeyRelease>", self.on_text_change)
         self.editor.bind("<MouseWheel>", self.on_mousewheel)
         self.editor.bind("<Button-4>", self.on_mousewheel)
         self.editor.bind("<Button-5>", self.on_mousewheel)
         self.editor.bind("<Control-s>", lambda e: self.save_changes() or "break")
+        self.editor.bind('<Control-f>', lambda e: self.create_search_replace_panel())
+        self.editor.bind('<Control-F>', lambda e: self.create_search_replace_panel())
 
-        # Right side - Suggestions
+        # Right side - Suggestions and Actions
         right_frame = ctk.CTkFrame(paned)
         paned.add(right_frame, width=400)
 
-        ctk.CTkLabel(right_frame, text="Quick Fixes", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=5)
+        # Create a scrollable frame for right panel content
+        right_scroll = ctk.CTkScrollableFrame(right_frame)
+        right_scroll.pack(fill="both", expand=True, padx=5, pady=5)
 
-        quick_frame = ctk.CTkFrame(right_frame)
-        quick_frame.pack(fill="x", padx=10, pady=5)
+        # Quick Fixes section
+        quick_frame = ctk.CTkFrame(right_scroll)
+        quick_frame.pack(fill="x", padx=5, pady=5)
+
+        ctk.CTkLabel(quick_frame, text="Quick Fixes", font=("Arial", 14, "bold")).pack(anchor="w", padx=5, pady=5)
 
         fixes = [
-            ("Fix Missing \\item", self.fix_missing_item),
-            ("Mask/Unmask Line", self.toggle_mask_line),
-            ("Comment Out Line", self.comment_out_line),
-            ("Restore Original", self.restore_original),
-            ("Save Only", self.save_changes),
+            ("🔍 Search & Replace (Ctrl+F)", self.create_search_replace_panel),
+            ("📝 Fix Missing \\item", self.fix_missing_item),
+            ("💬 Mask/Unmask Line", self.toggle_mask_line),
+            ("📌 Comment Out Line", self.comment_out_line),
+            ("🗑 Mask Entire Slide", self.mask_current_slide),
+            ("↩ Restore Original", self.restore_original),
+            ("💾 Save Only", self.save_changes),
         ]
 
         for text, cmd in fixes:
-            ctk.CTkButton(quick_frame, text=text, command=cmd, width=120, height=30).pack(side="left", padx=2, pady=2)
+            btn = ctk.CTkButton(quick_frame, text=text, command=cmd, height=35)
+            btn.pack(side="top", padx=5, pady=3, fill="x")
+
+        # Brace Matching Info
+        info_frame = ctk.CTkFrame(right_scroll)
+        info_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(info_frame, text="Brace Matching", font=("Arial", 13, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        info_text = """• Hover over {, [, ( to see matching brace
+• Click on a brace to highlight its match
+• Helps find missing or extra braces"""
+
+        info_label = ctk.CTkLabel(info_frame, text=info_text, font=("Arial", 11), justify="left", text_color="#888888")
+        info_label.pack(anchor="w", padx=10, pady=5)
+
+        # Slide Navigation Info
+        nav_frame = ctk.CTkFrame(right_scroll)
+        nav_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(nav_frame, text="Slide Navigation", font=("Arial", 13, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        nav_text = """• Slides start with \\title
+• Current slide number shown in line numbers
+• Mask problematic slides to bypass them
+• Fix braces before recompiling"""
+
+        nav_label = ctk.CTkLabel(nav_frame, text=nav_text, font=("Arial", 11), justify="left", text_color="#888888")
+        nav_label.pack(anchor="w", padx=10, pady=5)
+
+        # Keyboard shortcuts info
+        shortcuts_frame = ctk.CTkFrame(right_scroll)
+        shortcuts_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(shortcuts_frame, text="Keyboard Shortcuts", font=("Arial", 13, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        shortcuts_text = """• Ctrl+F: Search & Replace
+• Ctrl+S: Save changes
+• Ctrl+Z: Undo
+• Ctrl+Y: Redo"""
+
+        shortcuts_label = ctk.CTkLabel(shortcuts_frame, text=shortcuts_text, font=("Arial", 11), justify="left", text_color="#888888")
+        shortcuts_label.pack(anchor="w", padx=10, pady=5)
 
         # Bottom buttons
         button_frame = ctk.CTkFrame(main_frame)
-        button_frame.pack(fill="x", padx=5, pady=10)
+        button_frame.pack(fill="x", padx=5, pady=(5, 0))
 
-        ctk.CTkButton(button_frame, text="✓ Apply Fix & Recompile", command=self.apply_and_recompile, width=150, fg_color="#28a745").pack(side="left", padx=5)
-        ctk.CTkButton(button_frame, text="⏭ Skip Error", command=self.skip_error, width=120, fg_color="#ffc107", text_color="black").pack(side="left", padx=5)
-        ctk.CTkButton(button_frame, text="⏹ Abort", command=self.abort_compilation, width=120, fg_color="#dc3545").pack(side="left", padx=5)
-        ctk.CTkButton(button_frame, text="📋 Copy Error", command=self.copy_error, width=100).pack(side="right", padx=5)
+        ctk.CTkButton(button_frame, text="✓ Apply Fix & Recompile", command=self.apply_and_recompile,
+                     width=160, height=40, fg_color="#28a745").pack(side="left", padx=5, pady=5)
+        ctk.CTkButton(button_frame, text="⏭ Skip Error", command=self.skip_error,
+                     width=120, height=40, fg_color="#ffc107", text_color="black").pack(side="left", padx=5, pady=5)
+        ctk.CTkButton(button_frame, text="⏹ Abort", command=self.abort_compilation,
+                     width=120, height=40, fg_color="#dc3545").pack(side="left", padx=5, pady=5)
+        ctk.CTkButton(button_frame, text="📋 Copy Error", command=self.copy_error,
+                     width=100, height=40).pack(side="right", padx=5, pady=5)
 
-        self.status_label = ctk.CTkLabel(main_frame, text="Edit the code, then click 'Apply Fix & Recompile'", font=("Arial", 10), text_color="#888888")
-        self.status_label.pack(fill="x", padx=5, pady=5)
+        self.status_label = ctk.CTkLabel(main_frame, text="Edit the code, then click 'Apply Fix & Recompile'",
+                                        font=("Arial", 11), text_color="#888888")
+        self.status_label.pack(fill="x", padx=5, pady=(0, 5))
 
+    def create_search_replace_panel(self):
+        """Open the search and replace panel"""
+        SearchReplacePanel(self, self.editor)
+
+    def navigate_to_error_slide(self):
+        """Navigate to the slide containing the error using slide number"""
+        if self.slide_num > 0 and hasattr(self.parent_editor, 'slides'):
+            # Find the line number in TXT file for this slide
+            txt_lines = self.editor.get("1.0", "end-1c").split('\n')
+
+            current_slide = 0
+            for i, line in enumerate(txt_lines, 1):
+                if line.strip().startswith('\\title'):
+                    current_slide += 1
+                    if current_slide == self.slide_num:
+                        # Found the slide - scroll to it
+                        self.editor.see(f"{i}.0")
+                        self.editor.mark_set("insert", f"{i}.0")
+
+                        # Highlight the entire slide area
+                        self.highlight_slide_region(i, txt_lines)
+                        return i
+            return None
+
+    def highlight_slide_region(self, start_line, txt_lines):
+        """Highlight the entire problematic slide"""
+        # Find end of this slide (next \title or EOF)
+        end_line = len(txt_lines)
+        for i in range(start_line + 1, len(txt_lines)):
+            if txt_lines[i].strip().startswith('\\title'):
+                end_line = i - 1
+                break
+
+        # Highlight the slide region
+        start_idx = f"{start_line}.0"
+        end_idx = f"{end_line}.end"
+
+        self.editor.tag_remove("error_slide", "1.0", "end")
+        self.editor.tag_add("error_slide", start_idx, end_idx)
+        self.editor.tag_config("error_slide", background="#2d1f1f")  # Subtle highlight
+
+    def navigate_to_error_line(self):
+        """Navigate to the exact error line in the TXT file"""
+        if self.error_line and self.error_line > 0:
+            try:
+                # Scroll to the line
+                self.editor.see(f"{self.error_line}.0")
+                self.editor.mark_set("insert", f"{self.error_line}.0")
+
+                # Highlight the entire line
+                line_start = f"{self.error_line}.0"
+                line_end = f"{self.error_line}.end"
+                self.editor.tag_add("error_line", line_start, line_end)
+
+                # Get the line content to show in status
+                line_content = self.editor.get(line_start, line_end).strip()
+                self.status_label.configure(
+                    text=f"⚠ Error at line {self.error_line}: {line_content[:100]}",
+                    text_color="#FFB86C"
+                )
+
+                # If this is a math mode error, offer quick fix
+                if "Missing $" in self.error_message or "math mode" in self.error_message.lower():
+                    if "_{" in line_content:
+                        response = messagebox.askyesno(
+                            "Quick Fix",
+                            f"Detected subscript pattern (like V_oc) without math delimiters.\n\n"
+                            f"Line {self.error_line}: {line_content[:80]}\n\n"
+                            f"Would you like to automatically add $...$ around the expression?"
+                        )
+                        if response:
+                            self.fix_math_mode_line(self.error_line, line_content)
+            except Exception as e:
+                print(f"Error navigating to error line: {e}")
+
+    def fix_math_mode_line(self, line_num: int, line_content: str):
+        """Quick fix for math mode errors by adding $...$ around subscripts"""
+        import re
+
+        # Fix pattern: word_{subscript} without $
+        fixed_content = re.sub(r'([A-Za-z])_\{([^}]+)\}', r'$\1_{\2}$', line_content)
+
+        if fixed_content != line_content:
+            line_start = f"{line_num}.0"
+            line_end = f"{line_num}.end"
+            self.editor.delete(line_start, line_end)
+            self.editor.insert(line_start, fixed_content)
+            self.status_label.configure(
+                text=f"✓ Fixed: Added $...$ around subscript expression",
+                text_color="#28a745"
+            )
+            self.modified = True
+            self.update_line_numbers()
+
+    def setup_enhanced_help_system(self):
+        """Setup the existing LaTeX help system in the error editor"""
+        try:
+            # Import the existing help systems
+            from EnhancedCommandDialog import LatexCommandHelper, CommandTooltip
+            from Grammarly import LatexCommandHelper as BasicLatexCommandHelper
+
+            # Try to use enhanced version first
+            try:
+                self.command_helper = LatexCommandHelper()
+                self.use_enhanced_help = True
+                print("✓ Using enhanced LaTeX help system")
+            except:
+                self.command_helper = BasicLatexCommandHelper()
+                self.use_enhanced_help = False
+                print("✓ Using basic LaTeX help system")
+
+            # Initialize tooltip manager
+            self.tooltip_manager = CommandTooltip(self)
+
+            # Setup tooltip bindings for the editor
+            self.setup_editor_tooltips()
+
+        except Exception as e:
+            print(f"Error setting up help system: {e}")
+            self.setup_basic_help_fallback()
+
+    def setup_editor_tooltips(self):
+        """Setup tooltip bindings using the existing system"""
+        # Bind hover events for command detection
+        self.editor.bind('<Motion>', self.on_editor_hover)
+        self.editor.bind('<Leave>', self.on_editor_leave)
+
+        # Bind Alt+Click for detailed help
+        self.editor.bind('<Alt-Button-1>', self.show_detailed_command_help)
+        self.editor.bind('<Control-Button-1>', self.show_detailed_command_help)
+
+    def on_editor_hover(self, event):
+        """Handle hover over LaTeX commands using existing tooltip system"""
+        try:
+            index = self.editor.index(f"@{event.x},{event.y}")
+
+            # Get the word under cursor
+            word_start = self.editor.index(f"{index} wordstart")
+            word_end = self.editor.index(f"{index} wordend")
+            word = self.editor.get(word_start, word_end)
+
+            # Check if it's a LaTeX command
+            if word.startswith('\\') and len(word) > 1:
+                # Use existing tooltip manager
+                if hasattr(self, 'tooltip_manager'):
+                    self.tooltip_manager.show_tooltip(
+                        self.editor, word, event.x_root, event.y_root
+                    )
+                else:
+                    # Fallback to basic tooltip
+                    self.show_basic_command_tooltip(word, event.x_root, event.y_root)
+            else:
+                # Hide tooltip if not a command
+                if hasattr(self, 'tooltip_manager'):
+                    self.tooltip_manager.hide_tooltip()
+
+        except Exception as e:
+            print(f"Error in hover: {e}")
+
+    def on_editor_leave(self, event):
+        """Hide tooltip when mouse leaves editor"""
+        if hasattr(self, 'tooltip_manager'):
+            self.tooltip_manager.hide_tooltip()
+
+    def show_detailed_command_help(self, event):
+        """Show detailed command help on Alt+Click using existing system"""
+        try:
+            index = self.editor.index(f"@{event.x},{event.y}")
+
+            # Get the command under cursor
+            word_start = self.editor.index(f"{index} wordstart")
+            word_end = self.editor.index(f"{index} wordend")
+            command = self.editor.get(word_start, word_end)
+
+            if command.startswith('\\') and hasattr(self, 'command_helper'):
+                # Get detailed help from the existing helper
+                help_text = self.command_helper.get_command_help(command)
+
+                if help_text:
+                    # Show in a proper dialog
+                    self.show_command_help_dialog(command, help_text)
+                else:
+                    # Show that command wasn't found
+                    self.show_bubble_message(f"Command '{command}' not found in database", "yellow")
+
+        except Exception as e:
+            print(f"Error showing detailed help: {e}")
+
+    def show_command_help_dialog(self, command, help_text):
+        """Show command help in a nice dialog"""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"Command Help: {command}")
+        dialog.geometry("600x500")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 600) // 2
+        y = (dialog.winfo_screenheight() - 500) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Create text widget with help content
+        text_widget = ctk.CTkTextbox(dialog, font=("Courier", 11))
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Format help text nicely
+        formatted_help = f"""
+    📖 LaTeX Command Reference: {command}
+    {'=' * 50}
+
+    {help_text}
+
+    {'=' * 50}
+
+    Tips:
+    • Click "Insert" to add this command at cursor position
+    • Use Ctrl+C to copy the command
+    • Press Escape to close this dialog
+    """
+        text_widget.insert('1.0', formatted_help)
+        text_widget.configure(state="disabled")
+
+        # Button frame
+        button_frame = ctk.CTkFrame(dialog)
+        button_frame.pack(fill="x", padx=10, pady=10)
+
+        def insert_command():
+            """Insert the command at cursor position"""
+            self.editor.insert('insert', f"{command} ")
+            dialog.destroy()
+            self.status_label.configure(text=f"✓ Inserted {command}", text_color="#28a745")
+            self.after(2000, lambda: self.status_label.configure(text=""))
+
+        def copy_command():
+            """Copy command to clipboard"""
+            self.clipboard_clear()
+            self.clipboard_append(command)
+            self.status_label.configure(text=f"✓ Copied {command} to clipboard", text_color="#28a745")
+            self.after(2000, lambda: self.status_label.configure(text=""))
+
+        ctk.CTkButton(button_frame, text="Insert at Cursor", command=insert_command).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="Copy to Clipboard", command=copy_command).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="Close", command=dialog.destroy).pack(side="right", padx=5)
+
+    def show_basic_command_tooltip(self, command, x, y):
+        """Fallback basic tooltip if enhanced system isn't available"""
+        tooltip = tk.Toplevel(self)
+        tooltip.wm_overrideredirect(True)
+        tooltip.wm_geometry(f"+{x+10}+{y+10}")
+        tooltip.configure(bg='#ffffe0', relief='solid', borderwidth=1)
+
+        # Get basic help text
+        basic_help = {
+            '\\title': 'Sets the presentation title\nUsage: \\title{Your Title}',
+            '\\author': 'Sets the author name\nUsage: \\author{Author Name}',
+            '\\institute': 'Sets the institution\nUsage: \\institute{Institution}',
+            '\\date': 'Sets the date\nUsage: \\date{\\today}',
+            '\\begin': 'Begins an environment\nUsage: \\begin{environment}',
+            '\\end': 'Ends an environment\nUsage: \\end{environment}',
+            '\\item': 'List item\nUsage: \\item Text here',
+            '\\textbf': 'Bold text\nUsage: \\textbf{text}',
+            '\\textit': 'Italic text\nUsage: \\textit{text}',
+            '\\textcolor': 'Colored text\nUsage: \\textcolor{color}{text}',
+            '\\includegraphics': 'Include image\nUsage: \\includegraphics[options]{file}',
+            '\\cite': 'Cite reference\nUsage: \\cite{key}',
+            '\\ref': 'Cross-reference\nUsage: \\ref{label}',
+            '\\label': 'Set label\nUsage: \\label{name}',
+            '\\pause': 'Create overlay pause\nUsage: \\pause',
+            '\\only': 'Show on specific slides\nUsage: \\only<1>{content}',
+        }
+
+        help_text = basic_help.get(command, f"LaTeX command: {command}\nPress Alt+Click for more details")
+
+        label = tk.Label(tooltip, text=help_text, justify='left',
+                        bg='#ffffe0', fg='#333333', font=("Arial", 10),
+                        padx=8, pady=5)
+        label.pack()
+
+        # Auto-hide after 3 seconds
+        tooltip.after(3000, tooltip.destroy)
+
+        # Store reference
+        self.current_tooltip = tooltip
+
+    def show_bubble_message(self, message, color="yellow"):
+        """Show a temporary bubble message"""
+        if hasattr(self, 'bubble_message') and self.bubble_message:
+            try:
+                self.bubble_message.destroy()
+            except:
+                pass
+
+        self.bubble_message = tk.Toplevel(self)
+        self.bubble_message.wm_overrideredirect(True)
+
+        # Position near status label
+        x = self.winfo_pointerx()
+        y = self.winfo_pointery() - 30
+
+        self.bubble_message.wm_geometry(f"+{x}+{y}")
+
+        label = tk.Label(self.bubble_message, text=message, bg=color, fg='black',
+                         padx=10, pady=5, font=("Arial", 10, "bold"),
+                         relief='solid', borderwidth=1)
+        label.pack()
+
+        # Auto-hide after 2 seconds
+        self.bubble_message.after(2000, lambda: self.bubble_message.destroy() if self.bubble_message else None)
+
+    def setup_basic_help_fallback(self):
+        """Setup basic help fallback if enhanced system isn't available"""
+        self.command_helper = None
+        self.tooltip_manager = None
+
+        # Still provide basic tooltip functionality
+        self.editor.bind('<Motion>', self.on_basic_hover)
+        self.editor.bind('<Alt-Button-1>', self.on_basic_help_click)
+
+    def on_basic_hover(self, event):
+        """Basic hover handler for fallback mode"""
+        try:
+            index = self.editor.index(f"@{event.x},{event.y}")
+            word_start = self.editor.index(f"{index} wordstart")
+            word_end = self.editor.index(f"{index} wordend")
+            word = self.editor.get(word_start, word_end)
+
+            if word.startswith('\\'):
+                self.show_basic_command_tooltip(word, event.x_root, event.y_root)
+        except:
+            pass
+
+    def on_basic_help_click(self, event):
+        """Basic help click handler for fallback mode"""
+        try:
+            index = self.editor.index(f"@{event.x},{event.y}")
+            word_start = self.editor.index(f"{index} wordstart")
+            word_end = self.editor.index(f"{index} wordend")
+            command = self.editor.get(word_start, word_end)
+
+            if command.startswith('\\'):
+                messagebox.showinfo("Command Help",
+                    f"Command: {command}\n\n"
+                    f"Press Ctrl+Space for autocomplete\n"
+                    f"Check the Command Index for more help")
+        except:
+            pass
+
+class SearchReplacePanel(ctk.CTkToplevel):
+    """Search and replace panel for the Error Editor"""
+
+    def __init__(self, parent, editor_widget):
+        super().__init__(parent)
+        self.editor = editor_widget
+        self.title("Search and Replace")
+        self.geometry("500x250")
+        self.transient(parent)
+        self.grab_set()
+
+        # Bring to top
+        self.lift()
+        self.focus_force()
+
+        # Center the window
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - 500) // 2
+        y = (self.winfo_screenheight() - 250) // 2
+        self.geometry(f"+{x}+{y}")
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        """Create search and replace widgets"""
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Search section
+        search_frame = ctk.CTkFrame(main_frame)
+        search_frame.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(search_frame, text="Search:", width=60).pack(side="left", padx=5)
+        self.search_entry = ctk.CTkEntry(search_frame, width=300)
+        self.search_entry.pack(side="left", padx=5, fill="x", expand=True)
+        self.search_entry.bind('<KeyRelease>', self.on_search_change)
+
+        # Search options frame
+        options_frame = ctk.CTkFrame(main_frame)
+        options_frame.pack(fill="x", pady=5)
+
+        self.case_sensitive = ctk.BooleanVar(value=False)
+        case_check = ctk.CTkCheckBox(
+            options_frame,
+            text="Case sensitive",
+            variable=self.case_sensitive,
+            command=self.on_search_change
+        )
+        case_check.pack(side="left", padx=10)
+
+        self.whole_word = ctk.BooleanVar(value=False)
+        word_check = ctk.CTkCheckBox(
+            options_frame,
+            text="Whole word",
+            variable=self.whole_word,
+            command=self.on_search_change
+        )
+        word_check.pack(side="left", padx=10)
+
+        self.use_regex = ctk.BooleanVar(value=False)
+        regex_check = ctk.CTkCheckBox(
+            options_frame,
+            text="Regular expression",
+            variable=self.use_regex,
+            command=self.on_search_change
+        )
+        regex_check.pack(side="left", padx=10)
+
+        # Replace section
+        replace_frame = ctk.CTkFrame(main_frame)
+        replace_frame.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(replace_frame, text="Replace:", width=60).pack(side="left", padx=5)
+        self.replace_entry = ctk.CTkEntry(replace_frame, width=300)
+        self.replace_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        # Status label
+        self.status_label = ctk.CTkLabel(main_frame, text="", font=("Arial", 10))
+        self.status_label.pack(fill="x", pady=5)
+
+        # Buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", pady=10)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Find Next",
+            command=self.find_next,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Replace",
+            command=self.replace_current,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Replace All",
+            command=self.replace_all,
+            width=100
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Close",
+            command=self.destroy,
+            width=80
+        ).pack(side="right", padx=5)
+
+        # Bind Escape key to close
+        self.bind('<Escape>', lambda e: self.destroy())
+
+    def get_search_pattern(self):
+        """Get the search pattern based on options"""
+        search_text = self.search_entry.get()
+        if not search_text:
+            return None
+
+        if self.use_regex.get():
+            try:
+                flags = 0 if self.case_sensitive.get() else re.IGNORECASE
+                return re.compile(search_text, flags)
+            except re.error:
+                self.status_label.configure(text="Invalid regular expression", text_color="red")
+                return None
+        else:
+            return search_text
+
+    def on_search_change(self, event=None):
+        """Handle search text change - clear highlights and update status"""
+        self.editor.tag_remove('search_highlight', '1.0', 'end')
+        self.status_label.configure(text="", text_color="white")
+
+    def find_next(self):
+        """Find the next occurrence of search text"""
+        pattern = self.get_search_pattern()
+        if not pattern:
+            return
+
+        # Get current cursor position
+        cursor_pos = self.editor.index('insert')
+
+        # Search from cursor position
+        if isinstance(pattern, str):
+            # Plain text search
+            start_pos = cursor_pos
+            while True:
+                start_pos = self.editor.search(pattern, start_pos, stopindex="end",
+                                               nocase=not self.case_sensitive.get(),
+                                               exact=not self.use_regex.get())
+                if not start_pos:
+                    # Wrap around to beginning
+                    start_pos = self.editor.search(pattern, "1.0", stopindex=cursor_pos,
+                                                   nocase=not self.case_sensitive.get(),
+                                                   exact=not self.use_regex.get())
+                    if not start_pos:
+                        self.status_label.configure(text="No more matches found", text_color="yellow")
+                        return
+                    else:
+                        self.status_label.configure(text="Search wrapped to beginning", text_color="cyan")
+                        break
+                else:
+                    break
+        else:
+            # Regex search
+            content = self.editor.get("1.0", "end-1c")
+            matches = list(pattern.finditer(content))
+            if not matches:
+                self.status_label.configure(text="No matches found", text_color="yellow")
+                return
+
+            # Find match after cursor
+            cursor_index = int(self.editor.index(cursor_pos).split('.')[0])
+            for match in matches:
+                match_start_line = content[:match.start()].count('\n') + 1
+                if match_start_line >= cursor_index:
+                    start_pos = f"{match_start_line}.{match.start() - content[:match.start()].rfind('\n') - 1}"
+                    break
+            else:
+                # Wrap to first match
+                match = matches[0]
+                start_pos = f"{content[:match.start()].count('\n') + 1}.{match.start() - content[:match.start()].rfind('\n') - 1}"
+                self.status_label.configure(text="Search wrapped to beginning", text_color="cyan")
+
+        # Highlight the match
+        end_pos = f"{start_pos}+{len(pattern) if isinstance(pattern, str) else len(match.group(0))}c"
+        self.editor.tag_remove('search_highlight', '1.0', 'end')
+        self.editor.tag_add('search_highlight', start_pos, end_pos)
+        self.editor.tag_config('search_highlight', background='#FFB86C', foreground='black')
+        self.editor.see(start_pos)
+        self.editor.mark_set('insert', start_pos)
+
+        match_text = self.editor.get(start_pos, end_pos)
+        self.status_label.configure(text=f"Found: '{match_text}'", text_color="green")
+
+    def replace_current(self):
+        """Replace the current match"""
+        # Get the current selection
+        try:
+            sel_start = self.editor.index('sel.first')
+            sel_end = self.editor.index('sel.last')
+
+            # Check if selection is a search highlight
+            tags = self.editor.tag_names(sel_start)
+            if 'search_highlight' in tags:
+                replace_text = self.replace_entry.get()
+                self.editor.delete(sel_start, sel_end)
+                self.editor.insert(sel_start, replace_text)
+                self.status_label.configure(text="Replaced", text_color="green")
+                self.find_next()
+            else:
+                self.find_next()
+        except tk.TclError:
+            self.find_next()
+
+    def replace_all(self):
+        """Replace all occurrences"""
+        pattern = self.get_search_pattern()
+        if not pattern:
+            return
+
+        content = self.editor.get("1.0", "end-1c")
+        replace_text = self.replace_entry.get()
+
+        if isinstance(pattern, str):
+            # Plain text replacement
+            if self.case_sensitive.get():
+                new_content = content.replace(pattern, replace_text)
+            else:
+                # Case-insensitive replacement
+                new_content = re.compile(re.escape(pattern), re.IGNORECASE).sub(replace_text, content)
+        else:
+            # Regex replacement
+            new_content = pattern.sub(replace_text, content)
+
+        # Count replacements
+        if isinstance(pattern, str):
+            if self.case_sensitive.get():
+                count = content.count(pattern)
+            else:
+                count = len(re.findall(re.escape(pattern), content, re.IGNORECASE))
+        else:
+            count = len(pattern.findall(content))
+
+        if count > 0:
+            self.editor.delete("1.0", "end")
+            self.editor.insert("1.0", new_content)
+            self.status_label.configure(text=f"Replaced {count} occurrence(s)", text_color="green")
+            # Mark as modified
+            if hasattr(self.master, 'modified'):
+                self.master.modified = True
+        else:
+            self.status_label.configure(text="No matches found", text_color="yellow")
 
 class BeamerSlideEditor(ctk.CTk):
     def __init__(self):
@@ -4478,6 +7129,9 @@ class BeamerSlideEditor(ctk.CTk):
 
         self.create_line_context_menu()
 
+        # Initialize the package manager
+        self.package_manager = CrossPlatformPackageManager(parent=self, verbose=True)
+
     def create_line_context_menu(self):
         """Create context menu for line operations in editors"""
         self.line_context_menu = tk.Menu(self, tearoff=0)
@@ -4604,10 +7258,7 @@ class BeamerSlideEditor(ctk.CTk):
             return "break"
 
     def mask_slide(self, slide_index: int) -> bool:
-        """
-        Mask a slide by prepending % to all its content items.
-        Returns True if successful, False otherwise.
-        """
+        """Mask a slide - completely remove it from TeX output"""
         if not 0 <= slide_index < len(self.slides):
             return False
 
@@ -4615,32 +7266,38 @@ class BeamerSlideEditor(ctk.CTk):
         if self.is_slide_masked(slide_index):
             return False
 
-        # Create a deep copy for undo history
+        # Save to undo stack
         original_slide = self._deep_copy_slide(self.slides[slide_index])
 
-        # Mask the slide content
-        masked_slide = self._create_masked_slide(self.slides[slide_index])
+        # Mark as fully masked - this will cause it to be skipped in TeX generation
+        self.slides[slide_index]['_fully_masked'] = True
 
-        # Save to undo stack BEFORE modification
+        # Also add [DELETED] to title for visual indication
+        if not self.slides[slide_index]['title'].startswith('[DELETED]'):
+            self.slides[slide_index]['title'] = f"[DELETED] {self.slides[slide_index]['title']}"
+
+        # Save to undo stack
         self._push_to_undo_stack({
             'action': 'mask',
             'index': slide_index,
             'original': original_slide,
-            'masked': masked_slide
+            'masked': self.slides[slide_index]
         })
 
-        # Apply masking
-        self.slides[slide_index] = masked_slide
-
-        # Clear redo stack after new action
+        # Clear redo stack
         self.redo_stack.clear()
 
         # Update UI
         self.update_slide_list()
         if self.current_slide_index == slide_index:
-            self.load_slide(slide_index)
+            # Move to next slide if current was masked
+            if slide_index + 1 < len(self.slides):
+                self.current_slide_index = slide_index + 1
+            elif slide_index > 0:
+                self.current_slide_index = slide_index - 1
+            self.load_slide(self.current_slide_index)
 
-        self.write(f"✓ Slide {slide_index + 1} masked (marked as deleted)\n", "yellow")
+        self.write(f"✓ Slide {slide_index + 1} masked (will be excluded from PDF)\n", "yellow")
         return True
 
     def unmask_slide(self, slide_index: int) -> bool:
@@ -6249,7 +8906,7 @@ class BeamerSlideEditor(ctk.CTk):
         return text.strip()
 
     def load_tex_file(self) -> None:
-        """Load and convert a Beamer .tex file to IDE format using simple converter"""
+        """Load and convert a Beamer .tex file to IDE format with error handling"""
         tex_file = filedialog.askopenfilename(
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
             title="Select Beamer TeX File to Load"
@@ -6259,19 +8916,39 @@ class BeamerSlideEditor(ctk.CTk):
             return
 
         try:
-            # Convert TeX to simple text format
-            text_file = convert_beamer_tex_to_simple_text(tex_file)
+            # Convert TeX to simple text format with error tracking
+            result = convert_beamer_tex_to_simple_text(tex_file)
+
+            if isinstance(result, tuple):
+                text_file, errors = result
+            else:
+                text_file = result
+                errors = []
 
             if not text_file:
                 messagebox.showerror("Error", "Failed to convert TeX file")
                 return
 
-            # Now load the converted text file using the existing load_file method
+            # Now load the converted text file
             self.load_file(text_file)
 
             self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
 
-            # Ask if user wants to generate PDF immediately
+            # Show errors if any
+            if errors:
+                self.write(f"\n⚠ Found {len(errors)} issue(s) during conversion:\n", "yellow")
+                for err in errors:
+                    self.write(f"   Line {err['line']}: {err['message']}\n", "yellow")
+
+                # Ask if user wants to fix errors
+                if messagebox.askyesno("Issues Found",
+                                       f"Found {len(errors)} issue(s) during conversion.\n\n"
+                                       "Would you like to open the error editor to fix them?"):
+                    # Open the error editor for the first error
+                    first_error = errors[0]
+                    self.open_error_editor(text_file, first_error['line'], first_error['message'])
+
+            # Ask if user wants to generate PDF
             if messagebox.askyesno("Success",
                                  "TeX file converted successfully!\n\n"
                                  "Would you like to generate PDF now?"):
@@ -6662,7 +9339,7 @@ class BeamerSlideEditor(ctk.CTk):
         return media
 
     def extract_content_from_frame(self, frame_content: str) -> list:
-        """Extract content items from frame - treat as plain text unless explicit \item"""
+        r"""Extract content items from frame - treat as plain text unless explicit \item"""
         import re
 
         content_items = []
@@ -8035,173 +10712,6 @@ class BeamerSlideEditor(ctk.CTk):
         finally:
             self.destroy()
 
-    def load_file(self, filename: str) -> None:
-        """Load presentation from file with full preservation of masked content"""
-        try:
-            logger.info(f"Loading file: {filename}")
-
-            with open(filename, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # Reset slides
-            self.slides = []
-            self.current_slide_index = -1
-
-            # Extract presentation info
-            import re
-            for key in self.presentation_info:
-                pattern = f"\\\\{key}{{(.*?)}}"
-                match = re.search(pattern, content)
-                if match:
-                    self.presentation_info[key] = match.group(1)
-
-            # Parse slides by finding all \\title blocks (including commented ones)
-            # Use a more direct approach: split by newlines and rebuild slides
-            lines = content.split('\n')
-
-            current_slide = None
-            in_content = False
-            in_notes = False
-            content_lines = []
-            notes_lines = []
-            title = ""
-            media = ""
-            media_masked = False
-
-            masked_slides_count = 0
-            total_masked_lines = 0
-
-            for line_num, line in enumerate(lines):
-                # Check for title line (may have % before it)
-                title_match = re.match(r'^(%?)\\title\s+(.+)$', line)
-                if title_match:
-                    # Save previous slide if exists
-                    if current_slide is not None or title:
-                        # Create slide from accumulated data
-                        slide_data = self._create_slide_from_parsed_data(
-                            title, media, media_masked,
-                            content_lines, notes_lines,
-                            is_fully_masked, masked_slides_count
-                        )
-                        if slide_data:
-                            self.slides.append(slide_data)
-                            if is_fully_masked:
-                                masked_slides_count += 1
-
-                    # Start new slide
-                    title_masked = title_match.group(1) == '%'
-                    title = title_match.group(2).strip()
-                    is_fully_masked = title_masked
-                    content_lines = []
-                    notes_lines = []
-                    media = ""
-                    media_masked = False
-                    in_content = False
-                    in_notes = False
-
-                    if title_masked:
-                        logger.info(f"Found masked title: {title}")
-                    continue
-
-                # Check for Content begin
-                content_begin_match = re.match(r'^(%?)\\begin{Content}$', line)
-                if content_begin_match:
-                    in_content = True
-                    content_masked = content_begin_match.group(1) == '%'
-                    if content_masked:
-                        is_fully_masked = True
-                    continue
-
-                # Check for Content end
-                if re.match(r'^%?\\end{Content}$', line):
-                    in_content = False
-                    continue
-
-                # Check for Notes begin
-                notes_begin_match = re.match(r'^(%?)\\begin{Notes}$', line)
-                if notes_begin_match:
-                    in_notes = True
-                    notes_masked = notes_begin_match.group(1) == '%'
-                    if notes_masked:
-                        is_fully_masked = True
-                    continue
-
-                # Check for Notes end
-                if re.match(r'^%?\\end{Notes}$', line):
-                    in_notes = False
-                    continue
-
-                # Process content lines
-                if in_content and line.strip():
-                    # Check if line is masked
-                    is_line_masked = line.lstrip().startswith('%')
-                    clean_line = re.sub(r'^\s*%\s*', '', line) if is_line_masked else line
-
-                    # Check for media directive (first line that starts with \)
-                    if not media and clean_line.strip().startswith('\\'):
-                        media = clean_line.strip()
-                        media_masked = is_line_masked
-                        if media_masked:
-                            total_masked_lines += 1
-                        logger.info(f"Found media in slide: {media} (masked: {media_masked})")
-                    elif clean_line.strip():
-                        content_lines.append(clean_line.rstrip())
-                        if is_line_masked:
-                            total_masked_lines += 1
-                            logger.info(f"  Masked content line: {clean_line[:50]}")
-
-                # Process notes lines
-                if in_notes and line.strip():
-                    is_note_masked = line.lstrip().startswith('%')
-                    clean_note = re.sub(r'^\s*%\s*', '', line) if is_note_masked else line
-                    if clean_note.strip():
-                        notes_lines.append(clean_note.rstrip())
-                        if is_note_masked:
-                            total_masked_lines += 1
-                            logger.info(f"  Masked note line: {clean_note[:50]}")
-
-            # Don't forget the last slide
-            if title or content_lines or notes_lines:
-                slide_data = self._create_slide_from_parsed_data(
-                    title, media, media_masked,
-                    content_lines, notes_lines,
-                    is_fully_masked, masked_slides_count
-                )
-                if slide_data:
-                    self.slides.append(slide_data)
-                    if is_fully_masked:
-                        masked_slides_count += 1
-
-            if self.slides:
-                self.current_slide_index = 0
-                self.load_slide(0)
-                logger.info(f"Total slides loaded: {len(self.slides)}")
-            else:
-                logger.error("No slides were loaded!")
-                messagebox.showerror("Error", "No slides could be loaded from the file!")
-                return
-
-            self.update_slide_list()
-
-            # Show loading summary
-            summary_parts = [f"✓ Loaded {len(self.slides)} slides"]
-            if masked_slides_count > 0:
-                summary_parts.append(f"{masked_slides_count} fully masked")
-            if total_masked_lines > 0:
-                summary_parts.append(f"{total_masked_lines} masked lines")
-
-            self.write(" | ".join(summary_parts) + "\n", "green")
-
-            if masked_slides_count > 0 or total_masked_lines > 0:
-                self.write("ℹ Masked content is shown with strikethrough\n", "yellow")
-                self.write("  • Click on masked line + Ctrl+Delete to unmask\n", "cyan")
-
-        except Exception as e:
-            error_msg = f"Error loading file: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            self.write(f"✗ {error_msg}\n", "red")
-            messagebox.showerror("Error", error_msg)
-
 #--------------------------------------------------------------------------------
     def ide_callback(self, action, data):
         """Enhanced IDE callback handler with proper \\None handling"""
@@ -8290,7 +10800,7 @@ class BeamerSlideEditor(ctk.CTk):
                 self.terminal.write(f"Error: {data.get('message', 'Unknown error')}\n", "red")
 
     def load_slide(self, index):
-        """Enhanced load_slide with proper hidden content display"""
+        r"""Enhanced load_slide with proper hidden content display and \None handling"""
         if 0 <= index < len(self.slides):
             slide = self.slides[index]
 
@@ -8308,13 +10818,23 @@ class BeamerSlideEditor(ctk.CTk):
             media = slide.get('media', '')
             media_masked = slide.get('_media_masked', False)
 
-            # Always show \None if media is empty or None, or if content starts with layout
-            if not media or media == "\\None":
-                self.media_entry.insert(0, "\\None")
-            elif media_masked:
-                self.media_entry.insert(0, f"% {media}")
+            # CRITICAL FIX: Proper \None handling
+            # Always show \None if media is empty, None, or explicitly set to "\None"
+            if not media or media == "" or media == "\\None":
+                # Show \None (may be masked if media_masked is True)
+                if media_masked:
+                    self.media_entry.insert(0, "% \\None")
+                else:
+                    self.media_entry.insert(0, "\\None")
+                # Also ensure slide data is consistent
+                if media == "" or media is None:
+                    slide['media'] = ""
             else:
-                self.media_entry.insert(0, media)
+                # Normal media display
+                if media_masked:
+                    self.media_entry.insert(0, f"% {media}")
+                else:
+                    self.media_entry.insert(0, media)
 
             # Configure tags for hidden content (dimmed/strikethrough)
             try:
@@ -8335,7 +10855,14 @@ class BeamerSlideEditor(ctk.CTk):
             hidden_note_indices = set(slide.get('_hidden_note_indices', []))
 
             # Update content with proper masking display
-            for i, item in enumerate(slide.get('content', [])):
+            content_items = slide.get('content', [])
+
+            # If there's no content but we have media, add a placeholder
+            if not content_items and media:
+                # Just show the content as is (no extra placeholder)
+                pass
+
+            for i, item in enumerate(content_items):
                 if item and item.strip():
                     # Check if this line should be hidden
                     is_hidden = i in hidden_content_indices
@@ -8349,6 +10876,10 @@ class BeamerSlideEditor(ctk.CTk):
                         self.content_editor._textbox.tag_add('hidden_content', line_start, line_end)
                     else:
                         self.content_editor.insert('end', f"{item}\n")
+
+            # Add placeholder text if empty
+            if not slide.get('content'):
+                self.content_editor.insert('end', "% No content for this slide\n")
 
             # Update notes with proper masking display
             for i, note in enumerate(slide.get('notes', [])):
@@ -8364,15 +10895,16 @@ class BeamerSlideEditor(ctk.CTk):
                         self.notes_editor.insert('end', f"{note}\n")
 
             # Add placeholder text if empty
-            if not slide.get('content'):
-                self.content_editor.insert('end', "% No content for this slide\n")
-
             if not slide.get('notes'):
                 self.notes_editor.insert('end', "% No notes for this slide\n")
 
             # Refresh syntax highlighting
             if hasattr(self, 'syntax_highlighter') and self.syntax_highlighter.active:
                 self.syntax_highlighter.highlight()
+
+            # Also refresh notes highlighting if available
+            if hasattr(self, 'notes_highlighter') and self.notes_highlighter.active:
+                self.notes_highlighter.highlight()
 
     def format_tikz_for_output(self, media_content: str) -> str:
         """Format TikZ code for proper output in the text file"""
@@ -11165,7 +13697,6 @@ Created by {self.__author__}
             self.write(f"✗ Error in conversion: {str(e)}\n", "red")
             messagebox.showerror("Error", f"Error converting to TeX:\n{str(e)}")
 
-
     def generate_tex_with_preserved_masking(self):
         """Generate TeX content - remove masked content, preserve original styling and layout directives"""
         try:
@@ -11291,21 +13822,11 @@ Created by {self.__author__}
 
             # Process each slide
             for idx, slide in enumerate(self.slides):
-                # ========== CRITICAL FIX: Check BOTH flags for deleted slides ==========
                 is_fully_masked = slide.get('_fully_masked', False)
 
-                # Also check if title has [DELETED] marker (from older slides)
-                slide_title = slide.get('title', '')
-                if slide_title.startswith('[DELETED]'):
-                    is_fully_masked = True
-                    # Also update the flag for consistency
-                    slide['_fully_masked'] = True
-
-                # Skip fully masked slides entirely - NO output at all
                 if is_fully_masked:
                     total_skipped_slides += 1
-                    self.write(f"  Skipping fully masked slide {idx + 1}: {slide_title}\n", "yellow")
-                    continue  # ← This is the key: completely skip the slide
+                    continue
 
                 hidden_content_indices = set(slide.get('_hidden_content_indices', []))
                 hidden_note_indices = set(slide.get('_hidden_note_indices', []))
@@ -11347,18 +13868,19 @@ Created by {self.__author__}
                 # Check if content already has columns (regular LaTeX, NOT a layout directive)
                 has_existing_columns = any('\\begin{columns}' in line for line in visible_content)
 
-                # Skip if no visible content at all
                 if not visible_content and not visible_notes and not has_valid_image:
                     total_skipped_slides += 1
-                    self.write(f"  Skipping empty slide {idx + 1}\n", "yellow")
                     continue
 
                 total_visible_slides += 1
 
+                slide_title = slide.get('title', 'Untitled')
                 clean_title = re.sub(r'^\[DELETED\]\s*', '', slide_title)
 
                 # ============================================================
                 # CHECK FOR LAYOUT DIRECTIVES ANYWHERE IN CONTENT
+                # IMPORTANT: This ONLY detects explicit layout directives like \mosaic, \wm, etc.
+                # NOT regular LaTeX environments like \begin{columns}
                 # ============================================================
                 layout_type, layout_params, layout_line_index = find_layout_in_content(visible_content)
                 has_layout = layout_type is not None
@@ -11405,6 +13927,7 @@ Created by {self.__author__}
 
                 # ============================================================
                 # CASE 2: No layout directive - use standard processing
+                # This handles regular slides with or without \begin{columns}
                 # ============================================================
                 frame_lines = []
                 frame_lines.append(f"\\begin{{frame}}{{{clean_title}}}")
@@ -11690,43 +14213,686 @@ Created by {self.__author__}
             traceback.print_exc()
             return None
 
+    def context_aware_convert_media(self, media: str, content_items: list) -> str:
+        """Context-aware media conversion - identifies the environment and converts appropriately"""
+        if not media or media == "\\None":
+            return ""
+
+        # Handle \None directive - return empty string (consumed, not output)
+        if media.strip() == "\\None":
+            return ""
+
+        # Extract file path for \file directives
+        if media.startswith('\\file'):
+            file_path = media.replace('\\file', '').strip()
+        elif media.startswith('\\play'):
+            play_content = media.replace('\\play', '').strip()
+            if play_content.startswith('\\file'):
+                file_path = play_content.replace('\\file', '').strip()
+                return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}}}{{{file_path}}}"
+            elif play_content.startswith('http'):
+                return f"\\href{{{play_content}}}{{\\textcolor{{blue}}{{\\underline{{Play video}}}}}}"
+            else:
+                return media
+        else:
+            # Return other directives as-is (mosaic, bg, ff, etc.)
+            return media
+
+        # Check context for appropriate sizing
+        # Look at content items to determine environment
+        full_content = '\n'.join(content_items) if content_items else ""
+
+        in_table = '\\begin{tabular}' in full_content
+        in_columns = '\\begin{columns}' in full_content
+        is_mosaic = '\\mosaic' in full_content
+
+        # Context-aware conversion
+        if in_table:
+            # In a table, use smaller width
+            return f"\\includegraphics[width=0.3\\textwidth,keepaspectratio]{{{file_path}}}"
+        elif in_columns:
+            # In columns, use column-appropriate width
+            return f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{file_path}}}"
+        elif is_mosaic:
+            # In mosaic, use smaller size
+            return f"\\includegraphics[width=0.3\\textwidth,keepaspectratio]{{{file_path}}}"
+        else:
+            # Default - centered image
+            return f"\\begin{{center}}\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}\\end{{center}}"
+
+    def context_aware_process_content(self, content_lines: list, hidden_indices: set, is_note: bool = False) -> list:
+        """Context-aware content processing - identifies environments and preserves formatting"""
+        processed = []
+        in_table = False
+        in_itemize = False
+        in_enumerate = False
+        in_columns = False
+        in_mosaic = False
+        in_math = False
+        i = 0
+
+        while i < len(content_lines):
+            line = content_lines[i].rstrip()
+            is_hidden = i in hidden_indices
+
+            if is_hidden:
+                processed.append(f"% {line}")
+                i += 1
+                continue
+
+            # Skip empty lines
+            if not line.strip():
+                i += 1
+                continue
+
+            # CRITICAL: Handle \None directive - consume it, don't output anything
+            if line.strip() == "\\None":
+                i += 1
+                continue
+
+            # Track environments
+            if '\\begin{tabular}' in line:
+                in_table = True
+                # Fix: Replace any \& with & in table lines
+                line = line.replace('\\&', '&')
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{tabular}' in line:
+                in_table = False
+                line = line.replace('\\&', '&')
+                processed.append(line)
+                i += 1
+                continue
+
+            if '\\begin{columns}' in line:
+                in_columns = True
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{columns}' in line:
+                in_columns = False
+                processed.append(line)
+                i += 1
+                continue
+
+            if '\\begin{itemize}' in line:
+                in_itemize = True
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{itemize}' in line:
+                in_itemize = False
+                processed.append(line)
+                i += 1
+                continue
+
+            if '\\begin{enumerate}' in line:
+                in_enumerate = True
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{enumerate}' in line:
+                in_enumerate = False
+                processed.append(line)
+                i += 1
+                continue
+
+            # Handle \mosaic directive - convert to tabular
+            if '\\mosaic' in line:
+                in_mosaic = True
+                converted = self.convert_mosaic_to_tabular(line)
+                processed.append(converted)
+                i += 1
+                continue
+
+            # Track math mode for proper underscore handling
+            dollar_count = line.count('$') - line.count('\\$')
+            if dollar_count % 2 != 0:
+                in_math = not in_math
+
+            # In table mode - preserve everything, don't modify & or \\
+            if in_table:
+                # Replace any escaped & back to normal &
+                line = line.replace('\\&', '&')
+                processed.append(line)
+                i += 1
+                continue
+
+            # In columns mode - preserve structure
+            if in_columns:
+                processed.append(line)
+                i += 1
+                continue
+
+            # Handle bullet points (only in content, not in tables/columns)
+            if not in_table and not in_columns and not in_mosaic:
+                # Fix bullet point with missing space
+                if line.startswith('-') and len(line) > 1 and line[1] != ' ':
+                    line = '- ' + line[1:]
+
+                # Convert standalone - to \item if in itemize/enumerate
+                if line.startswith('-') or line.startswith('•'):
+                    bullet_content = line[1:].strip()
+                    if in_itemize or in_enumerate:
+                        processed.append(f"\\item {bullet_content}")
+                    else:
+                        # Not in a list environment, keep as simple bullet
+                        processed.append(line)
+                    i += 1
+                    continue
+
+            # Handle standalone \item commands
+            if line.startswith('\\item'):
+                if not in_itemize and not in_enumerate:
+                    # Wrap in itemize
+                    processed.append("\\begin{itemize}")
+                    processed.append(line)
+                    # Look ahead to see if there are more items
+                    j = i + 1
+                    while j < len(content_lines):
+                        next_line = content_lines[j].strip()
+                        if next_line.startswith('\\item'):
+                            processed.append(content_lines[j].rstrip())
+                            j += 1
+                        else:
+                            break
+                    processed.append("\\end{itemize}")
+                    i = j
+                else:
+                    processed.append(line)
+                    i += 1
+                continue
+
+            # Handle URLs
+            if line.startswith('http') or '\\url{' in line:
+                processed.append(line)
+                i += 1
+                continue
+
+            # Handle LaTeX commands that should pass through
+            is_latex_cmd = line.startswith(('\\begin{', '\\end{', '\\textbf', '\\textcolor',
+                                             '\\alert', '\\href', '\\block', '\\column',
+                                             '\\centering', '\\vspace', '\\hline', '\\cite',
+                                             '\\ref', '\\label', '\\caption', '\\footnote',
+                                             '\\textbf', '\\textit', '\\emph', '\\textsuperscript',
+                                             '\\textsubscript', '\\colorbox', '\\fcolorbox'))
+
+            if is_latex_cmd:
+                processed.append(line)
+                i += 1
+                continue
+
+            # Handle math mode - preserve underscores
+            if in_math:
+                processed.append(line)
+                i += 1
+                continue
+
+            # Regular text - preserve as-is, but escape underscores in text mode
+            line = line.replace('_', r'\_')
+            processed.append(line)
+            i += 1
+
+        return processed
+
+    def convert_mosaic_to_tabular(self, mosaic_line: str) -> str:
+        """Convert \mosaic{rows,cols}{images} to a proper tabular environment"""
+        import re
+
+        match = re.match(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', mosaic_line)
+        if not match:
+            return mosaic_line
+
+        rows = int(match.group(1))
+        cols = int(match.group(2))
+        images = [img.strip() for img in match.group(3).split(',')]
+
+        # Calculate width per column (max 0.3 of textwidth for 3+ columns)
+        col_width = min(0.3, 0.9 / cols)
+
+        result = []
+        result.append("\\begin{center}")
+        result.append(f"\\begin{{tabular}}{{{'c' * cols}}}")
+        result.append("\\hline")
+
+        for idx, img in enumerate(images):
+            # Clean up image path
+            if not img.startswith(('media_files/', './')) and not img.startswith('/'):
+                img = f"media_files/{img}"
+
+            result.append(f"\\includegraphics[width={col_width}\\textwidth,keepaspectratio]{{{img}}}")
+
+            # Add column separator or row end
+            if (idx + 1) % cols == 0:
+                if idx < len(images) - 1:
+                    result.append("\\\\ \\hline")
+            else:
+                # Add & to the previous line
+                result[-1] = result[-1] + " &"
+
+        # Ensure proper closing
+        if len(result) > 0 and result[-1].endswith('&'):
+            result[-1] = result[-1].rstrip('&') + "\\\\ \\hline"
+        elif len(result) > 0 and '\\hline' not in result[-1] and result[-1] != "\\hline":
+            result.append("\\\\ \\hline")
+
+        result.append("\\end{tabular}")
+        result.append("\\end{center}")
+
+        return '\n'.join(result)
+
+        def context_aware_convert_media(self, media: str, content_items: list) -> str:
+            """Context-aware media conversion - identifies the environment and converts appropriately"""
+            if not media or media == "\\None":
+                return ""
+
+            # Extract file path
+            if media.startswith('\\file'):
+                file_path = media.replace('\\file', '').strip()
+            elif media.startswith('\\play'):
+                play_content = media.replace('\\play', '').strip()
+                if play_content.startswith('\\file'):
+                    file_path = play_content.replace('\\file', '').strip()
+                else:
+                    return media
+            else:
+                return media
+
+            # Check if we're in a table environment
+            in_table = any('\\begin{tabular}' in line or '\\end{tabular}' in line for line in content_items)
+
+            # Check if we're in a columns environment
+            in_columns = any('\\begin{columns}' in line or '\\end{columns}' in line for line in content_items)
+
+            # Check if this is a mosaic
+            is_mosaic = any('\\mosaic' in line for line in content_items)
+
+            # Context-aware conversion
+            if in_table:
+                # In a table, use smaller width
+                return f"\\includegraphics[width=0.3\\textwidth,keepaspectratio]{{{file_path}}}"
+            elif in_columns:
+                # In columns, use column-appropriate width
+                return f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{file_path}}}"
+            elif is_mosaic:
+                # In mosaic, use smaller size
+                return f"\\includegraphics[width=0.3\\textwidth,keepaspectratio]{{{file_path}}}"
+            else:
+                # Default - centered image
+                return f"\\begin{{center}}\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}\\end{{center}}"
+
+    def context_aware_process_content(self, content_lines: list, hidden_indices: set, is_note: bool = False) -> list:
+        """Context-aware content processing - identifies environments and preserves formatting"""
+        processed = []
+        in_table = False
+        in_itemize = False
+        in_enumerate = False
+        in_columns = False
+        in_mosaic = False
+        in_math = False
+        i = 0
+
+        while i < len(content_lines):
+            line = content_lines[i].rstrip()
+            is_hidden = i in hidden_indices
+
+            if is_hidden:
+                processed.append(f"% {line}")
+                i += 1
+                continue
+
+            # CRITICAL: Handle \None directive - consume it, don't output anything
+            if line.strip() == "\\None":
+                # This is a "no media" marker - skip it entirely
+                i += 1
+                continue
+
+            # Track environments
+            if '\\begin{tabular}' in line:
+                in_table = True
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{tabular}' in line:
+                in_table = False
+                processed.append(line)
+                i += 1
+                continue
+
+            if '\\begin{columns}' in line:
+                in_columns = True
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{columns}' in line:
+                in_columns = False
+                processed.append(line)
+                i += 1
+                continue
+
+            if '\\begin{itemize}' in line:
+                in_itemize = True
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{itemize}' in line:
+                in_itemize = False
+                processed.append(line)
+                i += 1
+                continue
+
+            if '\\begin{enumerate}' in line:
+                in_enumerate = True
+                processed.append(line)
+                i += 1
+                continue
+            elif '\\end{enumerate}' in line:
+                in_enumerate = False
+                processed.append(line)
+                i += 1
+                continue
+
+            # Handle \mosaic directive
+            if '\\mosaic' in line:
+                in_mosaic = True
+                converted = self.convert_mosaic_to_tabular(line)
+                processed.append(converted)
+                i += 1
+                continue
+
+            # Track math mode
+            dollar_count = line.count('$') - line.count('\\$')
+            if dollar_count % 2 != 0:
+                in_math = not in_math
+
+            # In table mode - preserve everything, don't modify & or \\
+            if in_table:
+                processed.append(line)
+                i += 1
+                continue
+
+            # In columns mode - preserve structure
+            if in_columns:
+                processed.append(line)
+                i += 1
+                continue
+
+            # Handle bullet points
+            if not in_table and not in_columns and not in_mosaic:
+                # Fix bullet point with missing space
+                if line.startswith('-') and len(line) > 1 and line[1] != ' ':
+                    line = '- ' + line[1:]
+
+                # Convert standalone - to \item if in itemize
+                if line.startswith('-') or line.startswith('•'):
+                    bullet_content = line[1:].strip()
+                    if in_itemize or in_enumerate:
+                        processed.append(f"\\item {bullet_content}")
+                    else:
+                        processed.append(line)
+                    i += 1
+                    continue
+
+            # Handle standalone \item commands
+            if line.startswith('\\item'):
+                if not in_itemize and not in_enumerate:
+                    # Wrap in itemize
+                    processed.append("\\begin{itemize}")
+                    processed.append(line)
+                    # Look ahead to see if there are more items
+                    j = i + 1
+                    while j < len(content_lines) and content_lines[j].strip().startswith('\\item'):
+                        processed.append(content_lines[j].strip())
+                        j += 1
+                    processed.append("\\end{itemize}")
+                    i = j
+                else:
+                    processed.append(line)
+                    i += 1
+                continue
+
+            # Handle URLs
+            if line.startswith('http') or '\\url{' in line:
+                processed.append(line)
+                i += 1
+                continue
+
+            # Handle LaTeX commands that should pass through
+            is_latex_cmd = line.startswith(('\\begin{', '\\end{', '\\textbf', '\\textcolor',
+                                             '\\alert', '\\href', '\\block', '\\column',
+                                             '\\centering', '\\vspace', '\\hline', '\\cite',
+                                             '\\ref', '\\label', '\\caption', '\\footnote'))
+
+            if is_latex_cmd:
+                processed.append(line)
+                i += 1
+                continue
+
+            # Regular text - preserve as-is
+            processed.append(line)
+            i += 1
+
+        return processed
+
+    def convert_mosaic_to_tabular(self, mosaic_line: str) -> str:
+        """Convert \mosaic{rows,cols}{images} to a proper tabular environment"""
+        import re
+
+        match = re.match(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', mosaic_line)
+        if not match:
+            return mosaic_line
+
+        rows = int(match.group(1))
+        cols = int(match.group(2))
+        images = [img.strip() for img in match.group(3).split(',')]
+
+        col_width = 0.3  # 30% of textwidth for each image
+
+        result = []
+        result.append("\\begin{center}")
+        result.append(f"\\begin{{tabular}}{{{'c' * cols}}}")
+        result.append("\\hline")
+
+        for idx, img in enumerate(images):
+            # Clean up image path
+            if not img.startswith(('media_files/', './')):
+                img = f"media_files/{img}"
+
+            result.append(f"\\includegraphics[width={col_width}\\textwidth,keepaspectratio]{{{img}}}")
+
+            # Add column separator or row end
+            if (idx + 1) % cols == 0:
+                if idx < len(images) - 1:
+                    result.append("\\\\ \\hline")
+            else:
+                result[-1] = result[-1] + " &"
+
+        # Close table
+        if result[-1].endswith('&'):
+            result[-1] = result[-1].rstrip('&') + "\\\\ \\hline"
+        else:
+            result.append("\\\\ \\hline")
+
+        result.append("\\end{tabular}")
+        result.append("\\end{center}")
+
+        return '\n'.join(result)
+
+    def detect_package_from_line(self, line: str) -> str:
+        """Detect required package from a content line"""
+        line_lower = line.lower()
+
+        # Package detection patterns
+        if re.search(r'\\toprule|\\midrule|\\bottomrule|\\cmidrule', line):
+            return 'booktabs'
+        elif re.search(r'\\multirow\{|\\multirowcell', line):
+            return 'multirow'
+        elif re.search(r'\\makecell|\\thead', line):
+            return 'makecell'
+        elif re.search(r'\\begin\{tabularx\}', line):
+            return 'tabularx'
+        elif re.search(r'\\begin\{longtable\}', line):
+            return 'longtable'
+        elif re.search(r'\\begin\{tikzpicture\}', line):
+            return 'tikz'
+        elif re.search(r'\\begin\{axis\}', line):
+            return 'pgfplots'
+        elif re.search(r'\\begin\{align\}', line):
+            return 'amsmath'
+        elif re.search(r'\\mathbb\{|\\mathfrak\{', line):
+            return 'amssymb'
+        elif re.search(r'\\SI\{|\\num\{', line):
+            return 'siunitx'
+        elif re.search(r'\\qty\{|\\dv\{|\\pdv\{', line):
+            return 'physics'
+        elif re.search(r'\\href\{|\\url\{', line):
+            return 'hyperref'
+        elif re.search(r'\\textcolor\{', line):
+            return 'xcolor'
+        elif re.search(r'\\begin\{lstlisting\}', line):
+            return 'listings'
+        elif re.search(r'\\begin\{tcolorbox\}', line):
+            return 'tcolorbox'
+
+        return None
+
+    def clean_latex_for_conversion(self, content: str) -> str:
+        """Clean LaTeX content to prevent conversion errors"""
+        import re
+
+        # Fix 1: Replace \textendash with -- (proper en dash)
+        # But NOT inside math mode - need to detect math mode boundaries
+        lines = content.split('\n')
+        fixed_lines = []
+        in_math = False
+
+        for line in lines:
+            # Track math mode
+            dollar_count = line.count('$') - line.count('\\$')
+            if dollar_count % 2 != 0:
+                in_math = not in_math
+
+            if in_math:
+                # Inside math mode: replace \textendash with --
+                line = line.replace(r'\textendash', '--')
+            else:
+                # Outside math mode: keep as is or convert to --
+                line = line.replace(r'\textendash', '--')
+
+            # Fix 2: Fix corrupted frame titles like {Open-Circuit Voltage ($V_{oc}
+            # These have missing closing braces
+            if '\\begin{frame}{' in line and line.count('{') != line.count('}'):
+                # Count braces to fix
+                open_count = line.count('{')
+                close_count = line.count('}')
+                if open_count > close_count:
+                    line = line + '}' * (open_count - close_count)
+
+            # Fix 3: Fix \Omega\cdotcm^2 -> \Omega\cdot\text{cm}^2
+            line = re.sub(r'\\Omega\\cdotcm\^2', r'\\Omega\\cdot\\text{cm}^2', line)
+            line = re.sub(r'\\Omega\\cdotcm\^2', r'\\Omega\\cdot\\text{cm}^2', line)
+
+            # Fix 4: Fix \textmu - ensure textcomp package or convert to \mu
+            line = line.replace(r'\textmu', r'\mu')
+
+            # Fix 5: Fix malformed \cite commands
+            line = re.sub(r'\\cite\{([^}]*?)\s*\}', r'\\cite{\1}', line)
+
+            fixed_lines.append(line)
+
+        return '\n'.join(fixed_lines)
+
+    def add_required_packages_to_preamble(self, content: str) -> str:
+        """Add required packages to prevent missing command errors"""
+        packages_to_add = []
+
+        # Check for \textmu usage
+        if r'\textmu' in content:
+            packages_to_add.append('textcomp')
+
+        # Check for \textendash usage outside math mode
+        # (inside math mode we already replaced it)
+        if r'\textendash' in content and not re.search(r'\$[^$]*\\textendash[^$]*\$', content):
+            packages_to_add.append('textcomp')
+
+        # Check for \Omega\cdotcm pattern
+        if re.search(r'\\Omega\\cdotcm', content):
+            packages_to_add.append('siunitx')  # For proper units
+
+        if not packages_to_add:
+            return content
+
+        # Find insertion point (before \begin{document})
+        doc_pos = content.find('\\begin{document}')
+        if doc_pos == -1:
+            return content
+
+        # Build package includes
+        package_lines = []
+        for pkg in packages_to_add:
+            if pkg == 'siunitx':
+                package_lines.append(r'\usepackage{siunitx}')
+            elif pkg == 'textcomp':
+                package_lines.append(r'\usepackage{textcomp}')
+
+        # Insert before \begin{document}
+        return content[:doc_pos] + '\n'.join(package_lines) + '\n' + content[doc_pos:]
+
+    def validate_frame_titles(self, tex_content: str) -> str:
+        """Validate and fix frame titles to ensure proper LaTeX syntax"""
+        import re
+
+        def fix_title(match):
+            full_match = match.group(0)
+            title_content = match.group(1) if match.group(1) else ''
+
+            # Check for unbalanced braces in title
+            if title_content.count('{') != title_content.count('}'):
+                # Fix by adding missing closing braces
+                open_count = title_content.count('{')
+                close_count = title_content.count('}')
+                if open_count > close_count:
+                    title_content += '}' * (open_count - close_count)
+
+            # Remove any trailing $ that would cause math mode issues
+            title_content = re.sub(r'\$+$', '', title_content)
+
+            # Escape special characters in title
+            title_content = title_content.replace('&', r'\&')
+            title_content = title_content.replace('%', r'\%')
+            title_content = title_content.replace('#', r'\#')
+            title_content = title_content.replace('_', r'\_')
+
+            return f'\\begin{{{match.group(2)}}}{{{title_content}}}'
+
+        # Fix frame titles with pattern: \begin{frame}{...}
+        pattern = r'\\begin\{(frame|block|exampleblock|alertblock)\}\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'
+        tex_content = re.sub(pattern, fix_title, tex_content)
+
+        return tex_content
+
     def convert_media_to_latex_clean(self, media: str) -> str:
-        """Convert media directive to clean LaTeX"""
+        """Convert media directive to clean LaTeX - SIMPLE VERSION"""
         if not media or media == "\\None":
             return ""
 
         # Handle \file directive
         if media.startswith('\\file'):
             file_path = media.replace('\\file', '').strip()
-            # Remove any % that might be at the beginning
-            file_path = file_path.lstrip('%').strip()
-            # Check if it's an image or video
-            if file_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
-                return f"\\movie[externalviewer]{{\\includegraphics[width=0.8\\textwidth,keepaspectratio]{{{file_path}}}}}{{{file_path}}}"
-            else:
-                return f"\\includegraphics[width=0.8\\textwidth,keepaspectratio]{{{file_path}}}"
+            # Don't modify the path - just wrap in includegraphics
+            return f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}"
 
         # Handle \play directive
         elif media.startswith('\\play'):
             play_content = media.replace('\\play', '').strip()
             if play_content.startswith('\\file'):
                 file_path = play_content.replace('\\file', '').strip()
-                file_path = file_path.lstrip('%').strip()
-                return f"\\movie[externalviewer]{{\\includegraphics[width=0.8\\textwidth,keepaspectratio]{{{file_path}}}}}{{{file_path}}}"
-            elif play_content.startswith('\\url'):
-                url = play_content.replace('\\url', '').strip()
-                url = url.lstrip('%').strip()
-                return f"\\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Click to play video}}}}}}"
-            else:
+                return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}}}{{{file_path}}}"
+            elif play_content.startswith('http'):
                 return f"\\href{{{play_content}}}{{\\textcolor{{blue}}{{\\underline{{Play video}}}}}}"
-
-        # Handle direct URL
-        elif media.startswith('http'):
-            return f"\\href{{{media}}}{{\\textcolor{{blue}}{{\\underline{{{media}}}}}}}"
-
-        # Handle TikZ marker
-        elif media == "\\TikZ":
-            return ""
+            else:
+                return media
 
         # Return as-is for other cases
         return media
@@ -11791,8 +14957,913 @@ Created by {self.__author__}
             self.write(f"  • Masked content appears as % comments in the .tex file\n", "cyan")
             self.write(f"  • Unmask to include content in final PDF\n", "cyan")
 
+    def generate_pdf(self) -> None:
+        """Generate PDF with smart error handling, auto-correction, and error editor"""
+        if not self.current_file:
+            messagebox.showwarning("Warning", "Please save your file first!")
+            return
+
+        try:
+            # Clear terminal
+            self.clear_terminal()
+
+            # Save current state
+            self.save_current_slide()
+
+            # Get base filename without extension
+            base_filename = os.path.splitext(self.current_file)[0]
+            tex_file = base_filename + '.tex'
+            txt_file = self.current_file
+
+            self.write("="*60 + "\n", "cyan")
+            self.write("PDF GENERATION WITH SMART ERROR HANDLING\n", "cyan")
+            self.write("="*60 + "\n", "cyan")
+
+            # Step 1: Convert text to TeX
+            self.write("\nStep 1: Converting text to TeX...\n", "white")
+            self.convert_to_tex()
+
+            # Step 2: Add color information
+            self.write("\nStep 2: Adding color definitions and XOR text color rules...\n", "white")
+
+            if os.path.exists(tex_file):
+                with open(tex_file, 'r', encoding='utf-8') as f:
+                    tex_content = f.read()
+
+                # Step 2.5: Ensure all required LaTeX packages are installed locally
+                if hasattr(self, 'package_manager'):
+                    self.write("\nStep 2.5: Checking LaTeX packages (local installation)...\n", "white")
+
+                    # Parse tex_content for required packages
+                    import re
+                    required_packages = set()
+
+                    # Find all \usepackage commands
+                    usepackage_pattern = r'\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}'
+                    matches = re.findall(usepackage_pattern, tex_content)
+                    for match in matches:
+                        for pkg in match.split(','):
+                            required_packages.add(pkg.strip())
+
+                    # Check for specific commands that need packages
+                    if '\\si{' in tex_content or '\\SI{' in tex_content or 'Ω' in tex_content:
+                        required_packages.add('siunitx')
+                        self.write("  ℹ Detected SI units (Ω) - siunitx package required\n", "cyan")
+                    if '\\textmu' in tex_content or '\\textendash' in tex_content:
+                        required_packages.add('textcomp')
+                        self.write("  ℹ Detected textcomp commands - textcomp package required\n", "cyan")
+                    if '\\begin{tikzpicture}' in tex_content:
+                        required_packages.add('tikz')
+                        self.write("  ℹ Detected TikZ graphics - tikz/pgf package required\n", "cyan")
+                    if '\\begin{axis}' in tex_content:
+                        required_packages.add('pgfplots')
+                        self.write("  ℹ Detected pgfplots - pgfplots package required\n", "cyan")
+                    if '\\so{' in tex_content or '\\hl{' in tex_content or '\\ul{' in tex_content:
+                        required_packages.add('soul')
+                        self.write("  ℹ Detected soul commands - soul package required\n", "cyan")
+
+                    # Install missing packages locally (no sudo required)
+                    installed_packages = []
+                    failed_packages = []
+
+                    for pkg in required_packages:
+                        # Check if already available (including local texmf)
+                        if self.package_manager.local_installer._is_package_available(pkg, 'latex'):
+                            self.write(f"  ✓ {pkg} is already available\n", "green")
+                            continue
+
+                        self.write(f"  ⚠ Missing package: {pkg}\n", "yellow")
+
+                        # Try local installation
+                        if self.package_manager.local_installer.ensure_package_available(pkg, 'latex'):
+                            installed_packages.append(pkg)
+                            self.write(f"  ✓ Successfully installed {pkg} locally\n", "green")
+                        else:
+                            failed_packages.append(pkg)
+                            self.write(f"  ✗ Could not install {pkg} locally\n", "red")
+
+                    if installed_packages:
+                        self.write(f"\n✓ Installed {len(installed_packages)} package(s) locally: {', '.join(installed_packages)}\n", "green")
+
+                    if failed_packages:
+                        self.write(f"\n⚠ Could not install {len(failed_packages)} package(s): {', '.join(failed_packages)}\n", "yellow")
+                        self.write(f"  The PDF may still compile if these packages are not critical.\n", "yellow")
+                        self.write(f"  Manual installation instructions have been provided above.\n", "yellow")
+
+                # Add color information to TeX content
+                enhanced_content = self.add_color_info_to_output(tex_content)
+
+                with open(tex_file, 'w', encoding='utf-8') as f:
+                    f.write(enhanced_content)
+
+                self.write("✓ Added TikZ color definitions and XOR text color rules\n", "green")
+            else:
+                self.write("⚠ Warning: TeX file not found after conversion\n", "yellow")
+                return
+
+            # Track fixes applied and error persistence
+            fixes_applied = set()
+            error_history = []
+            persistent_errors = {}
+            max_attempts = 5
+
+            # Step 3: Run pdflatex with smart error handling
+            for attempt in range(max_attempts):
+                self.write(f"\n{'='*60}\n", "white")
+                self.write(f"COMPILATION ATTEMPT {attempt + 1}/{max_attempts}\n", "cyan")
+                self.write(f"{'='*60}\n", "white")
+
+                # Run compilation with detailed error capture
+                result = self.run_pdflatex_with_detailed_errors(tex_file)
+
+                # Check if PDF was created successfully
+                pdf_file = base_filename + '.pdf'
+                if result.get('success') and os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0:
+                    size = os.path.getsize(pdf_file)
+                    size_str = self.format_file_size(size)
+
+                    self.write("\n" + "="*60 + "\n", "white")
+                    self.write("✓ PDF GENERATED SUCCESSFULLY!\n", "green")
+                    self.write("="*60 + "\n", "white")
+                    self.write(f"📄 PDF File: {os.path.basename(pdf_file)}\n", "white")
+                    self.write(f"📏 Size: {size_str}\n", "white")
+                    self.write(f"📍 Location: {os.path.dirname(pdf_file)}\n", "white")
+                    self.write(f"🔧 Fixes applied: {len(fixes_applied)}\n", "cyan")
+
+                    if fixes_applied:
+                        self.write("\nApplied fixes:\n", "cyan")
+                        for fix in fixes_applied:
+                            self.write(f"  • {fix}\n", "cyan")
+
+                    self.write("\n🎨 Color Features Included:\n", "cyan")
+                    self.write("  • XOR-based text color selection\n", "cyan")
+                    self.write("  • Predefined airis4D color palette\n", "cyan")
+                    self.write("  • Automatic black/white text contrast\n", "cyan")
+                    self.write("  • TikZ color definitions\n", "cyan")
+
+                    if messagebox.askyesno("Success",
+                                         f"PDF generated successfully!\n\n"
+                                         f"File: {os.path.basename(pdf_file)}\n"
+                                         f"Size: {size_str}\n\n"
+                                         f"Would you like to view the PDF now?"):
+                        self.preview_pdf(pdf_file)
+                    return
+
+                # Check for missing package errors and try local auto-install
+                if hasattr(self, 'package_manager') and result.get('errors'):
+                    for error_msg in result['errors']:
+                        error_context = '\n'.join(result.get('error_context', []))
+                        package_info = self.package_manager.detect_missing_package(error_msg, error_context)
+                        if package_info:
+                            self.write(f"\n📦 Missing package detected: {package_info['name']} ({package_info['type']})\n", "yellow")
+
+                            # Try local installation first (no sudo)
+                            if self.package_manager.local_installer.ensure_package_available(package_info['name'], package_info['type']):
+                                self.write("✓ Package installed locally. Recompiling...\n", "green")
+                                fixes_applied.add(f"Auto-installed locally: {package_info['name']}")
+                                result['fixed'] = True
+                                break
+                            else:
+                                self.write(f"⚠ Could not install {package_info['name']} locally\n", "yellow")
+                                # Don't break - try system installation as fallback
+                                if self.package_manager.install_package(package_info, auto_confirm=False):
+                                    self.write("✓ Package installed (system). Recompiling...\n", "green")
+                                    fixes_applied.add(f"Auto-installed: {package_info['name']}")
+                                    result['fixed'] = True
+                                    break
+
+                # Check for math warning that needs editor
+                if result.get('has_math_warning') or (result.get('errors') and any('textendash' in str(e).lower() for e in result['errors'])):
+                    self.write("\n⚠ Detected \\textendash in math mode - this requires manual fix\n", "yellow")
+
+                    slide_num = result.get('slide_number', 0)
+                    error_line = result.get('error_line', 1)
+
+                    if messagebox.askyesno("Fix Required",
+                                         f"Detected \\textendash command inside math mode.\n\n"
+                                         f"Location: Slide {slide_num if slide_num > 0 else 'unknown'}\n\n"
+                                         f"This must be fixed manually. Replace \\textendash with --\n"
+                                         f"or move it outside $...$ math delimiters.\n\n"
+                                         f"Would you like to open the Error Editor now?"):
+
+                        editor = LaTeXErrorEditor(
+                            self,
+                            txt_file,
+                            error_line,
+                            "\\textendash invalid in math mode - replace with -- or move outside $...$",
+                            result.get('error_context', []),
+                            is_txt_file=True,
+                            slide_num=slide_num
+                        )
+                        self.wait_window(editor)
+
+                        if editor.result == 'fixed':
+                            self.write("\n✓ Manual fix applied. Regenerating TeX...\n", "green")
+                            fixes_applied.add(f"Fixed \\textendash in Slide {slide_num}")
+                            self.update_slide_list()
+                            if self.current_slide_index >= 0:
+                                self.load_slide(self.current_slide_index)
+                            self.convert_to_tex()
+                            continue
+                        elif editor.result == 'abort':
+                            self.write("\n❌ Compilation aborted by user\n", "yellow")
+                            return
+                        else:
+                            self.write("\n⚠ Continuing despite warning...\n", "yellow")
+                            continue
+
+                # Safely get analysis and its values
+                analysis = result.get('analysis')
+                if analysis is None:
+                    analysis = {}
+
+                error_type = analysis.get('error_type', 'unknown')
+                error_line = result.get('error_line')
+                error_msg = result.get('errors', ['Unknown'])[0] if result.get('errors') else 'Unknown'
+                last_slide = result.get('last_successful_slide', 0)
+
+                # Provide helpful tip if we know the last successful slide
+                if last_slide > 0 and not error_line:
+                    self.write(f"\n💡 Tip: The last successfully compiled slide was {last_slide}\n", "cyan")
+                    self.write(f"   The error is likely in slide {last_slide + 1}\n", "cyan")
+
+                # Track persistent errors at the same line
+                if error_line:
+                    error_key = f"{error_line}_{error_type}"
+                    persistent_errors[error_key] = persistent_errors.get(error_key, 0) + 1
+
+                    if persistent_errors[error_key] >= 2:
+                        self.write(f"\n⚠ Same error at line {error_line} persists after auto-fix attempt.\n", "red")
+
+                        if messagebox.askyesno("Persistent Error",
+                                             f"The same error persists:\n\n"
+                                             f"Error: {error_type}\n"
+                                             f"Message: {error_msg[:200]}\n\n"
+                                             f"Would you like to open the Error Editor to fix it manually?"):
+
+                            editor = LaTeXErrorEditor(
+                                self,
+                                txt_file,
+                                error_line,
+                                error_msg,
+                                '\n'.join(result.get('error_context', [])),
+                                is_txt_file=True,
+                                slide_num=result.get('slide_number', 0)
+                            )
+                            self.wait_window(editor)
+
+                            if editor.result == 'fixed':
+                                self.write("\n✓ Manual fix applied. Regenerating TeX...\n", "green")
+                                fixes_applied.add(f"Manual fix at line {error_line}")
+                                self.update_slide_list()
+                                if self.current_slide_index >= 0:
+                                    self.load_slide(self.current_slide_index)
+                                self.convert_to_tex()
+                                continue
+                            elif editor.result == 'abort':
+                                self.write("\n❌ Compilation aborted by user\n", "yellow")
+                                return
+
+                error_history.append({
+                    'attempt': attempt + 1,
+                    'error_type': error_type,
+                    'error_line': error_line,
+                    'error_msg': error_msg,
+                    'last_successful_slide': last_slide,
+                    'slide_number': result.get('slide_number', 0)
+                })
+
+                # Auto-fix for common errors
+                if result.get('fixed') and persistent_errors.get(f"{error_line}_{error_type}", 0) < 2:
+                    self.write("\n✓ Auto-fix applied successfully!\n", "green")
+                    fixes_applied.add(f"Auto-fix: {error_type}")
+                    continue
+
+                # User-guided fix with Error Editor
+                if analysis and analysis.get('error_type'):
+                    if not error_line and last_slide > 0:
+                        error_line = self.find_slide_line_number(tex_file, last_slide + 1)
+                        if error_line:
+                            self.write(f"\n⚠ Approximating error location to slide {last_slide + 1} at line {error_line}\n", "yellow")
+
+                    if error_line:
+                        self.write(f"\n⚠ Error detected: {analysis.get('error_type')}\n", "yellow")
+                        self.write(f"💡 Suggestion: {analysis.get('suggestion', 'Check the error context')}\n", "cyan")
+
+                        if result.get('error_context'):
+                            self.write("\nError context:\n", "yellow")
+                            for ctx_line in result['error_context'][:5]:
+                                self.write(f"  {ctx_line}\n", "white")
+
+                        response = messagebox.askquestion(
+                            "Error Detected",
+                            f"Error: {analysis.get('error_type')}\n\n"
+                            f"Suggestion: {analysis.get('suggestion', 'Check the error context')}\n\n"
+                            f"Location: Slide {result.get('slide_number', 'unknown')}, Line {error_line}\n\n"
+                            f"Do you want to open the Error Editor to fix this issue?"
+                        )
+
+                        if response == 'yes':
+                            editor = LaTeXErrorEditor(
+                                self,
+                                txt_file,
+                                error_line,
+                                error_msg,
+                                '\n'.join(result.get('error_context', [])),
+                                is_txt_file=True,
+                                slide_num=result.get('slide_number', 0)
+                            )
+                            self.wait_window(editor)
+
+                            if editor.result == 'fixed':
+                                self.write("\n✓ Manual fix applied. Regenerating TeX...\n", "green")
+                                fixes_applied.add(f"Manual fix at line {error_line}")
+                                self.update_slide_list()
+                                if self.current_slide_index >= 0:
+                                    self.load_slide(self.current_slide_index)
+                                self.convert_to_tex()
+                                continue
+                            elif editor.result == 'abort':
+                                self.write("\n❌ Compilation aborted by user\n", "yellow")
+                                return
+                        else:
+                            self.write("\n❌ Compilation aborted by user\n", "yellow")
+                            return
+                    else:
+                        self.write(f"\n⚠ Error detected but location could not be determined.\n", "yellow")
+                        self.write(f"💡 {analysis.get('suggestion', 'Check the error context')}\n", "cyan")
+
+                        if messagebox.askyesno("Error Detected",
+                                             f"Error: {analysis.get('error_type')}\n\n"
+                                             f"Suggestion: {analysis.get('suggestion', 'Check the error context')}\n\n"
+                                             f"Location could not be automatically determined.\n\n"
+                                             f"Would you like to view the log file for debugging?"):
+                            self.show_latex_log(tex_file)
+
+                # Show log file as last resort
+                if attempt == max_attempts - 1:
+                    self.write("\n" + "="*60 + "\n", "red")
+                    self.write("✗ PDF GENERATION FAILED\n", "red")
+                    self.write("="*60 + "\n", "red")
+                    self.write(f"   Attempts made: {max_attempts}\n", "yellow")
+                    self.write(f"   Errors encountered: {len(error_history)}\n", "yellow")
+
+                    if error_history:
+                        self.write("\nError summary:\n", "yellow")
+                        for err in error_history:
+                            slide_info = f" (Slide {err.get('slide_number', 'unknown')})" if err.get('slide_number') else ""
+                            self.write(f"  Attempt {err['attempt']}: {err['error_type']} at line {err['error_line']}{slide_info}\n", "yellow")
+
+                    log_file = tex_file.replace('.tex', '.log')
+                    if os.path.exists(log_file):
+                        self.write(f"\n📋 Log file: {log_file}\n", "cyan")
+                        if messagebox.askyesno("Compilation Failed",
+                                             f"Failed to compile after {max_attempts} attempts.\n\n"
+                                             f"Would you like to view the LaTeX log file for debugging?"):
+                            self.show_latex_log(tex_file)
+                    else:
+                        messagebox.showerror("Compilation Failed",
+                                            f"Failed to compile after {max_attempts} attempts.\n\n"
+                                            f"Please check your LaTeX syntax manually.")
+
+        except Exception as e:
+            error_msg = f"\n✗ Error generating PDF: {str(e)}\n"
+            self.write(error_msg, "red")
+            if hasattr(e, '__traceback__'):
+                self.write("\nDetailed error information:\n", "red")
+                self.write(traceback.format_exc(), "red")
+            messagebox.showerror("Error", f"Error generating PDF:\n{str(e)}")
+
+    def run_pdflatex_with_detailed_errors(self, tex_file: str) -> dict:
+        """Run pdflatex and capture detailed error information with precise slide-based line mapping"""
+        result = {
+            'success': False,
+            'errors': [],
+            'error_line': None,
+            'error_context': [],
+            'analysis': None,
+            'fixed': False,
+            'fix_description': '',
+            'last_successful_slide': 0,
+            'slide_number': 0,
+            'error_line_tex': None,
+            'has_math_warning': False,
+            'missing_package': None
+        }
+
+        try:
+            tex_dir = os.path.dirname(tex_file) or '.'
+            original_dir = os.getcwd()
+            os.chdir(tex_dir)
+
+            tex_file_abs = os.path.abspath(tex_file)
+
+            # Read the current TeX content
+            with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
+                tex_lines = f.readlines()
+                tex_content = ''.join(tex_lines)
+
+            # ========== AGGRESSIVE PRE-PROCESSING: Fix common issues ==========
+            self.write("\n🔧 Running aggressive pre-processing to fix common LaTeX errors...\n", "cyan")
+
+            fixed_content = tex_content
+            fixes_applied = []
+
+            # Fix 1: Fix unclosed math in titles (critical for the Open-Circuit Voltage error)
+            import re
+
+            lines = fixed_content.split('\n')
+            fixed_lines = []
+
+            for i, line in enumerate(lines):
+                # Check for title with unclosed math mode
+                if '\\title' in line:
+                    dollar_count = line.count('$')
+                    if dollar_count % 2 != 0:
+                        line = line.rstrip() + '$'
+                        fixes_applied.append(f"Line {i+1}: Added missing $ to close math mode in title")
+                        self.write(f"  ✓ Fixed unclosed math in title at line {i+1}\n", "green")
+
+                # Check for frame titles with unclosed math
+                elif '\\begin{frame}' in line and '$' in line:
+                    dollar_count = line.count('$')
+                    if dollar_count % 2 != 0:
+                        line = line.rstrip() + '$'
+                        fixes_applied.append(f"Line {i+1}: Added missing $ to close math mode in frame title")
+                        self.write(f"  ✓ Fixed unclosed math in frame title at line {i+1}\n", "green")
+
+                fixed_lines.append(line)
+
+            if fixes_applied:
+                fixed_content = '\n'.join(fixed_lines)
+                with open(tex_file_abs, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+                result['fixed'] = True
+                result['fix_description'] = '; '.join(fixes_applied[:5])
+
+                # Also update the TXT file
+                txt_file = tex_file_abs.replace('.tex', '.txt')
+                if os.path.exists(txt_file):
+                    with open(txt_file, 'r', encoding='utf-8') as f:
+                        txt_content = f.read()
+                    txt_lines = txt_content.split('\n')
+                    fixed_txt_lines = []
+                    for line in txt_lines:
+                        if '\\title' in line and line.count('$') % 2 != 0:
+                            line = line.rstrip() + '$'
+                        fixed_txt_lines.append(line)
+                    with open(txt_file, 'w', encoding='utf-8') as f:
+                        f.write('\n'.join(fixed_txt_lines))
+                    self.write("  ✓ Also updated TXT file with fixes\n", "green")
+
+                # Re-read the fixed content
+                with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
+                    tex_lines = f.readlines()
+                    tex_content = ''.join(tex_lines)
+
+            # Build detailed slide map with line ranges
+            tex_slide_map = self._build_detailed_tex_slide_map(tex_lines)
+
+            # Also build TXT slide map for mapping back to source
+            txt_file = tex_file.replace('.tex', '.txt')
+            txt_slide_map = {}
+            txt_lines = []
+            if os.path.exists(txt_file):
+                with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    txt_lines = f.readlines()
+                txt_slide_map = self._build_detailed_txt_slide_map(txt_lines)
+
+            # Run pdflatex
+            cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+                   '-file-line-error', tex_file_abs]
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                errors='replace'
+            )
+
+            error_lines = []
+            error_context_lines = []
+            in_error_context = False
+            last_slide_compiled = 0
+            actual_error_tex_line = None
+            error_message = ""
+
+            # Store all line numbers found in the log
+            all_error_lines = []
+            line_context_map = {}  # Map line number to context
+
+            slide_pattern = r'\[(\d+)\]'
+
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+
+                if line:
+                    # Track successfully compiled slides
+                    slide_match = re.search(slide_pattern, line)
+                    if slide_match and ']' in line and 'pdfTeX warning' not in line:
+                        slide_num = int(slide_match.group(1))
+                        if slide_num > last_slide_compiled:
+                            last_slide_compiled = slide_num
+                            result['last_successful_slide'] = slide_num
+
+                    # CRITICAL: Collect ALL line numbers from the log
+                    line_match = re.search(r'l\.(\d+)', line)
+                    if line_match:
+                        found_line = int(line_match.group(1))
+                        all_error_lines.append(found_line)
+                        line_context_map[found_line] = line
+
+                    # Capture error messages - look for fatal errors
+                    if line.startswith('!'):
+                        error_message = line.strip()
+                        error_lines.append(error_message)
+                        result['errors'].append(error_message)
+                        in_error_context = True
+                        self.write(line, "red")
+
+                        # If this is a fatal error, this is our target
+                        if 'Fatal error' in line or 'no output PDF' in line:
+                            # Use the last line number collected
+                            if all_error_lines:
+                                actual_error_tex_line = all_error_lines[-1]  # Use the LAST line number
+                                result['error_line_tex'] = actual_error_tex_line
+                                self.write(f"\n⚠ Fatal error at line {actual_error_tex_line}\n", "red")
+
+                    elif in_error_context:
+                        error_context_lines.append(line.strip())
+                        if len(error_context_lines) < 20:
+                            self.write(line, "yellow")
+
+                        # Stop capturing after we see the next error or end of context
+                        if line.startswith('!') or 'l.' in line:
+                            in_error_context = False
+
+                    elif 'Warning' in line:
+                        if 'Citation' in line:
+                            self.write(line, "yellow")
+                        elif 'textendash' in line:
+                            self.write(line, "yellow")
+                            result['has_math_warning'] = True
+                        else:
+                            self.write(line, "yellow")
+                    elif not line.startswith('[') and not line.startswith('('):
+                        self.write(line, "white")
+
+            process.wait()
+
+            # If we found a fatal error but no line number from the pattern, check the error message
+            if actual_error_tex_line is None and all_error_lines:
+                # Use the last line number found in the log
+                actual_error_tex_line = all_error_lines[-1]
+                result['error_line_tex'] = actual_error_tex_line
+                self.write(f"\n⚠ Using last error line from log: {actual_error_tex_line}\n", "yellow")
+
+            # Find which slide contains this line
+            if actual_error_tex_line:
+                error_slide_num = None
+                for slide_num, slide_info in tex_slide_map.items():
+                    if slide_info['start_line'] <= actual_error_tex_line <= slide_info['end_line']:
+                        error_slide_num = slide_num
+                        result['slide_number'] = slide_num
+                        break
+
+                if error_slide_num:
+                    self.write(f"\n📍 ERROR LOCATED:", "red")
+                    self.write(f" Slide {error_slide_num}", "yellow")
+                    self.write(f" (TeX line {actual_error_tex_line})\n", "cyan")
+
+                    # Get the slide content
+                    slide_info = tex_slide_map[error_slide_num]
+                    self.write(f"   Slide title: {slide_info['title'][:50]}\n", "cyan")
+
+                    # Find the exact line within the slide
+                    relative_line = actual_error_tex_line - slide_info['start_line']
+                    self.write(f"   Relative position: line {relative_line} within slide\n", "cyan")
+
+                    # Map to TXT file line
+                    if error_slide_num in txt_slide_map:
+                        txt_info = txt_slide_map[error_slide_num]
+                        txt_error_line = txt_info['start_line'] + relative_line
+                        if txt_error_line <= txt_info['end_line']:
+                            result['error_line'] = txt_error_line
+                            self.write(f"   Maps to TXT line: {txt_error_line}\n", "green")
+
+                            # Show the problematic line from TXT
+                            if 1 <= txt_error_line <= len(txt_lines):
+                                problematic_line = txt_lines[txt_error_line - 1].strip()
+                                self.write(f"   Problematic content: {problematic_line[:100]}\n", "yellow")
+
+                                # Check if this is the Open-Circuit Voltage slide
+                                if 'Open-Circuit Voltage' in problematic_line or 'V_{oc}' in problematic_line:
+                                    self.write(f"\n💡 SPECIFIC FIX NEEDED:\n", "cyan")
+                                    self.write(f"   The title has unclosed math mode.\n", "yellow")
+                                    self.write(f"   Change: {problematic_line}\n", "yellow")
+                                    self.write(f"   To:     {problematic_line.rstrip()}$\n", "green")
+
+                                    # Auto-fix if possible
+                                    if problematic_line.count('$') % 2 != 0:
+                                        fixed_line = problematic_line.rstrip() + '$'
+                                        txt_lines[txt_error_line - 1] = fixed_line + '\n'
+                                        with open(txt_file, 'w', encoding='utf-8') as f:
+                                            f.writelines(txt_lines)
+                                        self.write(f"\n✓ Auto-fixed the TXT file!\n", "green")
+                                        result['fixed'] = True
+
+                                        # Regenerate TeX
+                                        from BeamerSlideGenerator import process_input_file
+                                        process_input_file(txt_file, tex_file_abs)
+                                        self.write(f"✓ Regenerated TeX file\n", "green")
+
+            # If we found an error but no slide number, try to infer
+            if error_lines and result['slide_number'] == 0 and result['last_successful_slide'] > 0:
+                result['slide_number'] = result['last_successful_slide'] + 1
+                if result['slide_number'] in txt_slide_map:
+                    result['error_line'] = txt_slide_map[result['slide_number']]['start_line']
+                    self.write(f"\n⚠ Inferring error in Slide {result['slide_number']}\n", "yellow")
+
+            # Analyze the error
+            if error_lines and not result['success']:
+                result['error_context'] = error_context_lines
+
+                if 'Extra }' in error_message or 'forgotten $' in error_message:
+                    result['analysis'] = {
+                        'error_type': 'extra_brace_or_forgotten_dollar',
+                        'suggestion': 'Extra } or forgotten $. This is often caused by unclosed math mode (e.g., $V_{oc} without closing $). Check for $ signs in titles.',
+                        'auto_fixable': True,
+                        'fix_type': 'fix_math_delimiters',
+                        'line': result['error_line'],
+                        'slide': result['slide_number']
+                    }
+
+            # Show helpful context
+            if result['slide_number'] > 0 and result['error_line']:
+                self.write(f"\n" + "="*60 + "\n", "cyan")
+                self.write(f"HELPFUL CONTEXT:\n", "cyan")
+                self.write(f"="*60 + "\n", "cyan")
+                self.write(f"Error in Slide {result['slide_number']}\n", "yellow")
+                self.write(f"Open your .txt file and go to line {result['error_line']}\n", "green")
+
+            # Check if PDF was created
+            pdf_file = tex_file_abs.replace('.tex', '.pdf')
+            if os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0:
+                result['success'] = True
+                if result.get('fixed'):
+                    self.write(f"\n✓ PDF generated successfully after auto-fix!\n", "green")
+
+            os.chdir(original_dir)
+            return result
+
+        except Exception as e:
+            result['errors'].append(str(e))
+            import traceback
+            traceback.print_exc()
+            os.chdir(original_dir)
+            return result
+
+    def _build_detailed_tex_slide_map(self, tex_lines: list) -> dict:
+        """Build detailed map of slide numbers to line ranges with titles"""
+        slide_map = {}
+        current_slide = 0
+        in_frame = False
+        frame_start = None
+        current_title = "Untitled"
+
+        for i, line in enumerate(tex_lines, 1):
+            # Detect frame start (not commented out)
+            if '\\begin{frame}' in line and not line.strip().startswith('%'):
+                current_slide += 1
+                in_frame = True
+                frame_start = i
+
+                # Extract title from frame
+                title_match = re.search(r'\\begin{frame}\{([^}]+)\}', line)
+                if title_match:
+                    current_title = title_match.group(1)
+                else:
+                    # Look for frametitle in subsequent lines
+                    current_title = f"Slide {current_slide}"
+
+                slide_map[current_slide] = {
+                    'start_line': frame_start,
+                    'end_line': None,
+                    'title': current_title,
+                    'content_start': None,
+                    'content_end': None
+                }
+
+            elif '\\end{frame}' in line and in_frame:
+                if current_slide in slide_map:
+                    slide_map[current_slide]['end_line'] = i
+                in_frame = False
+
+            # Track content boundaries within frame
+            elif in_frame and current_slide in slide_map:
+                if slide_map[current_slide]['content_start'] is None:
+                    # Content starts after the frame opening
+                    if not line.strip().startswith('%'):
+                        slide_map[current_slide]['content_start'] = i
+                else:
+                    # Update content end as we go
+                    if not line.strip().startswith('%'):
+                        slide_map[current_slide]['content_end'] = i
+
+        # Fill any missing end lines
+        for slide_num in slide_map:
+            if slide_map[slide_num]['end_line'] is None:
+                # Find next slide start or end of file
+                next_start = len(tex_lines)
+                for next_slide in range(slide_num + 1, len(slide_map) + 1):
+                    if next_slide in slide_map:
+                        next_start = slide_map[next_slide]['start_line']
+                        break
+                slide_map[slide_num]['end_line'] = next_start - 1
+
+        return slide_map
+
+    def _build_detailed_txt_slide_map(self, txt_lines: list) -> dict:
+        """Build detailed map of slide numbers to line ranges in TXT file"""
+        slide_map = {}
+        current_slide = 0
+        slide_start = None
+        in_content = False
+        current_title = ""
+
+        for i, line in enumerate(txt_lines, 1):
+            # Detect title line
+            if re.match(r'^%?\s*\\title\s+', line):
+                current_slide += 1
+                slide_start = i
+
+                # Extract title
+                title_match = re.search(r'\\title\s+(.+)$', line)
+                if title_match:
+                    current_title = title_match.group(1).strip()
+                else:
+                    current_title = f"Slide {current_slide}"
+
+                slide_map[current_slide] = {
+                    'start_line': slide_start,
+                    'end_line': None,
+                    'title': current_title,
+                    'is_masked': line.strip().startswith('%')
+                }
+
+            # Detect content block start
+            elif '\\begin{Content}' in line:
+                in_content = True
+
+            # Detect content block end
+            elif '\\end{Content}' in line:
+                in_content = False
+
+        # Fill end lines
+        slides_list = sorted(slide_map.keys())
+        for idx, slide_num in enumerate(slides_list):
+            next_slide = slides_list[idx + 1] if idx + 1 < len(slides_list) else None
+            if next_slide:
+                slide_map[slide_num]['end_line'] = slide_map[next_slide]['start_line'] - 1
+            else:
+                slide_map[slide_num]['end_line'] = len(txt_lines)
+
+        return slide_map
+
+    def force_reload_from_file(self, file_path: str = None):
+        """Force reload the current file to sync with external changes"""
+        if file_path is None:
+            file_path = self.current_file
+
+        if file_path and os.path.exists(file_path):
+            self.write(f"🔄 Reloading {os.path.basename(file_path)}...\n", "cyan")
+            self.load_file(file_path)
+            self.write(f"✓ File reloaded successfully\n", "green")
+            return True
+        return False
+
+    def find_slide_line_number(self, tex_file: str, slide_number: int) -> int:
+        """Find the line number of a specific slide in the TeX file"""
+        try:
+            with open(tex_file, 'r', encoding='utf-8', errors='ignore') as f:
+                tex_lines = f.readlines()
+
+            slide_count = 0
+            for i, line in enumerate(tex_lines):
+                if '\\frametitle' in line or '\\begin{frame}' in line:
+                    slide_count += 1
+                    if slide_count == slide_number:
+                        return i + 1  # Return 1-based line number
+
+            # If exact slide not found, return a reasonable default
+            return 1
+        except Exception:
+            return 1
+
+    def sync_slides_from_tex(self, tex_file: str) -> None:
+        """Sync the slides data structure from the TeX file after fixes"""
+        try:
+            # Read the TeX file
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                tex_content = f.read()
+
+            # Extract the document body
+            import re
+            doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', tex_content, re.DOTALL)
+            if not doc_match:
+                return
+
+            document_body = doc_match.group(1)
+
+            # Find all frames
+            frame_pattern = r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(.*?)\\end\{frame\}'
+            frames = re.finditer(frame_pattern, document_body, re.DOTALL)
+
+            # Update slides
+            slide_idx = 0
+            for frame_match in frames:
+                title = frame_match.group(1) or f"Slide {slide_idx + 1}"
+                frame_content = frame_match.group(2).strip()
+
+                if slide_idx < len(self.slides):
+                    # Update existing slide title
+                    self.slides[slide_idx]['title'] = title
+                    # Note: Content sync would be more complex; for now just update title
+                slide_idx += 1
+
+            self.update_slide_list()
+            if self.current_slide_index >= 0:
+                self.load_slide(self.current_slide_index)
+
+            self.write("✓ Slides synced from fixed TeX file\n", "green")
+
+        except Exception as e:
+            self.write(f"Warning: Could not sync slides: {e}\n", "yellow")
+
+    def apply_global_fix(self, txt_file: str, tex_file: str, error_type: str) -> bool:
+        """Apply a fix globally to the entire document using LaTeXErrorAnalyzer"""
+        try:
+            # Read the TXT file
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Use the static method from LaTeXErrorAnalyzer
+            fixed_content = LaTeXErrorAnalyzer.apply_global_fix(content, error_type)
+
+            if fixed_content != content:
+                # Write the fixed content back
+                with open(txt_file, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+
+                self.write(f"✓ Applied global fix for '{error_type}'\n", "green")
+                self.write("  Changes have been saved to the TXT file\n", "cyan")
+
+                # Regenerate TeX from the fixed TXT file
+                self.write("  Regenerating TeX file...\n", "cyan")
+                self.convert_to_tex()
+
+                return True
+
+            self.write(f"No changes needed for global fix '{error_type}'\n", "yellow")
+            return False
+
+        except Exception as e:
+            self.write(f"Global fix failed: {e}\n", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def add_package_to_preamble(self, tex_file: str, package: str) -> bool:
+        """Add a package to the TeX file preamble"""
+        try:
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+
+            new_lines = []
+            package_added = False
+            for line in lines:
+                new_lines.append(line)
+                if '\\begin{document}' in line and not package_added:
+                    new_lines.insert(-1, f'\\usepackage{{{package}}}\n')
+                    package_added = True
+
+            if package_added:
+                with open(tex_file, 'w', encoding='utf-8') as f:
+                    f.writelines(new_lines)
+                return True
+            return False
+
+        except Exception as e:
+            self.write(f"Error adding package: {e}\n", "red")
+            return False
+
     def get_custom_preamble(self) -> str:
-        """Generate custom preamble with proper styling"""
+        """Generate custom preamble with proper styling and required packages"""
         try:
             from BeamerSlideGenerator import get_beamer_preamble
 
@@ -11815,6 +15886,32 @@ Created by {self.__author__}
                 title, subtitle, author, institution, short_institute, date
             )
 
+            # Additional packages needed for special characters and units
+            extra_packages = r"""
+    % Additional packages for special characters and units
+    \usepackage{textcomp}      % For \textmu, \textendash, etc.
+    \usepackage{siunitx}       % For proper units (Ω·cm², etc.)
+    \usepackage{amsmath}       % Enhanced math support
+    \usepackage{amssymb}       % Additional math symbols
+
+    % Configure siunitx for proper formatting
+    \sisetup{
+        per-mode = symbol,
+        output-decimal-marker = {.},
+        group-separator = {,}
+    }
+    """
+
+            # Insert extra packages before \begin{document}
+            doc_pos = base_preamble.find("\\begin{document}")
+            if doc_pos != -1:
+                # Check if packages already exist to avoid duplicates
+                if 'textcomp' not in base_preamble:
+                    base_preamble = base_preamble[:doc_pos] + extra_packages + base_preamble[doc_pos:]
+            else:
+                # If no \begin{document}, add at the end
+                base_preamble = base_preamble + extra_packages + "\n\\begin{document}\n"
+
             # Process logo if present
             if 'logo' in self.presentation_info and self.presentation_info['logo']:
                 preamble = re.sub(r'\\logo{[^}]*}\s*\n?', '', base_preamble)
@@ -11831,158 +15928,866 @@ Created by {self.__author__}
 
         except Exception as e:
             print(f"Error generating custom preamble: {e}")
-            # Return fallback preamble
-            return """\\documentclass[aspectratio=169]{beamer}
-    \\usepackage{graphicx}
-    \\usepackage{xcolor}
-    \\usetheme{Madrid}
-    \\title{Presentation}
-    \\author{airis4D}
-    \\begin{document}
+            # Return fallback preamble with all necessary packages
+            return r"""\documentclass[aspectratio=169]{beamer}
+    \usepackage{graphicx}
+    \usepackage{xcolor}
+    \usepackage{textcomp}
+    \usepackage{siunitx}
+    \usepackage{amsmath}
+    \usepackage{amssymb}
+    \usetheme{Madrid}
+    \title{Presentation}
+    \author{airis4D}
+    \sisetup{per-mode=symbol}
+    \begin{document}
     """
 
-    def generate_pdf(self) -> None:
-        """Generate PDF with improved terminal handling, progress feedback, and color integration"""
-        if not self.current_file:
-            messagebox.showwarning("Warning", "Please save your file first!")
-            return
+    def _build_tex_slide_map(self, tex_lines: list) -> dict:
+        """Build a map of slide numbers to line ranges in TeX file"""
+        slide_map = {}
+        current_slide = 0
+        in_frame = False
+        frame_start = None
+
+        for i, line in enumerate(tex_lines, 1):
+            # Detect frame start (not commented out)
+            if '\\begin{frame}' in line and not line.strip().startswith('%'):
+                current_slide += 1
+                in_frame = True
+                frame_start = i
+                slide_map[current_slide] = {
+                    'start_line': frame_start,
+                    'end_line': None,
+                    'title': self._extract_frame_title(line)
+                }
+            elif '\\end{frame}' in line and in_frame:
+                if current_slide in slide_map:
+                    slide_map[current_slide]['end_line'] = i
+                in_frame = False
+
+        # Fill any missing end lines
+        for slide_num in slide_map:
+            if slide_map[slide_num]['end_line'] is None:
+                # Find next slide start or end of file
+                next_start = len(tex_lines)
+                for next_slide in range(slide_num + 1, len(slide_map) + 1):
+                    if next_slide in slide_map:
+                        next_start = slide_map[next_slide]['start_line']
+                        break
+                slide_map[slide_num]['end_line'] = next_start - 1
+
+        return slide_map
+
+    def _build_txt_slide_map(self, txt_lines: list) -> dict:
+        """Build a map of slide numbers to line ranges in TXT file (skipping masked slides)"""
+        slide_map = {}
+        current_slide = 0
+        slide_start = None
+        in_content = False
+
+        for i, line in enumerate(txt_lines, 1):
+            # Detect title line (even if masked)
+            if re.match(r'^%?\s*\\title\s+', line):
+                # Check if this slide is fully masked (all content lines start with %)
+                is_fully_masked = self._is_slide_fully_masked(txt_lines, i)
+
+                if not is_fully_masked:
+                    current_slide += 1
+                    slide_start = i
+                    slide_map[current_slide] = {
+                        'start_line': slide_start,
+                        'end_line': None,
+                        'title': self._extract_title_from_line(line),
+                        'is_masked': False
+                    }
+                else:
+                    # Track masked slides but don't include in navigation
+                    current_slide += 1
+                    slide_map[current_slide] = {
+                        'start_line': i,
+                        'end_line': None,
+                        'title': self._extract_title_from_line(line),
+                        'is_masked': True
+                    }
+
+        # Fill end lines
+        slides_list = sorted(slide_map.keys())
+        for idx, slide_num in enumerate(slides_list):
+            next_slide = slides_list[idx + 1] if idx + 1 < len(slides_list) else None
+            if next_slide:
+                slide_map[slide_num]['end_line'] = slide_map[next_slide]['start_line'] - 1
+            else:
+                slide_map[slide_num]['end_line'] = len(txt_lines)
+
+        return slide_map
+
+    def _is_slide_fully_masked(self, txt_lines: list, title_line_idx: int) -> bool:
+        """Check if all non-empty lines in a slide start with %"""
+        # Find end of this slide (next title or EOF)
+        end_idx = len(txt_lines)
+        for i in range(title_line_idx + 1, len(txt_lines)):
+            if re.match(r'^%?\s*\\title\s+', txt_lines[i]):
+                end_idx = i
+                break
+
+        # Check content lines between title and end
+        for i in range(title_line_idx + 1, end_idx):
+            line = txt_lines[i].strip()
+            if line and not line.startswith('%'):
+                return False
+        return True
+
+    def _extract_frame_title(self, line: str) -> str:
+        """Extract frame title from \\begin{frame}{Title} or \\frametitle{Title}"""
+        # Check for frame with title in brackets
+        match = re.search(r'\\begin{frame}\{([^}]+)\}', line)
+        if match:
+            return match.group(1)
+        return "Untitled"
+
+    def _extract_title_from_line(self, line: str) -> str:
+        """Extract title from \\title line (handling masked lines)"""
+        # Remove % prefix if present
+        clean_line = re.sub(r'^\s*%\s*', '', line)
+        match = re.search(r'\\title\s+(.+)$', clean_line)
+        if match:
+            return match.group(1).strip()
+        return "Untitled"
+
+    def run_pdflatex_with_error_capture(self, tex_file: str, auto_fix: bool = True) -> dict:
+        """Run pdflatex and capture errors using the LaTeXErrorAnalyzer class"""
+        result = {
+            'success': False,
+            'errors': [],
+            'error_line': None,
+            'error_context': [],
+            'analysis': None,
+            'fixed': False,
+            'fix_description': '',
+            'last_successful_slide': 0
+        }
 
         try:
-            # Clear terminal
-            self.clear_terminal()
+            tex_dir = os.path.dirname(tex_file) or '.'
+            original_dir = os.getcwd()
+            os.chdir(tex_dir)
 
-            # Save current state
-            self.save_current_slide()
+            tex_file_abs = os.path.abspath(tex_file)
 
-            # Get base filename without extension
-            base_filename = os.path.splitext(self.current_file)[0]
-            tex_file = base_filename + '.tex'
+            # Read the current TeX content
+            with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
+                tex_lines = f.readlines()
 
-            # Step 1: Convert text to TeX with color information
-            self.write("Step 1: Converting text to TeX with color support...\n", "white")
-            self.convert_to_tex()  # This will handle notes mode correctly
+            # Find all frame titles to map slide numbers
+            slide_titles = []
+            frame_pattern = r'\\frametitle\{([^}]+)\}'
+            for i, line in enumerate(tex_lines):
+                match = re.search(frame_pattern, line)
+                if match:
+                    slide_titles.append({
+                        'line_num': i + 1,
+                        'title': match.group(1),
+                        'slide_num': len(slide_titles) + 1
+                    })
 
-            # Step 2: Read the generated TeX file and add color information
-            self.write("\nStep 2: Adding color definitions and XOR text color rules...\n", "white")
+            # Run pdflatex
+            cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+                   '-file-line-error', tex_file_abs]
 
-            if os.path.exists(tex_file):
-                with open(tex_file, 'r', encoding='utf-8') as f:
-                    tex_content = f.read()
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True,
+                errors='replace'
+            )
 
-                # Add color information to the TeX file
-                enhanced_content = self.add_color_info_to_output(tex_content)
+            error_lines = []
+            current_error = None
+            error_line_num = None
+            error_context_lines = []
+            in_error_context = False
+            last_slide_compiled = 0
 
-                # Write back with color information
-                with open(tex_file, 'w', encoding='utf-8') as f:
-                    f.write(enhanced_content)
+            slide_pattern = r'\[(\d+)\]'
 
-                self.write("✓ Added TikZ color definitions and XOR text color rules\n", "green")
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
 
-                # Show what was added
-                color_rules = """
-    % XOR Text Color Rule for TikZ:
-    % - Text color automatically chosen based on background luminance
-    % - Use text=white on dark backgrounds (luminance < 0.179)
-    % - Use text=black on light backgrounds (luminance > 0.179)
-    %
-    % Predefined colors with optimal text colors:
-    % - airis4d_blue (dark) → text=white
-    % - airis4d_green (light) → text=black
-    % - airis4d_orange (light) → text=black
-    % - airis4d_red (dark) → text=white
-    % - airis4d_purple (dark) → text=white
-    % - airis4d_teal (dark) → text=white
-    % - airis4d_gray (light) → text=black
-    """
-                self.write(color_rules, "cyan")
-            else:
-                self.write("⚠ Warning: TeX file not found after conversion\n", "yellow")
+                if line:
+                    slide_match = re.search(slide_pattern, line)
+                    if slide_match and ']' in line and 'pdfTeX warning' not in line:
+                        slide_num = int(slide_match.group(1))
+                        if slide_num > last_slide_compiled:
+                            last_slide_compiled = slide_num
+                            result['last_successful_slide'] = slide_num
 
-            # Step 3: First pdflatex pass
-            self.write("\nStep 3: First pdflatex pass...\n", "white")
-            result = self.run_pdflatex(tex_file)
+                    if line.startswith('!'):
+                        self.write(line, "red")
+                        current_error = line.strip()
+                        error_lines.append(current_error)
+                        result['errors'].append(current_error)
+                        error_context_lines = []
+                        in_error_context = True
+                    elif in_error_context and ('l.' in line or 'line' in line.lower()):
+                        match = re.search(r'l\.(\d+)', line)
+                        if match:
+                            error_line_num = int(match.group(1))
+                            result['error_line'] = error_line_num
+                        error_context_lines.append(line.strip())
+                    elif in_error_context and len(error_context_lines) < 15:
+                        error_context_lines.append(line.strip())
+                    elif 'Runaway argument' in line:
+                        self.write(line, "red")
+                        current_error = line.strip()
+                        error_lines.append(current_error)
+                        result['errors'].append(current_error)
+                        in_error_context = True
+                    elif 'Warning' in line:
+                        self.write(line, "yellow")
+                    elif not line.startswith('[') and not line.startswith('('):
+                        self.write(line, "white")
 
-            # Check if compilation was aborted
-            if result.get('aborted', False):
-                self.write("\n✗ Compilation aborted by user\n", "red")
-                return
+            process.wait()
 
-            if result['success']:
-                # Step 4: Second pdflatex pass for references and color rendering
-                self.write("\nStep 4: Second pdflatex pass (resolving references and colors)...\n", "white")
-                success = self.run_pdflatex(tex_file)
+            # If we have a last successful slide but no error line, approximate
+            if error_lines and not result['error_line'] and result['last_successful_slide'] > 0:
+                next_slide_num = result['last_successful_slide'] + 1
+                for slide_info in slide_titles:
+                    if slide_info['slide_num'] == next_slide_num:
+                        result['error_line'] = slide_info['line_num']
+                        self.write(f"\n⚠ Assuming error is in slide {next_slide_num}: '{slide_info['title']}'\n", "yellow")
+                        break
 
-                if success:
-                    # Optional: Third pass for perfect rendering
-                    self.write("\nStep 5: Final pdflatex pass (ensuring color consistency)...\n", "white")
-                    success = self.run_pdflatex(tex_file)
+            # Analyze the error if found
+            if error_lines and not result['success']:
+                result['error_context'] = error_context_lines
+                analysis = LaTeXErrorAnalyzer.analyze_error(
+                    error_lines[0],
+                    error_context_lines,
+                    None,
+                    result['error_line'],
+                    tex_lines
+                )
+                result['analysis'] = analysis
 
-                    if success:
-                        pdf_file = base_filename + '.pdf'
-                        if os.path.exists(pdf_file):
-                            # Calculate file size
-                            size = os.path.getsize(pdf_file)
-                            size_str = self.format_file_size(size)
+                # Try auto-fix if enabled
+                if auto_fix and analysis.get('auto_fixable'):
+                    fixed_lines, fix_desc, fix_count = LaTeXErrorAnalyzer.apply_fix(
+                        tex_lines, analysis, result['error_line']
+                    )
+                    if fix_count > 0:
+                        with open(tex_file_abs, 'w', encoding='utf-8') as f:
+                            f.writelines(fixed_lines)
+                        result['fixed'] = True
+                        result['fix_description'] = fix_desc
+                        self.write(f"✓ Auto-fix applied: {fix_desc}\n", "green")
 
-                            self.write("\n" + "="*60 + "\n", "white")
-                            self.write("✓ PDF GENERATED SUCCESSFULLY!\n", "green")
-                            self.write("="*60 + "\n", "white")
-                            self.write(f"📄 PDF File: {os.path.basename(pdf_file)}\n", "white")
-                            self.write(f"📏 Size: {size_str}\n", "white")
-                            self.write(f"📍 Location: {os.path.dirname(pdf_file)}\n", "white")
+                        # Also fix the TXT file if it exists
+                        txt_file = tex_file_abs.replace('.tex', '.txt')
+                        if os.path.exists(txt_file):
+                            with open(txt_file, 'r', encoding='utf-8') as f:
+                                txt_lines = f.readlines()
+                            fixed_txt_lines, _, _ = LaTeXErrorAnalyzer.apply_fix(
+                                txt_lines, analysis, result['error_line']
+                            )
+                            with open(txt_file, 'w', encoding='utf-8') as f:
+                                f.writelines(fixed_txt_lines)
+                            self.write(f"✓ Also fixed TXT file\n", "green")
 
-                            # Show color features included
-                            self.write("\n🎨 Color Features Included:\n", "cyan")
-                            self.write("  • XOR-based text color selection\n", "cyan")
-                            self.write("  • Predefined airis4D color palette\n", "cyan")
-                            self.write("  • Automatic black/white text contrast\n", "cyan")
-                            self.write("  • TikZ color definitions\n", "cyan")
+            # Check if PDF was created
+            pdf_file = tex_file_abs.replace('.tex', '.pdf')
+            if os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0:
+                result['success'] = True
 
-                            # Check for any warnings in the log file
-                            log_file = base_filename + '.log'
-                            if os.path.exists(log_file):
-                                warnings = self.check_latex_log(log_file)
-                                if warnings:
-                                    self.write(f"\n⚠ Found {warnings} LaTeX warning(s) - check log file\n", "yellow")
-
-                            # Generate color usage report
-                            self.generate_color_report(tex_file)
-
-                            # Ask if user wants to view the PDF
-                            if messagebox.askyesno("PDF Generation Complete",
-                                                 f"✅ PDF generated successfully!\n\n"
-                                                 f"File: {os.path.basename(pdf_file)}\n"
-                                                 f"Size: {size_str}\n\n"
-                                                 f"Color features included:\n"
-                                                 f"• XOR text color rules\n"
-                                                 f"• Predefined color palette\n"
-                                                 f"• Automatic contrast adjustment\n\n"
-                                                 f"Would you like to view the PDF now?"):
-                                self.preview_pdf(pdf_file)
-
-                            # Offer to open the TeX file to see color definitions
-                            if messagebox.askyesno("View Color Definitions",
-                                                 "Would you like to see the color definitions added to your TeX file?"):
-                                self.view_color_definitions(tex_file)
-                        else:
-                            self.write("\n✗ Error: PDF file not found after compilation\n", "red")
-                    else:
-                        self.write("\n✗ Error in final pdflatex pass\n", "red")
-                else:
-                    self.write("\n✗ Error in second pdflatex pass\n", "red")
-            else:
-                self.write("\n✗ Error in first pdflatex pass\n", "red")
+            os.chdir(original_dir)
+            return result
 
         except Exception as e:
-            error_msg = f"\n✗ Error generating PDF: {str(e)}\n"
-            self.write(error_msg, "red")
+            result['errors'].append(str(e))
+            return result
 
-            # Add detailed error information
-            if hasattr(e, '__traceback__'):
-                self.write("\nDetailed error information:\n", "red")
-                self.write(traceback.format_exc(), "red")
+    def analyze_latex_error(self, error_msg: str, context: list, tex_content: str,
+                            line_num: int = None, tex_lines: list = None) -> dict:
+        """Analyze LaTeX error and suggest fixes"""
+        import re
 
-            messagebox.showerror("Error", f"Error generating PDF:\n{str(e)}")
+        analysis = {
+            'error_type': 'unknown',
+            'suggestion': 'Unknown error. Please check the log file.',
+            'auto_fixable': False,
+            'fix_type': 'editor',
+            'fix_data': None,
+            'line': line_num
+        }
+
+        # Check for runaway argument / missing brace
+        if 'Runaway argument' in error_msg or 'File ended while scanning' in error_msg:
+            analysis['error_type'] = 'missing_brace'
+            analysis['suggestion'] = 'Missing closing brace or math mode delimiter. Check for unmatched {, }, $, or math environment boundaries.'
+            analysis['auto_fixable'] = False
+            analysis['fix_type'] = 'editor'
+            return analysis
+
+        # Check for misplaced alignment tab (&) error
+        if any(phrase in error_msg for phrase in [
+            'Misplaced alignment tab character &',
+            'Misplaced &',
+            'alignment tab character &'
+        ]):
+            return self._analyze_ampersand_error(error_msg, tex_lines, line_num)
+
+        # Check for missing \item error
+        elif 'missing \\item' in error_msg.lower() or "perhaps a missing \\item" in error_msg:
+            return self._analyze_missing_item_error(error_msg, line_num)
+
+        # Check for undefined control sequence (missing package)
+        elif 'Undefined control sequence' in error_msg:
+            return self._analyze_undefined_command(error_msg, line_num)
+
+        # Check for missing $ (math mode)
+        elif 'Missing $ inserted' in error_msg:
+            analysis['error_type'] = 'missing_math_mode'
+            analysis['suggestion'] = 'Math mode may be missing. Add $ around math expressions like $...$ or $$...$$.'
+            analysis['auto_fixable'] = False
+            analysis['fix_type'] = 'editor'
+            return analysis
+
+        # Check for missing closing brace
+        elif 'Missing } inserted' in error_msg:
+            analysis['error_type'] = 'missing_brace'
+            analysis['suggestion'] = 'Missing closing brace. Check for unmatched { characters.'
+            analysis['auto_fixable'] = False
+            analysis['fix_type'] = 'editor'
+            return analysis
+
+        return analysis
+
+    def apply_auto_fix_to_tex(self, tex_file: str, tex_lines: list, analysis: dict,
+                              error_line: int = None) -> bool:
+        """Apply automatic fix to both TeX and TXT files"""
+        try:
+            fix_type = analysis.get('fix_type')
+            fixed_lines = tex_lines.copy()
+            fix_description = ""
+            txt_file = tex_file.replace('.tex', '.txt')
+
+            if fix_type == 'escape_ampersand':
+                # Escape ampersands outside tables in TeX file
+                in_table = False
+                fixed_count = 0
+                for i in range(len(fixed_lines)):
+                    line = fixed_lines[i]
+                    original_line = line
+
+                    if '\\begin{tabular}' in line or '\\begin{array}' in line:
+                        in_table = True
+                    if ('\\end{tabular}' in line or '\\end{array}' in line) and in_table:
+                        in_table = False
+
+                    if not in_table and '&' in line:
+                        new_line = line.replace('&', '\\&')
+                        new_line = new_line.replace('\\\\&', '\\&')
+                        if new_line != original_line:
+                            fixed_count += 1
+                            fixed_lines[i] = new_line
+
+                if fixed_count == 0 and error_line and error_line <= len(tex_lines):
+                    line = fixed_lines[error_line - 1]
+                    if '&' in line and '\\&' not in line:
+                        fixed_lines[error_line - 1] = line.replace('&', '\\&')
+                        fixed_count = 1
+
+                fix_description = f"Escaped {fixed_count} ampersand(s)"
+
+                # ALSO fix the TXT file - THIS IS CRITICAL
+                if os.path.exists(txt_file):
+                    with open(txt_file, 'r', encoding='utf-8') as f:
+                        txt_lines = f.readlines()
+
+                    fixed_txt_lines = []
+                    in_table = False
+                    for line in txt_lines:
+                        if '\\begin{tabular}' in line or '\\begin{array}' in line:
+                            in_table = True
+                        if ('\\end{tabular}' in line or '\\end{array}' in line) and in_table:
+                            in_table = False
+
+                        if not in_table and '&' in line:
+                            line = line.replace('&', '\\&')
+                            line = line.replace('\\\\&', '\\&')
+                        fixed_txt_lines.append(line)
+
+                    with open(txt_file, 'w', encoding='utf-8') as f:
+                        f.writelines(fixed_txt_lines)
+                    self.write(f"  ✓ Also fixed ampersands in TXT file\n", "green")
+
+            elif fix_type == 'add_item' and error_line:
+                # Add \item to lines starting with - or •
+                for i in range(max(0, error_line - 5), min(len(fixed_lines), error_line + 5)):
+                    line = fixed_lines[i]
+                    stripped = line.strip()
+                    if stripped and (stripped.startswith('-') or stripped.startswith('•')):
+                        fixed_lines[i] = '\\item ' + line.lstrip('-•').strip()
+                        fix_description = f"Added \\item on line {i+1}"
+                        break
+
+                # Also fix TXT file
+                if os.path.exists(txt_file):
+                    with open(txt_file, 'r', encoding='utf-8') as f:
+                        txt_lines = f.readlines()
+
+                    for i in range(max(0, error_line - 5), min(len(txt_lines), error_line + 5)):
+                        line = txt_lines[i]
+                        stripped = line.strip()
+                        if stripped and (stripped.startswith('-') or stripped.startswith('•')):
+                            txt_lines[i] = '\\item ' + line.lstrip('-•').strip()
+                            break
+
+                    with open(txt_file, 'w', encoding='utf-8') as f:
+                        f.writelines(txt_lines)
+                    self.write(f"  ✓ Also fixed TXT file\n", "green")
+
+            elif fix_type == 'add_package':
+                package = analysis.get('fix_data')
+                if package:
+                    new_lines = []
+                    package_added = False
+                    for line in fixed_lines:
+                        new_lines.append(line)
+                        if '\\begin{document}' in line and not package_added:
+                            new_lines.insert(-1, f'\\usepackage{{{package}}}\n')
+                            package_added = True
+                            fix_description = f"Added \\usepackage{{{package}}}"
+                    fixed_lines = new_lines
+
+            # Write the fixed TeX content back
+            with open(tex_file, 'w', encoding='utf-8') as f:
+                f.writelines(fixed_lines)
+
+            if fix_description:
+                self.write(f"✓ Auto-fix applied: {fix_description}\n", "green")
+
+            return True
+
+        except Exception as e:
+            self.write(f"Auto-fix failed: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def show_latex_log(self, tex_file: str):
+        """Display the LaTeX log file for debugging"""
+        log_file = tex_file.replace('.tex', '.log')
+        if os.path.exists(log_file):
+            dialog = ctk.CTkToplevel(self)
+            dialog.title("LaTeX Compilation Log")
+            dialog.geometry("800x600")
+            dialog.transient(self)
+
+            # Create text widget
+            text_widget = ctk.CTkTextbox(dialog, font=("Courier", 10))
+            text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+
+            # Load log content
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                log_content = f.read()
+
+            text_widget.insert('1.0', log_content)
+
+            # Add buttons
+            button_frame = ctk.CTkFrame(dialog)
+            button_frame.pack(fill="x", padx=10, pady=10)
+
+            ctk.CTkButton(
+                button_frame,
+                text="Copy to Clipboard",
+                command=lambda: self.copy_text_to_clipboard(log_content)
+            ).pack(side="left", padx=5)
+
+            ctk.CTkButton(
+                button_frame,
+                text="Close",
+                command=dialog.destroy
+            ).pack(side="right", padx=5)
+        else:
+            messagebox.showerror("Error", f"Log file not found: {log_file}")
+
+    def run_pdflatex_with_auto_packages(self, tex_file: str, timeout: int = 120) -> dict:
+        """Run pdflatex with automatic package installation and error capturing"""
+        result = {
+            'success': False,
+            'errors': [],
+            'warnings': [],
+            'packages_installed': False,
+            'installed_packages': []
+        }
+
+        try:
+            tex_dir = os.path.dirname(tex_file) or '.'
+            original_dir = os.getcwd()
+            os.chdir(tex_dir)
+
+            tex_file_abs = os.path.abspath(tex_file)
+
+            # Check if tex file exists
+            if not os.path.exists(tex_file_abs):
+                result['errors'].append(f"TeX file not found: {tex_file_abs}")
+                self.write(f"✗ TeX file not found: {tex_file_abs}\n", "red")
+                return result
+
+            # Run pdflatex and capture all output
+            self.write("\nCompiling with pdflatex...\n", "white")
+
+            cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+                   '-file-line-error', tex_file_abs]
+
+            all_errors = []
+
+            for i in range(3):  # Three passes for references
+                self.write(f"  Pass {i+1}/3...\n", "cyan")
+
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                    errors='replace'
+                )
+
+                # Capture output
+                pass_errors = []
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        # Look for errors
+                        if line.startswith('!'):
+                            self.write(line, "red")
+                            pass_errors.append(line)
+                            all_errors.append(line)
+                        elif 'Error' in line or 'error' in line:
+                            self.write(line, "red")
+                            pass_errors.append(line)
+                        elif 'Warning' in line:
+                            self.write(line, "yellow")
+                        elif 'no output PDF' in line:
+                            self.write(line, "red")
+
+                process.wait()
+
+                if process.returncode != 0:
+                    self.write(f"  ✗ Compilation failed on pass {i+1}\n", "red")
+                    result['errors'].extend(pass_errors)
+
+            # Check if PDF was created
+            pdf_file = tex_file_abs.replace('.tex', '.pdf')
+            if os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0:
+                result['success'] = True
+                self.write("\n✓ PDF generated successfully!\n", "green")
+            else:
+                self.write("\n✗ PDF file not found after compilation\n", "red")
+
+                # Show the log file for debugging
+                log_file = tex_file_abs.replace('.tex', '.log')
+                if os.path.exists(log_file):
+                    self.write("\n" + "="*60 + "\n", "yellow")
+                    self.write("LATEX LOG FILE (last 50 lines):\n", "yellow")
+                    self.write("="*60 + "\n", "yellow")
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        log_lines = f.readlines()
+                        # Show last 50 lines
+                        for line in log_lines[-50:]:
+                            self.write(line, "white")
+
+                    # Also check for specific errors in the log
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        log_content = f.read()
+
+                    # Look for common errors
+                    if 'Undefined control sequence' in log_content:
+                        self.write("\n🔍 Found 'Undefined control sequence' errors:\n", "red")
+                        for line in log_lines:
+                            if 'Undefined control sequence' in line:
+                                self.write(f"  {line.strip()}\n", "red")
+
+                    if '! LaTeX Error:' in log_content:
+                        self.write("\n🔍 Found LaTeX errors:\n", "red")
+                        for line in log_lines:
+                            if '! LaTeX Error:' in line:
+                                self.write(f"  {line.strip()}\n", "red")
+
+                    if 'Citation' in log_content and 'undefined' in log_content:
+                        self.write("\n🔍 Found undefined citations:\n", "yellow")
+                        for line in log_lines:
+                            if 'Citation' in line and 'undefined' in line:
+                                self.write(f"  {line.strip()}\n", "yellow")
+
+            os.chdir(original_dir)
+            return result
+
+        except Exception as e:
+            self.write(f"\nProcess error: {str(e)}\n", "red")
+            result['errors'].append(str(e))
+            return result
+
+    def validate_tex_file(self, tex_file: str) -> bool:
+        """Validate TeX file for common issues before compilation"""
+        try:
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            issues = []
+
+            # Check for unbalanced braces
+            open_braces = content.count('{')
+            close_braces = content.count('}')
+            if open_braces != close_braces:
+                issues.append(f"Unbalanced braces: {{={open_braces}, }}={close_braces}")
+
+            # Check for unmatched \begin and \end
+            begin_count = content.count('\\begin{')
+            end_count = content.count('\\end{')
+            if begin_count != end_count:
+                issues.append(f"Unmatched environments: \\begin={{={begin_count}, \\end={{={end_count}")
+
+            # Check for missing \end{document}
+            if '\\end{document}' not in content:
+                issues.append("Missing \\end{document}")
+
+            # Check for common problematic patterns
+            if '\\begin{frame}' in content and '\\end{frame}' not in content:
+                issues.append("Missing \\end{frame}")
+
+            if issues:
+                self.write("\n⚠ TeX VALIDATION ISSUES:\n", "yellow")
+                for issue in issues:
+                    self.write(f"  • {issue}\n", "yellow")
+                return False
+
+            self.write("\n✓ TeX validation passed\n", "green")
+            return True
+
+        except Exception as e:
+            self.write(f"Error validating TeX: {e}\n", "red")
+            return False
+
+    def check_latex_log_for_warnings(self, log_file: str) -> list:
+        """Check LaTeX log file for warnings"""
+        warnings = []
+        try:
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                log_content = f.read()
+
+            # Find all warnings
+            warning_patterns = [
+                r'LaTeX Warning: ([^\n]+)',
+                r'Package [^\n]+ Warning: ([^\n]+)',
+                r'Warning: ([^\n]+)'
+            ]
+
+            for pattern in warning_patterns:
+                matches = re.findall(pattern, log_content)
+                warnings.extend(matches)
+
+            # Remove duplicates
+            warnings = list(dict.fromkeys(warnings))
+
+            return warnings[:10]  # Return first 10 warnings
+
+        except Exception as e:
+            self.write(f"Error reading log file: {e}\n", "yellow")
+            return []
+
+    def install_latex_packages(self, packages: list) -> bool:
+        """
+        Automatically install missing LaTeX packages using tlmgr (TeX Live) or MiKTeX
+        Returns True if all packages were installed successfully
+        """
+        if not packages:
+            return True
+
+        self.write("\n" + "="*60 + "\n", "cyan")
+        self.write("AUTOMATIC PACKAGE INSTALLATION\n", "cyan")
+        self.write("="*60 + "\n", "cyan")
+        self.write(f"Missing packages: {', '.join(packages)}\n\n", "yellow")
+
+        # Detect LaTeX distribution
+        tex_distribution = self.detect_latex_distribution()
+
+        if not tex_distribution:
+            self.write("⚠ Could not detect LaTeX distribution\n", "red")
+            self.write("Please install missing packages manually:\n", "yellow")
+            for pkg in packages:
+                self.write(f"  - {pkg}\n", "yellow")
+            return False
+
+        self.write(f"Detected LaTeX distribution: {tex_distribution}\n", "green")
+
+        # Ask user for permission
+        if not messagebox.askyesno("Install Packages",
+                                   f"The following LaTeX packages are missing:\n\n"
+                                   f"{', '.join(packages)}\n\n"
+                                   f"Would you like to install them automatically?\n\n"
+                                   f"This requires an internet connection and may take a moment."):
+            self.write("Package installation cancelled by user\n", "yellow")
+            return False
+
+        success_count = 0
+
+        for pkg in packages:
+            self.write(f"\nInstalling package: {pkg}...\n", "white")
+
+            if tex_distribution == 'texlive':
+                success = self.install_texlive_package(pkg)
+            elif tex_distribution == 'miktex':
+                success = self.install_miktex_package(pkg)
+            else:
+                success = False
+
+            if success:
+                success_count += 1
+                self.write(f"  ✓ Installed {pkg}\n", "green")
+            else:
+                self.write(f"  ✗ Failed to install {pkg}\n", "red")
+
+        self.write(f"\nInstalled {success_count}/{len(packages)} packages\n",
+                   "green" if success_count == len(packages) else "yellow")
+
+        return success_count == len(packages)
+
+    def handle_missing_package_error(self, error_message: str) -> list:
+        """Parse error message to identify missing packages"""
+        import re
+
+        missing_packages = []
+
+        # Pattern for missing .sty files
+        sty_pattern = r'File `([^\.]+)\.sty\' not found'
+        matches = re.findall(sty_pattern, error_message)
+        missing_packages.extend(matches)
+
+        # Pattern for missing package errors
+        pkg_pattern = r'package\s+([^\s]+)\s+not found'
+        matches = re.findall(pkg_pattern, error_message, re.IGNORECASE)
+        missing_packages.extend(matches)
+
+        # Pattern for LaTeX Error: Missing package
+        missing_pattern = r'! LaTeX Error: Missing\s+([^\s]+)\s+package'
+        matches = re.findall(missing_pattern, error_message, re.IGNORECASE)
+        missing_packages.extend(matches)
+
+        return list(set(missing_packages))  # Remove duplicates
+
+    def detect_latex_distribution(self) -> str:
+        """Detect which LaTeX distribution is installed"""
+        # Check for TeX Live
+        if shutil.which('tlmgr'):
+            try:
+                result = subprocess.run(['tlmgr', '--version'],
+                                      capture_output=True, text=True, timeout=5)
+                if 'TeX Live' in result.stdout:
+                    return 'texlive'
+            except:
+                pass
+
+        # Check for MiKTeX
+        if sys.platform == 'win32':
+            miktex_paths = [
+                r'C:\Program Files\MiKTeX\miktex\bin\x64\miktex-console.exe',
+                r'C:\Program Files\MiKTeX\miktex\bin\x64\mpm.exe'
+            ]
+            for path in miktex_paths:
+                if os.path.exists(path):
+                    return 'miktex'
+        else:
+            if shutil.which('miktex'):
+                return 'miktex'
+
+        # Check for MacTeX (uses tlmgr)
+        if sys.platform == 'darwin':
+            if shutil.which('tlmgr'):
+                return 'texlive'
+
+        return None
+
+    def install_texlive_package(self, package: str) -> bool:
+        """Install a package using TeX Live's tlmgr"""
+        try:
+            # First, update package database
+            self.write("    Updating package database...\n", "cyan")
+            subprocess.run(['tlmgr', 'update', '--list'],
+                          capture_output=True, timeout=30, check=False)
+
+            # Install the package
+            self.write(f"    Installing {package}...\n", "cyan")
+            result = subprocess.run(['tlmgr', 'install', '--reinstall', package],
+                                   capture_output=True, text=True, timeout=120)
+
+            if result.returncode == 0:
+                return True
+            else:
+                # Try with sudo if needed
+                if 'permission' in result.stderr.lower() or 'cannot' in result.stderr.lower():
+                    self.write("    Need permissions, trying with sudo...\n", "yellow")
+                    result = subprocess.run(['sudo', 'tlmgr', 'install', package],
+                                           capture_output=True, text=True, timeout=120)
+                    return result.returncode == 0
+                return False
+
+        except subprocess.TimeoutExpired:
+            self.write("    ✗ Installation timed out\n", "red")
+            return False
+        except Exception as e:
+            self.write(f"    ✗ Error: {str(e)}\n", "red")
+            return False
+
+    def install_miktex_package(self, package: str) -> bool:
+        """Install a package using MiKTeX's package manager"""
+        try:
+            if sys.platform == 'win32':
+                # Use MiKTeX Console command line
+                miktex_console = r'C:\Program Files\MiKTeX\miktex\bin\x64\miktex-console.exe'
+                if os.path.exists(miktex_console):
+                    result = subprocess.run(
+                        [miktex_console, 'install', package],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    return result.returncode == 0
+
+                # Alternative: Use mpm (MiKTeX Package Manager)
+                mpm = r'C:\Program Files\MiKTeX\miktex\bin\x64\mpm.exe'
+                if os.path.exists(mpm):
+                    result = subprocess.run(
+                        [mpm, '--install', package],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    return result.returncode == 0
+            else:
+                # Linux/macOS MiKTeX
+                if shutil.which('miktex'):
+                    result = subprocess.run(
+                        ['miktex', 'packages', 'install', package],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    return result.returncode == 0
+
+            return False
+
+        except subprocess.TimeoutExpired:
+            self.write("    ✗ Installation timed out\n", "red")
+            return False
+        except Exception as e:
+            self.write(f"    ✗ Error: {str(e)}\n", "red")
+            return False
 
     def add_color_info_to_output(self, tex_content):
         """Add color information and XOR rules to TeX output"""
@@ -12688,7 +17493,7 @@ Created by {self.__author__}
             self.update_slide_list()
 
     def save_current_slide(self):
-        """Save current slide data while preserving hidden status"""
+        r"""Save current slide data while preserving hidden status and \None handling"""
         if not hasattr(self, 'slides') or not self.slides:
             self.slides = []
             self.current_slide_index = -1
@@ -12697,6 +17502,17 @@ Created by {self.__author__}
         if self.current_slide_index < 0:
             title = self.title_entry.get().strip()
             media = self.media_entry.get().strip()
+
+            # CRITICAL FIX: Handle \None properly when saving new slide
+            media_masked = False
+            if media.startswith('%'):
+                media_masked = True
+                media = media.lstrip('%').lstrip()
+
+            # If media is "\None" or empty, store as empty string
+            if media == "\\None" or not media:
+                media = ""
+                # Preserve masking state even for empty media
 
             # Get content with hidden status tracking
             content_with_hidden = []
@@ -12750,11 +17566,6 @@ Created by {self.__author__}
                     if is_hidden:
                         hidden_note_indices.append(len(notes_with_hidden) - 1)
 
-            # Check if media is masked
-            media_masked = media.startswith('%') if media else False
-            if media_masked:
-                media = media.lstrip('%').lstrip()
-
             if title or media or content_with_hidden or notes_with_hidden:
                 new_slide = {
                     'title': title or 'New Slide',
@@ -12775,10 +17586,16 @@ Created by {self.__author__}
         title = self.title_entry.get().strip()
         media = self.media_entry.get().strip()
 
-        # Check if media is masked
-        media_masked = media.startswith('%') if media else False
-        if media_masked:
+        # CRITICAL FIX: Handle \None properly when saving existing slide
+        media_masked = False
+        if media.startswith('%'):
+            media_masked = True
             media = media.lstrip('%').lstrip()
+
+        # If media is "\None" or empty, store as empty string
+        if media == "\\None" or not media:
+            media = ""
+            # Preserve masking state even for empty media
 
         # Get content with hidden status tracking
         content_with_hidden = []
@@ -12841,6 +17658,12 @@ Created by {self.__author__}
                 '_fully_masked': self.slides[self.current_slide_index].get('_fully_masked', False)
             }
 
+            # Log the save for debugging
+            logger.info(f"Saved slide {self.current_slide_index + 1}: title='{title[:50]}', "
+                       f"media='{media[:30] if media else 'None'}', "
+                       f"media_masked={media_masked}, content_lines={len(content_with_hidden)}, "
+                       f"notes_lines={len(notes_with_hidden)}")
+
     def mask_line_in_editor(self, event=None):
         """Mask/unmask the current line in the focused editor (Ctrl+Delete in editors)"""
         focused_widget = self.focus_get()
@@ -12892,7 +17715,7 @@ Created by {self.__author__}
                 clean_line = re.sub(r'^\s*%\s*', '', line_content)
                 editor.delete(line_start, line_end)
                 editor.insert(line_start, clean_line)
-                self.write(f"✓ Unmasked line in {editor_name} editor\n", "green")
+                self.write(f"✓ Unmasked line {line_num} in {editor_name} editor\n", "green")
 
                 # Update the hidden indices for this slide
                 if 0 <= self.current_slide_index < len(self.slides):
@@ -12915,7 +17738,7 @@ Created by {self.__author__}
                 masked_line = f"{indent}% {rest}"
                 editor.delete(line_start, line_end)
                 editor.insert(line_start, masked_line)
-                self.write(f"✓ Masked line in {editor_name} editor\n", "yellow")
+                self.write(f"✓ Masked line {line_num} in {editor_name} editor\n", "yellow")
 
                 # Update the hidden indices for this slide
                 if 0 <= self.current_slide_index < len(self.slides):
@@ -12941,8 +17764,17 @@ Created by {self.__author__}
             else:
                 self.notes_redo_stack.clear()
 
-            # Preserve cursor position
-            editor.mark_set("insert", f"{line_num}.0")
+            # FIX: Move to the next line WITHOUT skipping
+            # Get the next line number
+            next_line_num = line_num + 1
+            # Check if next line exists
+            next_line_end = editor.index(f"{next_line_num}.end")
+            if next_line_end and next_line_end != editor.index("end"):
+                # Move cursor to the beginning of the next line
+                editor.mark_set("insert", f"{next_line_num}.0")
+            else:
+                # Stay at current line if it's the last line
+                editor.mark_set("insert", f"{line_num}.0")
 
             # Update syntax highlighting
             if hasattr(self, 'syntax_highlighter') and self.syntax_highlighter.active:
@@ -13310,7 +18142,7 @@ Created by {self.__author__}
         try:
             logger.info(f"Loading file: {filename}")
 
-           # CRITICAL: Set current_file BEFORE any other operations
+            # CRITICAL: Set current_file BEFORE any other operations
             self.current_file = filename
             # Update working directory
             global working_folder
@@ -13396,6 +18228,7 @@ Created by {self.__author__}
                 media_masked = False
                 found_media = False
                 content_line_index = 0
+                is_first_content_line = True  # Track first line of content block
 
                 for line in slide_lines:
                     # Skip the title line itself
@@ -13406,6 +18239,7 @@ Created by {self.__author__}
                     if re.match(r'^%?\s*\\begin{Content}\s*$', line):
                         in_content = True
                         in_notes = False
+                        is_first_content_line = True  # Reset for new content block
                         continue
                     elif re.match(r'^%?\s*\\end{Content}\s*$', line):
                         in_content = False
@@ -13436,21 +18270,33 @@ Created by {self.__author__}
                             # First non-empty line is media
                             if not found_media:
                                 found_media = True
-                                media = clean_line.strip()
-                                media_masked = is_masked
-                                if is_masked and media != "\\None":
-                                    total_masked_lines += 1
-                                logger.info(f"  Media found: '{media}' (masked={media_masked})")
+                                media_value = clean_line.strip()
+
+                                # CRITICAL FIX: Handle \None marker properly
+                                if media_value == "\\None":
+                                    media = ""  # Empty string for no media
+                                    media_masked = is_masked
+                                    logger.info(f"  Media: None (explicit \\None marker, masked={media_masked})")
+                                else:
+                                    media = media_value
+                                    media_masked = is_masked
+                                    if is_masked and media != "\\None":
+                                        total_masked_lines += 1
+                                    logger.info(f"  Media found: '{media}' (masked={media_masked})")
+
+                                is_first_content_line = False
                             else:
                                 # Regular content line
-                                content_lines.append(clean_line.rstrip())
-                                if is_masked:
-                                    hidden_content_indices.append(content_line_index)
-                                    total_masked_lines += 1
-                                    logger.info(f"  Masked content line {content_line_index + 1}: '{clean_line[:50]}'")
-                                else:
-                                    logger.info(f"  Visible content line {content_line_index + 1}: '{clean_line[:50]}'")
-                                content_line_index += 1
+                                # Skip if it's an empty line that was just a marker
+                                if clean_line.strip() or (is_masked and clean_line.strip()):
+                                    content_lines.append(clean_line.rstrip())
+                                    if is_masked:
+                                        hidden_content_indices.append(content_line_index)
+                                        total_masked_lines += 1
+                                        logger.info(f"  Masked content line {content_line_index + 1}: '{clean_line[:50]}'")
+                                    else:
+                                        logger.info(f"  Visible content line {content_line_index + 1}: '{clean_line[:50]}'")
+                                    content_line_index += 1
 
                     # Process notes lines - PRESERVE EVERY LINE including masked ones
                     if in_notes:
@@ -13468,9 +18314,11 @@ Created by {self.__author__}
                                 total_masked_lines += 1
                                 logger.info(f"  Masked note line {len(notes_lines)}: '{clean_line[:50]}'")
 
-                # Clean up media - if it's "\\None", set to empty string
-                if media == "\\None":
+                # If no media was found, set to empty string
+                if not found_media:
                     media = ""
+                    media_masked = False
+                    logger.info(f"  No media found in slide")
 
                 # Create slide with preserved masking
                 slide = {
@@ -13485,7 +18333,7 @@ Created by {self.__author__}
                 }
 
                 self.slides.append(slide)
-                logger.info(f"Slide {len(self.slides)}: '{title[:50]}' (media={media[:30] if media else 'None'}, "
+                logger.info(f"Slide {len(self.slides)}: '{title[:50]}' (media='{media[:30] if media else 'None'}', "
                            f"fully_masked={is_fully_masked}, content_lines={len(content_lines)}, "
                            f"hidden_content={len(hidden_content_indices)})")
 
@@ -14713,8 +19561,22 @@ Created by {self.__author__}
 
         return latex
 
+    def balance_braces(self, text: str) -> str:
+        """Balance braces in a string to prevent LaTeX errors"""
+        if not text:
+            return text
 
+        open_count = text.count('{')
+        close_count = text.count('}')
 
+        if open_count > close_count:
+            text += '}' * (open_count - close_count)
+        elif close_count > open_count:
+            # Remove extra closing braces from the end
+            while text.endswith('}') and text.count('}') > text.count('{'):
+                text = text[:-1]
+
+        return text
 
     def clean_frame_title_for_latex(self, title: str) -> str:
         """Clean frame title to prevent LaTeX compilation errors"""
@@ -15630,197 +20492,140 @@ def import_required_packages():
 
 def convert_beamer_tex_to_simple_text(tex_file_path):
     """
-    Convert Beamer .tex file to simple text format for BeamerSlideGenerator
-    Returns path to the generated text file
+    Convert Beamer .tex file to simple text format with error tracking.
+    Returns tuple (output_path, errors_list) where errors_list contains
+    (line_number, error_message, context) for each error found.
     """
     import re
-    import os
     from pathlib import Path
+
+    errors = []
+
+    def add_error(line_num, error_msg, context_line):
+        """Record an error with line number for later editing"""
+        errors.append({
+            'line': line_num,
+            'message': error_msg,
+            'context': context_line
+        })
+        print(f"  ⚠ Line {line_num}: {error_msg}")
 
     try:
         with open(tex_file_path, 'r', encoding='utf-8') as f:
-            tex_content = f.read()
+            lines = f.readlines()
+            tex_content = ''.join(lines)
 
         # Create output path
         tex_path = Path(tex_file_path)
         output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
 
-        def extract_complete_tikz_blocks(text):
-            """Extract complete TikZ blocks including surrounding LaTeX commands"""
-            tikz_blocks = []
+        # Validate the TeX content line by line
+        brace_stack = []
+        in_math = False
+        dollar_count = 0
 
-            # Pattern to match TikZ with possible surrounding commands like \scalebox, \centering, etc.
-            # This captures things like: \centering\begin{tikzpicture}...\end{tikzpicture}
-            tikz_pattern = r'((?:\\centering\s*)?(?:\\scalebox\{[^}]*\}\s*\{)?(?:\\begin\{center\})?(?:\\begin\{tikzpicture\}.*?\\end\{tikzpicture\})(?:\\end\{center\})?(?:\})?)'
-            tikz_matches = list(re.finditer(tikz_pattern, text, re.DOTALL))
-
-            # Replace from last to first to avoid index issues
-            for i, match in enumerate(reversed(tikz_matches)):
-                tikz_code = match.group(1).strip()
-                # Store the full TikZ block
-                tikz_blocks.append(tikz_code)
-                # Replace with unique placeholder
-                placeholder = f"{{TIKZ_BLOCK_{len(tikz_matches)-i-1}}}"
-                text = text[:match.start()] + placeholder + text[match.end():]
-
-            return text, tikz_blocks
-
-        def clean_text_keeping_structure(text):
-            """Clean LaTeX text while keeping structure"""
-            if not text:
-                return ""
-
-            # Remove LaTeX comments
-            text = re.sub(r'%.*$', '', text, flags=re.MULTILINE)
-
-            # Preserve \file commands
-            if '\\includegraphics' in text:
-                # Convert \includegraphics to \file
-                text = re.sub(r'\\includegraphics(?:\[[^\]]*\])?\{([^}]*)\}', r'\\file \1', text)
-
-            # Remove specific LaTeX environments we'll handle separately
-            text = re.sub(r'\\begin\{center\}', r'\\centering\n', text)
-            text = re.sub(r'\\end\{center\}', r'', text)
-
-            # Clean up multiple newlines
-            text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
-
-            return text.strip()
-
-        def extract_and_clean_content(frame_content):
-            """Extract and clean slide content"""
-            if not frame_content:
-                return []
-
-            # First, extract TikZ blocks with their surrounding LaTeX
-            content_with_placeholders, tikz_blocks = extract_complete_tikz_blocks(frame_content)
-
-            # Extract notes separately if present
-            notes_content = ""
-            if '\\note{' in content_with_placeholders:
-                # This is simplified - you might need better note extraction
-                note_match = re.search(r'\\note\{(.*?)\}', content_with_placeholders, re.DOTALL)
-                if note_match:
-                    notes_content = note_match.group(1)
-                    # Remove notes from main content
-                    content_with_placeholders = content_with_placeholders[:note_match.start()]
-
-            # Clean the remaining content
-            cleaned_content = clean_text_keeping_structure(content_with_placeholders)
-
-            # Restore TikZ blocks
-            for i, tikz_block in enumerate(tikz_blocks):
-                placeholder = f"{{TIKZ_BLOCK_{i}}}"
-                cleaned_content = cleaned_content.replace(placeholder, f"\n{tikz_block}\n")
-
-            # Split into lines and clean
-            content_lines = []
-            for line in cleaned_content.split('\n'):
-                line = line.strip()
-                if line:
-                    # Handle itemize/enumerate
-                    if '\\item' in line:
-                        # Replace \item with -
-                        line = re.sub(r'\\item\s*', '- ', line)
-                        # Remove \textbf{...} but keep content
-                        line = re.sub(r'\\textbf\{([^}]*)\}', r'\1', line)
-                    content_lines.append(line)
-
-            return content_lines, notes_content
-
-        def process_notes(notes_content):
-            """Process LaTeX notes into simple format"""
-            notes_lines = []
-            if not notes_content:
-                return notes_lines
-
-            # Simple processing - convert \item to •
-            lines = notes_content.split('\n')
-            for line in lines:
-                line = line.strip()
-                if line.startswith('\\item'):
-                    # Clean \item command
-                    line = re.sub(r'\\item\s*', '• ', line)
-                    # Handle nested items
-                    if '\\begin{itemize}' in line:
-                        continue  # Skip begin commands
-                    if '\\end{itemize}' in line:
-                        continue  # Skip end commands
-                    if line:
-                        notes_lines.append(line)
-
-            return notes_lines
-
-        # Parse the TeX file
-        slides = []
-
-        # Extract document content
-        doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', tex_content, re.DOTALL)
-        if not doc_match:
-            raise ValueError("No document body found in TeX file")
-
-        document_content = doc_match.group(1)
-
-        # Find frames
-        frame_pattern = r'\\begin\{frame\}(.*?)\\end\{frame\}'
-        frame_matches = re.finditer(frame_pattern, document_content, re.DOTALL)
-
-        slide_count = 0
-        for frame_match in frame_matches:
-            slide_count += 1
-            frame_content = frame_match.group(1)
-
-            # Skip title page frames
-            if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
+        for i, line in enumerate(lines, 1):
+            line_stripped = line.strip()
+            if not line_stripped or line_stripped.startswith('%'):
                 continue
 
-            # Extract title
-            title = f"Slide {slide_count}"
-            title_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
-            if title_match:
-                title = title_match.group(1)
+            # Check for unbalanced braces
+            for char in line:
+                if char == '{':
+                    brace_stack.append(('{', i))
+                elif char == '}':
+                    if brace_stack:
+                        brace_stack.pop()
+                    else:
+                        add_error(i, "Unmatched closing brace '}'", line_stripped[:80])
+
+            # Check for unbalanced math mode
+            dollar_count += line.count('$') - line.count('\\$')
+            if dollar_count % 2 != 0:
+                add_error(i, "Unbalanced math mode (odd number of $)", line_stripped[:80])
+
+        if brace_stack:
+            add_error(brace_stack[0][1], f"Unclosed brace(s): {len(brace_stack)} remaining", "")
+
+        # Extract the document body
+        doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', tex_content, re.DOTALL)
+        if not doc_match:
+            add_error(1, "No \\begin{document} found in TeX file", "")
+            raise ValueError("No document body found in TeX file")
+
+        document_body = doc_match.group(1)
+
+        # Find all frames with line number tracking
+        frame_pattern = r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end\{frame\}'
+        frames = list(re.finditer(frame_pattern, document_body, re.DOTALL))
+
+        if not frames:
+            add_error(1, "No frames found in document", "")
+            return None
+
+        slides = []
+        slide_count = 0
+
+        for frame_match in frames:
+            slide_count += 1
+            title = frame_match.group(1) or f"Slide {slide_count}"
+            subtitle = frame_match.group(2) or ""
+            frame_content = frame_match.group(3).strip()
+
+            # Skip title page
+            if '\\titlepage' in frame_content:
+                continue
+
+            # Build the slide content exactly as it appears
+            content_lines = []
+
+            if subtitle:
+                content_lines.append(f"\\textbf{{{title}}} — {subtitle}")
             else:
-                # Check for title in frame options
-                title_match = re.match(r'^\s*\{([^}]+)\}', frame_content.strip())
-                if title_match:
-                    title = title_match.group(1)
+                content_lines.append(f"\\textbf{{{title}}}")
 
-            # Extract and clean content
-            content_lines, raw_notes = extract_and_clean_content(frame_content)
+            # Add frame content preserving all LaTeX
+            for line in frame_content.split('\n'):
+                line = line.strip()
+                if line:
+                    content_lines.append(line)
 
-            # Process notes
-            notes_lines = process_notes(raw_notes)
+            slides.append({
+                'title': title,
+                'content': content_lines,
+                'notes': []
+            })
 
-            # Only add slides with content
-            if content_lines:
-                slides.append({
-                    'title': title,
-                    'content': content_lines,
-                    'notes': notes_lines
-                })
-
-        # Write to output file in IDE format
+        # Write to output file
         with open(output_path, 'w', encoding='utf-8') as f:
             for slide in slides:
                 f.write(f"\\title {slide['title']}\n")
                 f.write("\\begin{Content}\n")
+                f.write("\\None\n")
                 for content_line in slide['content']:
-                    f.write(f"{content_line}\n")
+                    # Escape any problematic characters for the IDE format
+                    escaped_line = content_line.replace('\\&', '&')  # Keep as is
+                    f.write(f"{escaped_line}\n")
                 f.write("\\end{Content}\n")
-                if slide['notes']:
-                    f.write("\\begin{Notes}\n")
-                    for note_line in slide['notes']:
-                        f.write(f"{note_line}\n")
-                    f.write("\\end{Notes}\n")
-                f.write("\n")  # Slide separator
+                f.write("\\begin{Notes}\n")
+                f.write("% No notes for this slide\n")
+                f.write("\\end{Notes}\n")
+                f.write("\n")
 
-        return str(output_path)
+        print(f"✓ Converted {len(slides)} slides from {tex_file_path}")
+
+        if errors:
+            print(f"\n⚠ Found {len(errors)} issue(s) during conversion:")
+            for err in errors:
+                print(f"   Line {err['line']}: {err['message']}")
+
+        return output_path, errors
 
     except Exception as e:
         print(f"Error converting TeX file: {e}")
         import traceback
         traceback.print_exc()
-        return None
+        return None, []
 
 
 def update_installation():

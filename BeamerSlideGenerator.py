@@ -102,7 +102,7 @@ def generate_preview_frame(filepath, output_path=None):
         return None
 
 def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
-    """Returns complete Beamer preamble including notes support"""
+    """Returns complete Beamer preamble including notes support and custom layout commands"""
 
     # Clean titles to prevent brace issues
     def clean_text(text):
@@ -146,6 +146,8 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{xifthen}
 \usepackage{xcolor}
 \usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{grffile}
 \geometry{paperwidth=128mm,paperheight=96mm}
 
 % Load TikZ libraries FIRST
@@ -225,6 +227,171 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
 \newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textbf{#1}}}
 \newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textbf{#1}}}
+
+% ========== LAYOUT COMMANDS - Check if already defined ==========
+% Split layout: image on left, text on right
+\ifcsname split\endcsname\else
+\newcommand{\split}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.45\textwidth}
+            \begin{center}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{center}
+        \end{column}
+        \begin{column}{0.5\textwidth}
+            #2
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% PIP layout: text on left, small image on right
+\ifcsname pip\endcsname\else
+\newcommand{\pip}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.68\textwidth}
+            #2
+        \end{column}
+        \begin{column}{0.28\textwidth}
+            \vspace{1em}
+            \includegraphics[width=\textwidth,keepaspectratio]{#1}
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% Fullframe layout: image takes entire frame
+\ifcsname ff\endcsname\else
+\newcommand{\ff}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+    \begin{center}
+        \vfill
+        \textcolor{white}{\textbf{Full Frame Image}}
+        \vfill
+    \end{center}
+}
+\fi
+
+% Watermark layout: image as background watermark
+\ifcsname wm\endcsname\else
+\newcommand{\wm}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[opacity=0.15] at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+}
+\fi
+
+% Highlight layout: image with highlighted content overlay
+\ifcsname hl\endcsname\else
+\newcommand{\hl}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.6\textwidth}
+            \includegraphics[width=\textwidth,keepaspectratio]{#1}
+        \end{column}
+        \begin{column}{0.36\textwidth}
+            \colorbox{yellow!20}{%
+                \begin{minipage}{\textwidth}
+                    #2
+                \end{minipage}%
+            }
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% Background layout: image as background with content overlay
+\ifcsname bg\endcsname\else
+\newcommand{\bg}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[opacity=0.3] at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+}
+\fi
+
+% Top-bottom layout: image at top, content at bottom
+\ifcsname tb\endcsname\else
+\newcommand{\tb}[2]{%
+    \begin{center}
+        \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+    \end{center}
+    \vspace{0.5em}
+    #2
+}
+\fi
+
+% Overlay layout: image with overlaid text blocks
+\ifcsname ol\endcsname\else
+\newcommand{\ol}[1]{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node at (current page.center) {%
+            \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+        };
+    \end{tikzpicture}%
+}
+\fi
+
+% Corner layout: image in corner
+\ifcsname corner\endcsname\else
+\newcommand{\corner}[2]{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node[anchor=south east] at (current page.south east) {%
+            \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+        };
+    \end{tikzpicture}%
+    #2
+}
+\fi
+
+% Mosaic layout: grid of images
+\ifcsname mosaic\endcsname\else
+\newcommand{\mosaic}[2]{%
+    \begingroup
+    \def\mosaic@params{#1}%
+    \def\mosaic@images{#2}%
+    \pgfmathsetmacro{\mosaic@rows}{{\mosaic@params}[0]}%
+    \pgfmathsetmacro{\mosaic@cols}{{\mosaic@params}[2]}%
+    \begin{center}
+    \begin{tabular}{*{\mosaic@cols}{c}}
+    \hline
+    \mosaic@process
+    \hline
+    \end{tabular}
+    \end{center}
+    \endgroup
+}
+
+\def\mosaic@process{%
+    \mosaic@process@helper\mosaic@images,\@empty
+}
+
+\def\mosaic@process@helper#1,#2\@empty{%
+    \ifx\@empty#2\@empty
+        \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
+    \else
+        \includegraphics[width=0.3\textwidth,keepaspectratio]{#1} &
+        \def\mosaic@remaining{#2}%
+        \mosaic@process@next
+    \fi
+}
+
+\def\mosaic@process@next{%
+    \mosaic@process@helper\mosaic@remaining,\@empty
+}
+\fi
 
 % Basic theme setup
 \usetheme{Madrid}
@@ -2498,201 +2665,25 @@ def sanitize_latex_content(content_line):
     return content_line
 
 def process_input_file(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
-    """Process input file to convert to TeX format with proper slide navigation"""
+    """
+    Process input file - PASS THROUGH WITHOUT MODIFICATION
+    The input file is already in the correct format for Beamer.
+    """
     processed = 0
     failed = 0
     errors = []
 
     try:
-        with open(file_path, 'r') as f:
-            lines = f.readlines()
+        # Read the entire input file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
 
-        # Get preamble information first
-        has_preamble, preamble_lines, content_lines, has_titlepage, has_maketitle = detect_preamble(lines)
+        # Write directly to output - NO MODIFICATIONS
+        with open(output_filename, 'w', encoding='utf-8') as outfile:
+            outfile.write(content)
 
-        with open(output_filename, 'w') as outfile:
-            # Write preamble with fixes
-            if has_preamble:
-                outfile.writelines(preamble_lines)
-
-                # Add critical LaTeX commands to prevent compilation errors
-                outfile.write("\n% Critical fixes to prevent compilation errors\n")
-                outfile.write("\\overfullrule=0pt  % Don't show overfull box warnings\n")
-                outfile.write("\\sloppy  % Allow LaTeX to be more lenient with line breaks\n")
-                outfile.write("\\tolerance=9999  % Increase tolerance for line breaking\n")
-                outfile.write("\\emergencystretch=3em  % Allow extra stretch for emergency breaks\n")
-                outfile.write("\\hfuzz=2pt  % Increase horizontal fuzz tolerance\n")
-                outfile.write("\\raggedright  % Prevent overfull boxes by allowing ragged right margins\n")
-
-                if '\\newcommand{\\spotlight}' not in ''.join(preamble_lines):
-                    outfile.write(generate_special_commands())
-                if not has_maketitle:
-                    outfile.write("\\maketitle\n")
-                if not has_titlepage:
-                    outfile.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
-            else:
-                # USE get_beamer_preamble() INSTEAD OF HARDCODED PREAMBLE
-                if presentation_info is None:
-                    # Default presentation info
-                    presentation_info = {
-                        'title': 'Presentation',
-                        'subtitle': '',
-                        'author': 'Author',
-                        'institution': '',
-                        'short_institute': '',
-                        'date': r'\today'
-                    }
-
-                # Generate proper preamble using get_beamer_preamble()
-                from BeamerSlideGenerator import get_beamer_preamble
-                proper_preamble = get_beamer_preamble(
-                    title=presentation_info.get('title', 'Presentation'),
-                    subtitle=presentation_info.get('subtitle', ''),
-                    author=presentation_info.get('author', 'Author'),
-                    institution=presentation_info.get('institution', ''),
-                    short_institute=presentation_info.get('short_institute', ''),
-                    date=presentation_info.get('date', r'\today')
-                )
-
-                # Write the proper preamble
-                outfile.write(proper_preamble)
-
-                # Add the critical fixes after the preamble
-                outfile.write("\n% Critical fixes to prevent compilation errors\n")
-                outfile.write("\\overfullrule=0pt  % Don't show overfull box warnings\n")
-                outfile.write("\\sloppy  % Allow LaTeX to be more lenient with line breaks\n")
-                outfile.write("\\tolerance=9999  % Increase tolerance for line breaking\n")
-                outfile.write("\\emergencystretch=3em  % Allow extra stretch for emergency breaks\n")
-                outfile.write("\\hfuzz=2pt  % Increase horizontal fuzz tolerance\n")
-                outfile.write("\\raggedright  % Prevent overfull boxes by allowing ragged right margins\n")
-
-            # Rest of the function remains the same...
-            i = 0
-            current_frame_notes = []
-            current_frame_content = []
-            current_frame_title = None
-            current_media = None
-            in_content_block = False
-            in_notes_block = False
-            end_document_seen = False  # NEW: Track if we've seen \end{document}
-            media_directive_extracted = False  # NEW: Track if we've extracted media directive
-
-            while i < len(content_lines):
-                line = content_lines[i].strip()
-
-                # Handle document end - CHANGED: Don't write it yet, just mark that we've seen it
-                if line.startswith('\\end{document}'):
-                    # Just mark that we've seen it and skip it
-                    end_document_seen = True
-                    i += 1
-                    continue  # Skip to next line
-
-                # Handle new frame - FIXED: Clean the title properly
-                if line.startswith('\\title'):
-                    # Process previous frame if exists
-                    if should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
-                        process_frame(outfile, current_frame_title, current_frame_content,
-                                   current_frame_notes, current_media)
-                        processed += 1
-
-                    # Start new frame - FIX: Properly extract and clean title
-                    title_content = line[6:].strip()  # Remove '\title' prefix
-
-                    # CRITICAL FIX: Remove all braces from titles for LaTeX compilation
-                    if title_content:
-                        # Remove all { and } from titles
-                        title_content = title_content.replace('{', '').replace('}', '')
-                        # Also remove escaped braces
-                        title_content = title_content.replace('\\{', '').replace('\\}', '')
-                        # Remove any leading/trailing whitespace
-                        title_content = title_content.strip()
-
-                    current_frame_title = title_content
-                    current_frame_content = []
-                    current_frame_notes = []
-                    current_media = None
-                    media_directive_extracted = False  # Reset for new frame
-
-                # Handle Content blocks
-                elif line.startswith('\\begin{Content}'):
-                    in_content_block = True
-                    media_directive_extracted = False  # Reset extraction flag
-                    if len(line) > len('\\begin{Content}'):
-                        media_part = line[len('\\begin{Content}'):].strip()
-                        if media_part:
-                            current_media = media_part
-                            media_directive_extracted = True
-
-                elif line.startswith('\\end{Content}'):
-                    in_content_block = False
-
-                # Handle Notes blocks
-                elif line.startswith('\\begin{Notes}'):
-                    in_notes_block = True
-                elif line.startswith('\\end{Notes}'):
-                    in_notes_block = False
-
-                # Process content - FIXED: Handle media directives on separate lines
-                elif in_content_block:
-                    if line.strip():  # Only add non-empty lines
-                        # FIXED: Check if this line is a media directive
-                        # Look for layout directives like \ff, \pip, \split, etc.
-                        layout_directives = [
-                            '\\ff', '\\wm', '\\pip', '\\split', '\\hl',
-                            '\\bg', '\\tb', '\\ol', '\\corner', '\\mosaic',
-                            '\\play', '\\file', '\\None'
-                        ]
-
-                        # Check if line starts with any media directive
-                        is_media_directive = any(line.strip().startswith(directive) for directive in layout_directives)
-
-                        if is_media_directive and not media_directive_extracted:
-                            # This is a media directive on its own line
-                            current_media = line.strip()
-                            media_directive_extracted = True
-                        else:
-                            # FIX: Clean the content line of problematic braces
-                            clean_line = line.strip()
-                            # Remove problematic braces from content items too
-                            if '- ' in clean_line[:2]:
-                                # For bullet points, clean after the dash
-                                prefix = clean_line[:2]
-                                content_part = clean_line[2:]
-                                # Remove braces from content
-                                content_part = content_part.replace('{', '').replace('}', '')
-                                clean_line = prefix + content_part
-                            current_frame_content.append(clean_line)
-
-                # Process notes - FIXED: Keep braces for LaTeX commands
-                elif in_notes_block:
-                    if line.strip() and not line.startswith('%'):
-                        clean_note = line.strip()
-                        # FIXED: Don't remove braces from notes - they're needed for LaTeX commands
-                        # Only remove braces if it's a URL to format it properly
-                        if clean_note.startswith(('http://', 'https://', 'www')):
-                            # For URLs, we need to remove braces to format them correctly
-                            clean_url = clean_note.replace('{', '').replace('}', '')
-                            current_frame_notes.append('\\begin{itemize}')
-                            current_frame_notes.append(format_url_note(clean_url))
-                            current_frame_notes.append('\\end{itemize}')
-                        else:
-                            # For regular notes, keep all braces to preserve LaTeX commands
-                            current_frame_notes.append(clean_note)
-
-                i += 1
-
-            # Process the last frame if it exists
-            if should_process_frame(current_frame_title, current_frame_content, current_media, current_frame_notes):
-                process_frame(outfile, current_frame_title, current_frame_content,
-                           current_frame_notes, current_media)
-                processed += 1
-
-            # NEW: Write \end{document} only at the very end
-            if end_document_seen:
-                outfile.write("\\end{document}\n")
-            else:
-                # If no \end{document} was found in the input, add it
-                outfile.write("\\end{document}\n")
+        # Count slides (approximate)
+        processed = content.count('\\title')
 
         return processed, failed, errors
 
@@ -2701,7 +2692,9 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         errors.append(error_msg)
         if ide_callback:
             ide_callback("error", {'message': error_msg})
-        return processed, failed, errors
+        import traceback
+        traceback.print_exc()
+        return 0, 1, errors
 
 def should_process_frame(title, content, media, notes):
     """
