@@ -3386,6 +3386,134 @@ class MediaURLDialog(ctk.CTkToplevel):
     def cancel(self):
         self.destroy()
 
+# ============================================================================
+# Bibliography Configuration
+# ============================================================================
+
+class BibliographyConfig:
+    """Configuration settings for bibliography handling."""
+
+    def __init__(self):
+        self.items_per_page = 12  # References per page (adjustable)
+        self.enable_back_references = True
+        self.enable_navigation = True
+        self.preserve_original_numbering = True
+        self.use_allowframebreaks_fallback = True
+        self.back_reference_format = "Cited on slides: {slides}"
+        self.max_back_references_display = 10  # Show first 10, then "+X more"
+
+    def get_back_reference_text(self, slide_numbers: list) -> str:
+        """Generate formatted back-reference text."""
+        if not slide_numbers:
+            return ""
+
+        if len(slide_numbers) > self.max_back_references_display:
+            display_slides = slide_numbers[:self.max_back_references_display]
+            remaining = len(slide_numbers) - self.max_back_references_display
+            slides_text = ', '.join(map(str, display_slides))
+            back_ref = f"{slides_text} +{remaining} more"
+        else:
+            back_ref = ', '.join(map(str, slide_numbers))
+
+        return self.back_reference_format.format(slides=back_ref)
+
+
+class BibliographyItem:
+    """Represents a single bibliography item."""
+
+    def __init__(self, citation_key: str, content: str, raw_text: str):
+        self.citation_key = citation_key
+        self.content = content.strip()
+        self.raw_text = raw_text
+        self.slide_references = []  # List of slide numbers where cited
+
+    def add_slide_reference(self, slide_num: int):
+        """Add a slide reference if not already present."""
+        if slide_num not in self.slide_references:
+            self.slide_references.append(slide_num)
+
+
+    def to_latex(self, config) -> str:
+        """Convert to LaTeX with clickable back-references."""
+        if self.slide_references and config.enable_back_references:
+            # Create clickable hyperlinks
+            clickable_links = [f"\\hyperlink{{page.{num}}}{{{num}}}" for num in self.slide_references]
+
+            if len(clickable_links) > config.max_back_references_display:
+                display_links = clickable_links[:config.max_back_references_display]
+                remaining = len(clickable_links) - config.max_back_references_display
+                links_text = ', '.join(display_links)
+                back_ref = f"{links_text} +{remaining} more"
+            else:
+                back_ref = ', '.join(clickable_links)
+
+            back_ref_text = f" \\hfill\\textcolor{{gray}}{{\\tiny [Cited on slides: {back_ref}]}}"
+
+            if self.raw_text.endswith('\n'):
+                return self.raw_text.rstrip() + back_ref_text + '\n'
+            else:
+                return self.raw_text.rstrip() + back_ref_text
+        return self.raw_text
+
+
+class BibliographyParser:
+    """Parser for extracting bibliography items from LaTeX content."""
+
+    @staticmethod
+    def parse_bibliography(content_lines: list) -> dict:
+        """
+        Parse bibliography content into structured items.
+
+        Args:
+            content_lines: List of LaTeX content lines
+
+        Returns:
+            Dictionary with keys: 'header', 'items', 'footer'
+        """
+        import re
+
+        result = {
+            'header': None,
+            'items': [],
+            'footer': None,
+            'raw_content': '\n'.join(content_lines)
+        }
+
+        full_content = '\n'.join(content_lines)
+
+        # Extract header
+        header_match = re.search(
+            r'(\\begin\{thebibliography\}(?:\[[^\]]*\])?\{[^}]+\})',
+            full_content
+        )
+        if header_match:
+            result['header'] = header_match.group(1)
+        else:
+            result['header'] = "\\begin{thebibliography}{99}"
+
+        # Extract footer
+        footer_match = re.search(r'(\\end\{thebibliography\})', full_content)
+        if footer_match:
+            result['footer'] = footer_match.group(1)
+        else:
+            result['footer'] = "\\end{thebibliography}"
+
+        # Extract individual bibitems
+        # Pattern: \bibitem{key} content until next \bibitem or \end{thebibliography}
+        pattern = r'\\bibitem\{([^}]+)\}(.*?)(?=\\bibitem\{|\\end\{thebibliography\})'
+        matches = re.findall(pattern, full_content, re.DOTALL)
+
+        for key, content in matches:
+            # Clean up the content
+            content = content.strip()
+            # Construct raw text
+            raw_text = f"\\bibitem{{{key}}} {content}"
+
+            item = BibliographyItem(key, content, raw_text)
+            result['items'].append(item)
+
+        return result
+
 #--------------------------------------------------Dialogs -------------------------
 class InstitutionNameDialog(ctk.CTkToplevel):
     """Dialog for handling long institution names"""
@@ -7131,6 +7259,9 @@ class BeamerSlideEditor(ctk.CTk):
 
         # Initialize the package manager
         self.package_manager = CrossPlatformPackageManager(parent=self, verbose=True)
+
+        # Add to the __init__ method of BeamerSlideEditor
+        self._current_citation_map = {}  # For bibliography back-references
 
     def create_line_context_menu(self):
         """Create context menu for line operations in editors"""
@@ -13849,6 +13980,38 @@ Created by {self.__author__}
                     if note.strip() and i not in hidden_note_indices:
                         visible_notes.append(note)
 
+                # ========== BIBLIOGRAPHY DETECTION ==========
+                # Check if this slide contains a bibliography environment
+                # This runs BEFORE any other processing to ensure proper splitting
+                is_bibliography = False
+                bib_content_lines = []
+                in_bibliography = False
+
+                for line in visible_content:
+                    if '\\begin{thebibliography}' in line:
+                        is_bibliography = True
+                        in_bibliography = True
+                        bib_content_lines.append(line)
+                    elif '\\end{thebibliography}' in line:
+                        in_bibliography = False
+                        bib_content_lines.append(line)
+                    elif in_bibliography:
+                        bib_content_lines.append(line)
+
+                # If this is a bibliography slide, process it with the professional handler
+                if is_bibliography and bib_content_lines:
+                    self.write(f"  ✓ Processing bibliography slide {idx + 1}\n", "cyan")
+                    slide_title = slide.get('title', 'References')
+                    clean_title = re.sub(r'^\[DELETED\]\s*', '', slide_title)
+
+                    # Use the professional bibliography handler
+                    frame_latex = self._handle_bibliography_slide(bib_content_lines, clean_title, idx)
+                    new_document_body += frame_latex + "\n\n"
+                    total_visible_slides += 1
+                    continue  # Skip to next slide - prevents double-processing
+
+                # ========== END OF BIBLIOGRAPHY DETECTION ==========
+
                 # Check if slide has a valid image (not masked and not empty)
                 has_valid_image = False
                 image_path = None
@@ -14091,7 +14254,7 @@ Created by {self.__author__}
                         # Regular line
                         if stripped or line == '':
                             frame_lines.append(line)
-                        i += 1
+                            i += 1
 
                 else:
                     # No image and no columns - normal full-width content
@@ -14193,6 +14356,10 @@ Created by {self.__author__}
             new_document_body += "\\end{document}\n"
 
             full_tex = preamble + "\n" + new_document_body
+
+            # ========== ADD CITATION BACK-REFERENCES ==========
+            # This adds hyperref package and configurations for clickable citations
+            full_tex = self._add_citation_back_references_to_slides(full_tex)
 
             debug_file = "debug_output.tex"
             with open(debug_file, 'w', encoding='utf-8') as f:
@@ -18942,12 +19109,396 @@ Created by {self.__author__}
             # Fallback to default layout
             return self._generate_default_layout(layout_params, content, frame_title)
 
+    def _split_bibliography_across_frames(self, content_lines: list, frame_title: str) -> list:
+        """
+        Split long bibliography across multiple frames with back-references.
+        PRESERVES original bibitem numbering and full content.
+        Returns list of frame LaTeX strings.
+        """
+        import re
 
+        frames = []
+        items_per_frame = 12  # Number of references per page
+
+        # Parse the bibliography items - PRESERVE FULL CONTENT
+        bib_items = []
+        in_thebibliography = False
+        bib_options = "99"
+        bib_header = ""
+        bib_footer = ""
+
+        # First, find the entire bibliography content as a single block
+        full_bib_content = []
+        for line in content_lines:
+            full_bib_content.append(line)
+
+        # Join to get the complete bibliography
+        complete_bib = '\n'.join(full_bib_content)
+
+        # Find all bibitem entries with their full content
+        # Pattern matches: \bibitem{key} rest of the reference until next \bibitem or \end{thebibliography}
+        bib_pattern = r'\\bibitem\{([^}]+)\}(.*?)(?=\\bibitem\{|\\end\{thebibliography\})'
+        matches = re.findall(bib_pattern, complete_bib, re.DOTALL)
+
+        if not matches:
+            # Fallback: try simpler pattern
+            lines = complete_bib.split('\n')
+            current_item = []
+            in_item = False
+            current_key = None
+
+            for line in lines:
+                if '\\bibitem{' in line:
+                    if current_item and current_key:
+                        bib_items.append((current_key, '\n'.join(current_item)))
+                    # Extract key
+                    key_match = re.search(r'\\bibitem\{([^}]+)\}', line)
+                    if key_match:
+                        current_key = key_match.group(1)
+                        # Get the rest of the line after the bibitem
+                        rest = line[key_match.end():]
+                        current_item = [rest] if rest.strip() else []
+                    else:
+                        current_item = [line]
+                    in_item = True
+                elif in_item:
+                    current_item.append(line)
+
+            if current_item and current_key:
+                bib_items.append((current_key, '\n'.join(current_item)))
+        else:
+            # Process matches
+            for key, content in matches:
+                # Clean up the content
+                content = content.strip()
+                bib_items.append((key, content))
+
+        if not bib_items:
+            self.write(f"  ⚠ No bibitems found in bibliography slide\n", "yellow")
+            return [self._generate_bibliography_frame(content_lines, frame_title)]
+
+        self.write(f"  ✓ Found {len(bib_items)} bibliography items\n", "green")
+
+        # Extract the header and footer
+        header_match = re.search(r'(\\begin\{thebibliography\}\{[^}]+\})', complete_bib)
+        if header_match:
+            bib_header = header_match.group(1)
+        else:
+            bib_header = "\\begin{thebibliography}{99}"
+
+        footer_match = re.search(r'(\\end\{thebibliography\})', complete_bib)
+        if footer_match:
+            bib_footer = footer_match.group(1)
+        else:
+            bib_footer = "\\end{thebibliography}"
+
+        # Split items across frames
+        total_items = len(bib_items)
+        num_frames = (total_items + items_per_frame - 1) // items_per_frame
+
+        for frame_num in range(num_frames):
+            start_idx = frame_num * items_per_frame
+            end_idx = min(start_idx + items_per_frame, total_items)
+            frame_items = bib_items[start_idx:end_idx]
+
+            # Build frame content
+            frame_content = []
+            if num_frames > 1:
+                title_with_page = f"{frame_title} (Page {frame_num + 1}/{num_frames})"
+            else:
+                title_with_page = frame_title
+
+            # Clean the title for LaTeX
+            clean_title = self.clean_frame_title_for_latex(title_with_page)
+
+            frame_content.append(f"\\begin{{frame}}[allowframebreaks]{{{clean_title}}}")
+            frame_content.append(f"\\frametitle{{{clean_title}}}")
+            frame_content.append(bib_header)
+
+            for key, content in frame_items:
+                # Add back-references to each bibitem
+                processed_item = self._add_back_references_to_bibitem_content(key, content)
+                frame_content.append(processed_item)
+
+            frame_content.append(bib_footer)
+            frame_content.append("\\end{frame}")
+
+            frames.append('\n'.join(frame_content))
+
+        return frames
+
+    def _add_back_references_to_bibitem_content(self, citation_key: str, content: str) -> str:
+        """
+        Add back-references to a bibliography item showing where it was cited.
+        PRESERVES the original bibitem format.
+        """
+        import re
+
+        # Find where this citation appears in the slides
+        slide_numbers = []
+        for idx, slide in enumerate(self.slides, 1):
+            # Skip fully masked slides
+            if slide.get('_fully_masked', False):
+                continue
+
+            # Check content for \cite{citation_key}
+            for content_line in slide.get('content', []):
+                if f'\\cite{{{citation_key}}}' in content_line or f'\\cite{{{citation_key}' in content_line:
+                    if idx not in slide_numbers:
+                        slide_numbers.append(idx)
+                    break
+            # Check notes
+            for note_line in slide.get('notes', []):
+                if f'\\cite{{{citation_key}}}' in note_line or f'\\cite{{{citation_key}' in note_line:
+                    if idx not in slide_numbers:
+                        slide_numbers.append(idx)
+                    break
+
+        # Build the complete bibitem
+        if slide_numbers:
+            back_refs = ', '.join([f"{num}" for num in slide_numbers])
+            back_ref_text = f" \\hfill\\textcolor{{gray}}{{\\tiny [Cited on slides: {back_refs}]}}"
+            # Add back-reference at the end of the content
+            content = content.rstrip() + back_ref_text
+
+        return f"\\bibitem{{{citation_key}}} {content}"
+
+    def _ensure_bibliography_numbering_list(self, bib_items: list) -> list:
+        """
+        Ensure bibliography items have clear enumerated numbers.
+        Returns list of processed bibitem strings.
+        """
+        import re
+
+        processed_items = []
+        counter = 1
+
+        for item in bib_items:
+            # Check if item already has explicit numbering
+            if '\\bibitem[' not in item and not re.search(r'\\bibitem\[?\d+\]?', item):
+                # Add explicit number
+                match = re.search(r'\\bibitem\{([^}]+)\}', item)
+                if match:
+                    key = match.group(1)
+                    item = item.replace(f'\\bibitem{{{key}}}', f'\\bibitem[{counter}]{{{key}}}')
+            processed_items.append(item)
+            counter += 1
+
+        return processed_items
+
+    def _add_back_references_to_bibitem(self, bibitem_content: str) -> str:
+        """
+        Add back-references to a bibliography item showing where it was cited.
+        PRESERVES the original bibitem format - does not change numbering.
+        """
+        import re
+
+        # Extract the citation key from \bibitem{key} (preserve original)
+        match = re.search(r'\\bibitem\{([^}]+)\}', bibitem_content)
+        if not match:
+            return bibitem_content
+
+        citation_key = match.group(1)
+
+        # Find where this citation appears in the slides
+        slide_numbers = []
+        for idx, slide in enumerate(self.slides, 1):
+            # Skip fully masked slides
+            if slide.get('_fully_masked', False):
+                continue
+
+            # Check content for \cite{citation_key}
+            for content_line in slide.get('content', []):
+                if f'\\cite{{{citation_key}}}' in content_line or f'\\cite{{{citation_key}' in content_line:
+                    if idx not in slide_numbers:
+                        slide_numbers.append(idx)
+                    break
+            # Check notes
+            for note_line in slide.get('notes', []):
+                if f'\\cite{{{citation_key}}}' in note_line or f'\\cite{{{citation_key}' in note_line:
+                    if idx not in slide_numbers:
+                        slide_numbers.append(idx)
+                    break
+
+        # Build back-reference text - insert BEFORE the closing of the bibitem
+        if slide_numbers:
+            back_refs = ', '.join([f"{num}" for num in slide_numbers])
+            back_ref_text = f" \\hfill\\textcolor{{gray}}{{\\tiny [Cited on slides: {back_refs}]}}"
+
+            # Insert back-reference at the end of the bibitem content
+            # Find where the bibitem content ends (after the closing brace of the key)
+            # Format: \bibitem{key} content here
+            key_match = re.search(r'\\bibitem\{[^}]+\}', bibitem_content)
+            if key_match:
+                key_end = key_match.end()
+                # Insert after the key, before any newline or at the end
+                if key_end < len(bibitem_content):
+                    bibitem_content = bibitem_content[:key_end] + back_ref_text + bibitem_content[key_end:]
+                else:
+                    bibitem_content = bibitem_content + back_ref_text
+
+        return bibitem_content
+
+    def _generate_bibliography_frame(self, content_lines: list, frame_title: str) -> str:
+        """
+        Generate a single bibliography frame (fallback when splitting fails).
+        PRESERVES original bibitem formatting.
+        """
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        # Join all content lines
+        complete_bib = '\n'.join(content_lines)
+
+        # Find all bibitem entries
+        bib_pattern = r'\\bibitem\{([^}]+)\}(.*?)(?=\\bibitem\{|\\end\{thebibliography\})'
+        matches = re.findall(bib_pattern, complete_bib, re.DOTALL)
+
+        latex = f"\\begin{{frame}}[allowframebreaks]{{{clean_title}}}\n"
+        latex += f"\\frametitle{{{clean_title}}}\n"
+
+        # Extract header
+        header_match = re.search(r'(\\begin\{thebibliography\}\{[^}]+\})', complete_bib)
+        if header_match:
+            latex += header_match.group(1) + "\n"
+        else:
+            latex += "\\begin{thebibliography}{99}\n"
+
+        # Process each bibitem
+        for key, content in matches:
+            content = content.strip()
+            # Add back-references
+            processed_item = self._add_back_references_to_bibitem_content(key, content)
+            latex += processed_item + "\n"
+
+        latex += "\\end{thebibliography}\n"
+        latex += "\\end{frame}\n"
+
+        return latex
+
+    def _add_citation_back_references_to_slides(self, tex_content: str) -> str:
+        """
+        Add clickable back-references from citations to bibliography entries.
+        Call this when generating final TeX output.
+        """
+        import re
+
+        # Build a mapping of citation keys to slide numbers
+        citation_map = {}
+        for idx, slide in enumerate(self.slides, 1):
+            if slide.get('_fully_masked', False):
+                continue
+
+            for content_line in slide.get('content', []):
+                # Find all citations in this slide
+                cites = re.findall(r'\\cite\{([^}]+)\}', content_line)
+                for cite_key in cites:
+                    if cite_key not in citation_map:
+                        citation_map[cite_key] = []
+                    if idx not in citation_map[cite_key]:
+                        citation_map[cite_key].append(idx)
+
+            for note_line in slide.get('notes', []):
+                cites = re.findall(r'\\cite\{([^}]+)\}', note_line)
+                for cite_key in cites:
+                    if cite_key not in citation_map:
+                        citation_map[cite_key] = []
+                    if idx not in citation_map[cite_key]:
+                        citation_map[cite_key].append(idx)
+
+        # Add hyperref package if not present
+        if '\\usepackage{hyperref}' not in tex_content:
+            # Find the best place to insert hyperref (after documentclass)
+            if '\\documentclass' in tex_content:
+                docclass_end = tex_content.find('\\begin{document}')
+                if docclass_end != -1:
+                    hyperref_insert = '\n\\usepackage{hyperref}\n'
+                    tex_content = tex_content[:docclass_end] + hyperref_insert + tex_content[docclass_end:]
+            else:
+                tex_content = '\\usepackage{hyperref}\n' + tex_content
+
+        # Add hyperref configuration for better citation links
+        hyperref_config = """
+    % Configure hyperref for better citation links
+    \\hypersetup{
+        colorlinks=true,
+        linkcolor=blue,
+        citecolor=blue,
+        urlcolor=blue,
+        linktoc=all,
+        pdfborder={0 0 0}
+    }
+    """
+        if '\\hypersetup' not in tex_content:
+            tex_content = tex_content.replace('\\usepackage{hyperref}', '\\usepackage{hyperref}\n' + hyperref_config)
+
+        return tex_content
+
+    def _add_bibliography_navigation(self, frames: list, total_frames: int) -> list:
+        """
+        Add navigation links between bibliography frames.
+        """
+        for i, frame in enumerate(frames):
+            nav_links = []
+
+            # Add previous page link
+            if i > 0:
+                nav_links.append(f"\\hyperlink{{page.{i}}}{{\\textcolor{{blue}}{{\\small ← Previous}}}}")
+
+            # Add page indicator
+            nav_links.append(f"\\textcolor{{gray}}{{\\small Page {i+1}/{total_frames}}}")
+
+            # Add next page link
+            if i < total_frames - 1:
+                nav_links.append(f"\\hyperlink{{page.{i+2}}}{{\\textcolor{{blue}}{{\\small Next →}}}}")
+
+            nav_bar = " \\hfill ".join(nav_links)
+
+            # Insert navigation before \end{frame}
+            frame = frame.replace(
+                '\\end{frame}',
+                f'\\vspace{{0.5em}}\\hfill {nav_bar} \\hfill\\end{{frame}}'
+            )
+            frames[i] = frame
+
+        return frames
 
     def _generate_default_layout(self, params: str, content: list, frame_title: str) -> str:
         """Generate default layout with automatic two-column split when first line is an image"""
-        latex = f"\\begin{{frame}}{{{frame_title}}}\n"
-        latex += f"\\frametitle{{{frame_title}}}\n"
+
+        # ========== CHECK FOR BIBLIOGRAPHY/REFERENCES ==========
+        # Check for explicit bibliography environment
+        is_bibliography = False
+        bib_content = []
+        in_bibliography = False
+
+        for line in content:
+            if '\\begin{thebibliography}' in line:
+                is_bibliography = True
+                in_bibliography = True
+                bib_content.append(line)
+            elif '\\end{thebibliography}' in line:
+                in_bibliography = False
+                bib_content.append(line)
+            elif in_bibliography:
+                bib_content.append(line)
+
+        # If this is a bibliography/references frame, use multi-page splitting
+        if is_bibliography and bib_content:
+            frames = self._split_bibliography_across_frames(bib_content, frame_title)
+            if frames:
+                if len(frames) == 1:
+                    return frames[0]
+                else:
+                    # Add navigation between pages
+                    frames = self._add_bibliography_navigation(frames, len(frames))
+                    return '\n\n'.join(frames)
+
+        # ========== NORMAL LAYOUT PROCESSING ==========
+        # Clean the frame title for LaTeX
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        latex = f"\\begin{{frame}}{{{clean_title}}}\n"
+        latex += f"\\frametitle{{{clean_title}}}\n"
 
         # Initialize containers
         has_image = False
@@ -18978,6 +19529,10 @@ Created by {self.__author__}
             first_line = True
             for line in content:
                 line_stripped = line.strip()
+
+                # Skip empty lines
+                if not line_stripped:
+                    continue
 
                 # Check if first line is an image (and we don't already have an image from params)
                 if first_line:
@@ -19042,6 +19597,7 @@ Created by {self.__author__}
             latex += "\\begin{center}\n"
             latex += f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}\n"
             latex += "\\end{center}\n"
+            latex += "\n"
 
             # Right column: All remaining content (50% width)
             latex += "\\column{0.5\\textwidth}\n"
@@ -19076,9 +19632,15 @@ Created by {self.__author__}
             latex += table_text + "\n"
         elif regular_content:
             # Just text (no image, no table)
-            content_items = self._format_content_items(regular_content)
-            if content_items:
-                latex += content_items + "\n"
+            # Check if this is a single line of text that should be centered
+            if len(regular_content) == 1 and len(regular_content[0]) < 100:
+                latex += "\\begin{center}\n"
+                latex += regular_content[0] + "\n"
+                latex += "\\end{center}\n"
+            else:
+                content_items = self._format_content_items(regular_content)
+                if content_items:
+                    latex += content_items + "\n"
 
         latex += "\\end{frame}\n"
         return latex
@@ -20302,6 +20864,261 @@ Created by {self.__author__}
                 self.write(f"✓ Reloaded {os.path.basename(txt_file)} from updated TeX file\n", "green")
         except Exception as e:
             self.write(f"✗ Error reloading txt file: {str(e)}\n", "red")
+
+    def _handle_bibliography_slide(self, content_lines: list, frame_title: str, slide_index: int) -> str:
+        """Professionally handle a bibliography slide with clickable back-references."""
+        import re
+
+        config = BibliographyConfig()
+
+        # Parse the bibliography
+        full_content = '\n'.join(content_lines)
+
+        # Extract header
+        header_match = re.search(r'(\\begin\{thebibliography\}(?:\[[^\]]*\])?\{[^}]+\})', full_content)
+        header = header_match.group(1) if header_match else "\\begin{thebibliography}{99}"
+
+        # Extract footer
+        footer = "\\end{thebibliography}"
+
+        # Extract bibitems with their content
+        pattern = r'\\bibitem\{([^}]+)\}(.*?)(?=\\bibitem\{|\\end\{thebibliography\})'
+        matches = re.findall(pattern, full_content, re.DOTALL)
+
+        bib_items = []
+        for key, content in matches:
+            content = content.strip()
+            raw_text = f"\\bibitem{{{key}}} {content}"
+            bib_items.append(BibliographyItem(key, content, raw_text))
+
+        if not bib_items:
+            return self._generate_bibliography_fallback(content_lines, frame_title)
+
+        # Build citation map - find where each citation appears
+        for item in bib_items:
+            slide_numbers = []
+            for idx, slide in enumerate(self.slides, 1):
+                if slide.get('_fully_masked', False):
+                    continue
+
+                # Search in content
+                for content_line in slide.get('content', []):
+                    if f'\\cite{{{item.citation_key}}}' in content_line:
+                        if idx not in slide_numbers:
+                            slide_numbers.append(idx)
+                        break
+
+                # Search in notes
+                for note_line in slide.get('notes', []):
+                    if f'\\cite{{{item.citation_key}}}' in note_line:
+                        if idx not in slide_numbers:
+                            slide_numbers.append(idx)
+                        break
+
+            for slide_num in slide_numbers:
+                item.add_slide_reference(slide_num)
+
+            # Log for debugging
+            if slide_numbers:
+                self.write(f"    • {item.citation_key}: cited on slides {slide_numbers}\n", "cyan")
+
+        # Generate output
+        total_items = len(bib_items)
+        if total_items <= config.items_per_page:
+            return self._generate_single_bibliography_frame(header, bib_items, footer, frame_title, config)
+        else:
+            return self._generate_multi_page_bibliography(header, bib_items, footer, frame_title, config, total_items)
+
+    def _build_citation_map(self, bib_items: list):
+        """
+        Build a mapping of citation keys to slide numbers.
+        This is called once per bibliography slide.
+        """
+        # Clear existing citation map for this bibliography
+        self._current_citation_map = {}
+
+        for item in bib_items:
+            key = item.citation_key
+            slide_numbers = []
+
+            # Search through all slides for citations
+            for idx, slide in enumerate(self.slides, 1):
+                if slide.get('_fully_masked', False):
+                    continue
+
+                # Check content
+                for content_line in slide.get('content', []):
+                    if f'\\cite{{{key}}}' in content_line or f'\\cite{{{key}' in content_line:
+                        if idx not in slide_numbers:
+                            slide_numbers.append(idx)
+                        break
+
+                # Check notes
+                for note_line in slide.get('notes', []):
+                    if f'\\cite{{{key}}}' in note_line or f'\\cite{{{key}' in note_line:
+                        if idx not in slide_numbers:
+                            slide_numbers.append(idx)
+                        break
+
+            # Store the slide references in the bibliography item
+            for slide_num in slide_numbers:
+                item.add_slide_reference(slide_num)
+
+            self._current_citation_map[key] = slide_numbers
+
+    def _generate_single_bibliography_frame(self, header: str, bib_items: list, footer: str, frame_title: str, config) -> str:
+        """Generate a single bibliography frame with clickable back-links."""
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        lines = [f"\\begin{{frame}}[allowframebreaks]{{{clean_title}}}"]
+        lines.append(f"\\frametitle{{{clean_title}}}")
+        lines.append(header)
+        for item in bib_items:
+            # Generate clickable back-links
+            processed_item = self._add_clickable_back_references(item, config)
+            lines.append(processed_item)
+        lines.append(footer)
+        lines.append("\\end{frame}")
+
+        return '\n'.join(lines)
+
+    def _generate_multi_page_bibliography(self, header: str, bib_items: list, footer: str, frame_title: str, config, total_items: int) -> str:
+        """Generate multiple bibliography frames with clickable back-links and navigation."""
+        items_per_page = config.items_per_page
+        num_frames = (total_items + items_per_page - 1) // items_per_page
+
+        all_frames = []
+        for frame_num in range(num_frames):
+            start_idx = frame_num * items_per_page
+            end_idx = min(start_idx + items_per_page, total_items)
+            frame_items = bib_items[start_idx:end_idx]
+
+            if num_frames > 1:
+                page_title = f"{frame_title} (Page {frame_num + 1}/{num_frames})"
+            else:
+                page_title = frame_title
+
+            clean_title = self.clean_frame_title_for_latex(page_title)
+
+            lines = [f"\\begin{{frame}}[allowframebreaks]{{{clean_title}}}"]
+            lines.append(f"\\frametitle{{{clean_title}}}")
+            lines.append(header)
+            for item in frame_items:
+                # Generate clickable back-links
+                processed_item = self._add_clickable_back_references(item, config)
+                lines.append(processed_item)
+            lines.append(footer)
+            lines.append("\\end{frame}")
+
+            all_frames.append('\n'.join(lines))
+
+        if config.enable_navigation and num_frames > 1:
+            all_frames = self._add_bibliography_navigation_links(all_frames, num_frames)
+
+        return '\n\n'.join(all_frames)
+
+    def _add_clickable_back_references(self, bib_item, config) -> str:
+        """
+        Add clickable back-references to a bibliography item.
+        Creates hyperlinks from the slide numbers back to the actual slides.
+        """
+        if not bib_item.slide_references or not config.enable_back_references:
+            return bib_item.raw_text
+
+        # Create clickable hyperlinks for each slide number
+        clickable_links = []
+        for slide_num in bib_item.slide_references:
+            # \hyperlink{page.X}{X} creates a clickable link to page X
+            clickable_links.append(f"\\hyperlink{{page.{slide_num}}}{{{slide_num}}}")
+
+        if len(clickable_links) > config.max_back_references_display:
+            display_links = clickable_links[:config.max_back_references_display]
+            remaining = len(clickable_links) - config.max_back_references_display
+            links_text = ', '.join(display_links)
+            back_ref = f"{links_text} +{remaining} more"
+        else:
+            back_ref = ', '.join(clickable_links)
+
+        back_ref_text = f" \\hfill\\textcolor{{gray}}{{\\tiny [Cited on slides: {back_ref}]}}"
+
+        # Add the back-reference to the raw text
+        if bib_item.raw_text.endswith('\n'):
+            return bib_item.raw_text.rstrip() + back_ref_text + '\n'
+        else:
+            return bib_item.raw_text.rstrip() + back_ref_text
+
+    def _add_bibliography_navigation_links(self, frames: list, total_frames: int) -> list:
+        """
+        Add navigation links between bibliography frames.
+
+        Args:
+            frames: List of frame LaTeX strings
+            total_frames: Total number of frames
+
+        Returns:
+            Modified frames with navigation links
+        """
+        import re
+
+        result_frames = []
+
+        for i, frame in enumerate(frames):
+            # Extract the frametitle to add navigation after it
+            nav_links = []
+
+            # Previous page link
+            if i > 0:
+                nav_links.append(f"\\hyperlink{{page.{i}}}{{\\textcolor{{blue}}{{\\small ← Previous Page}}}}")
+
+            # Page indicator
+            nav_links.append(f"\\textcolor{{gray}}{{\\small Page {i+1}/{total_frames}}}")
+
+            # Next page link
+            if i < total_frames - 1:
+                nav_links.append(f"\\hyperlink{{page.{i+2}}}{{\\textcolor{{blue}}{{\\small Next Page →}}}}")
+
+            nav_bar = " \\hfill ".join(nav_links)
+
+            # Insert navigation after the frametitle
+            # Find the position after \frametitle
+            frametitle_pattern = r'(\\frametitle\{[^}]*\})'
+            match = re.search(frametitle_pattern, frame)
+
+            if match:
+                insert_pos = match.end()
+                modified_frame = (
+                    frame[:insert_pos] +
+                    f"\n\\vspace{{0.5em}}\\begin{{center}}{nav_bar}\\end{{center}}\n" +
+                    frame[insert_pos:]
+                )
+            else:
+                # Fallback: add at the beginning of the frame content
+                modified_frame = frame.replace(
+                    f"\\begin{{frame}}",
+                    f"\\begin{{frame}}\n\\vspace{{0.5em}}\\begin{{center}}{nav_bar}\\end{{center}}\n"
+                )
+
+            result_frames.append(modified_frame)
+
+        return result_frames
+
+    def _generate_bibliography_fallback(self, content_lines: list, frame_title: str) -> str:
+        """
+        Fallback method for when bibliography parsing fails.
+        Preserves original content but adds allowframebreaks.
+        """
+        clean_title = self.clean_frame_title_for_latex(frame_title)
+
+        lines = []
+        lines.append(f"\\begin{{frame}}[allowframebreaks]{{{clean_title}}}")
+        lines.append(f"\\frametitle{{{clean_title}}}")
+
+        for line in content_lines:
+            lines.append(line)
+
+        lines.append("\\end{frame}")
+
+        return '\n'.join(lines)
 
 
 #-----------------------------------------------Help Functions --------------------------------------------

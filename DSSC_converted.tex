@@ -1,0 +1,1400 @@
+\documentclass[aspectratio=169]{beamer}
+
+% Essential packages (core)
+\usepackage{hyperref}
+
+    % Configure hyperref for better citation links
+    \hypersetup{
+        colorlinks=true,
+        linkcolor=blue,
+        citecolor=blue,
+        urlcolor=blue,
+        linktoc=all,
+        pdfborder={0 0 0}
+    }
+    
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{xstring}
+\usepackage{animate}
+\usepackage{multimedia}
+\usepackage{xifthen}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{grffile}
+\geometry{paperwidth=128mm,paperheight=96mm}
+
+% Load TikZ libraries FIRST
+\usetikzlibrary{positioning}
+\usetikzlibrary{shapes.symbols}
+\usetikzlibrary{shapes.callouts}
+\usetikzlibrary{shapes.multipart}
+\usetikzlibrary{calc}
+\usetikzlibrary{overlay-beamer-styles}
+\usetikzlibrary{shapes.geometric}
+\usetikzlibrary{arrows.meta}
+\usetikzlibrary{backgrounds}
+\usetikzlibrary{fit}
+
+% Define the style for covered text
+\setbeamercovered{dynamic}
+\setbeamerfont{item projected}{size=\small}
+\setbeamercolor{alerted text}{fg=white}
+
+% Extended packages with fallbacks
+\IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
+\IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
+\IfFileExists{pifont.sty}{\usepackage{pifont}}{}
+\IfFileExists{soul.sty}{\usepackage{soul}}{}
+
+% Package configurations
+\pgfplotsset{compat=1.18}
+
+% SIMPLIFIED text effects - use standard LaTeX instead of problematic TikZ
+\newcommand{\shadowtext}[2][2pt]{%
+    \textcolor{white}{\textbf{#2}}%
+}
+
+\newcommand{\glowtext}[2][myblue]{%
+    \textcolor{#1}{\textbf{#2}}%
+}
+
+% Conditional definitions based on package availability
+% CRITICAL: Use ##1 instead of #1 inside \IfFileExists
+\IfFileExists{tcolorbox.sty}{%
+    \newtcolorbox{alertbox}[1][red]{%
+        colback=##1!5!white,
+        colframe=##1!75!black,
+        fonttitle=\bfseries,
+        boxrule=0.5pt,
+        rounded corners
+    }
+
+    \newtcolorbox{infobox}[1][blue]{%
+        enhanced,
+        colback=##1!5!white,
+        colframe=##1!75!black,
+        arc=4mm,
+        boxrule=0.5pt,
+        fonttitle=\bfseries,
+        attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
+        boxed title style={size=small,colback=##1!75!black}
+    }
+}{}
+
+% Define colors
+\definecolor{myred}{RGB}{255,50,50}
+\definecolor{myblue}{RGB}{0,130,255}
+\definecolor{mygreen}{RGB}{0,200,100}
+\definecolor{myyellow}{RGB}{255,210,0}
+\definecolor{myorange}{RGB}{255,130,0}
+\definecolor{mypurple}{RGB}{147,112,219}
+\definecolor{mypink}{RGB}{255,105,180}
+\definecolor{myteal}{RGB}{0,128,128}
+\definecolor{mygray}{RGB}{128,128,128}
+\definecolor{mybrown}{RGB}{139,69,19}
+\definecolor{mycyan}{RGB}{0,255,255}
+
+% Basic highlighting commands
+\newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
+\newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
+\newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
+\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textbf{#1}}}
+\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textbf{#1}}}
+
+% ========== LAYOUT COMMANDS - Check if already defined ==========
+% Split layout: image on left, text on right
+\ifcsname split\endcsname\else
+\newcommand{\split}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.45\textwidth}
+            \begin{center}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{center}
+        \end{column}
+        \begin{column}{0.5\textwidth}
+            #2
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% PIP layout: text on left, small image on right
+\ifcsname pip\endcsname\else
+\newcommand{\pip}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.68\textwidth}
+            #2
+        \end{column}
+        \begin{column}{0.28\textwidth}
+            \vspace{1em}
+            \includegraphics[width=\textwidth,keepaspectratio]{#1}
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% Fullframe layout: image takes entire frame
+\ifcsname ff\endcsname\else
+\newcommand{\ff}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+    \begin{center}
+        \vfill
+        \textcolor{white}{\textbf{Full Frame Image}}
+        \vfill
+    \end{center}
+}
+\fi
+
+% Watermark layout: image as background watermark
+\ifcsname wm\endcsname\else
+\newcommand{\wm}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[opacity=0.15] at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+}
+\fi
+
+% Highlight layout: image with highlighted content overlay
+\ifcsname hl\endcsname\else
+\newcommand{\hl}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.6\textwidth}
+            \includegraphics[width=\textwidth,keepaspectratio]{#1}
+        \end{column}
+        \begin{column}{0.36\textwidth}
+            \colorbox{yellow!20}{%
+                \begin{minipage}{\textwidth}
+                    #2
+                \end{minipage}%
+            }
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% Background layout: image as background with content overlay
+\ifcsname bg\endcsname\else
+\newcommand{\bg}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[opacity=0.3] at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+}
+\fi
+
+% Top-bottom layout: image at top, content at bottom
+\ifcsname tb\endcsname\else
+\newcommand{\tb}[2]{%
+    \begin{center}
+        \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+    \end{center}
+    \vspace{0.5em}
+    #2
+}
+\fi
+
+% Overlay layout: image with overlaid text blocks
+\ifcsname ol\endcsname\else
+\newcommand{\ol}[1]{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node at (current page.center) {%
+            \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+        };
+    \end{tikzpicture}%
+}
+\fi
+
+% Corner layout: image in corner
+\ifcsname corner\endcsname\else
+\newcommand{\corner}[2]{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node[anchor=south east] at (current page.south east) {%
+            \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+        };
+    \end{tikzpicture}%
+    #2
+}
+\fi
+
+% Mosaic layout: grid of images
+\ifcsname mosaic\endcsname\else
+\newcommand{\mosaic}[2]{%
+    \begingroup
+    \def\mosaic@params{#1}%
+    \def\mosaic@images{#2}%
+    \pgfmathsetmacro{\mosaic@rows}{{\mosaic@params}[0]}%
+    \pgfmathsetmacro{\mosaic@cols}{{\mosaic@params}[2]}%
+    \begin{center}
+    \begin{tabular}{*{\mosaic@cols}{c}}
+    \hline
+    \mosaic@process
+    \hline
+    \end{tabular}
+    \end{center}
+    \endgroup
+}
+
+\def\mosaic@process{%
+    \mosaic@process@helper\mosaic@images,\@empty
+}
+
+\def\mosaic@process@helper#1,#2\@empty{%
+    \ifx\@empty#2\@empty
+        \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
+    \else
+        \includegraphics[width=0.3\textwidth,keepaspectratio]{#1} &
+        \def\mosaic@remaining{#2}%
+        \mosaic@process@next
+    \fi
+}
+
+\def\mosaic@process@next{%
+    \mosaic@process@helper\mosaic@remaining,\@empty
+}
+\fi
+
+% Basic theme setup
+\usetheme{Madrid}
+\usecolortheme{owl}
+
+% Color settings
+\setbeamercolor{normal text}{fg=white}
+\setbeamercolor{structure}{fg=myyellow}
+\setbeamercolor{alerted text}{fg=myorange}
+\setbeamercolor{example text}{fg=mygreen}
+\setbeamercolor{background canvas}{bg=black}
+\setbeamercolor{frametitle}{fg=white,bg=black}
+
+% Notes support
+\usepackage{pgfpages}
+\setbeameroption{show notes on second screen=right}
+\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
+
+% Animated background support
+\newcommand{\anbg}[2][0.2]{%
+    \ifx\@empty#2\@empty
+        % Clear background if empty argument
+        \setbeamertemplate{background}{}
+    \else
+        % Set animated background
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=#1] at (current page.center) {%
+                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
+                };
+            \end{tikzpicture}%
+        }
+    \fi
+}
+
+
+% Progress bar setup
+\makeatletter
+\def\progressbar@progressbar{}
+\newcount\progressbar@tmpcounta
+\newcount\progressbar@tmpcountb
+\newdimen\progressbar@pbht
+\newdimen\progressbar@pbwd
+\newdimen\progressbar@tmpdim
+
+\progressbar@pbwd=\paperwidth
+\progressbar@pbht=2pt
+
+\def\progressbar@progressbar{%
+   \begin{tikzpicture}[very thin]
+       \ifnum\insertframenumber>0
+           \pgfmathparse{\insertframenumber/\inserttotalframenumber}
+           \edef\progress@ratio{\pgfmathresult}
+           \shade[top color=myblue!50,bottom color=myblue]
+               (0pt, 0pt) rectangle (\progress@ratio\progressbar@pbwd, \progressbar@pbht);
+       \fi
+   \end{tikzpicture}%
+}
+
+% Modified frame title template
+\setbeamertemplate{frametitle}{
+   \nointerlineskip
+   \vskip1ex
+   \begin{beamercolorbox}[wd=\paperwidth,ht=4ex,dp=2ex]{frametitle}
+       \begin{minipage}[t]{\dimexpr\paperwidth-4em}
+           \centering
+           \vspace{2pt}
+           \insertframetitle
+           \vspace{2pt}
+       \end{minipage}
+   \end{beamercolorbox}
+   \vskip.5ex
+   \progressbar@progressbar
+}
+\makeatother
+\makeatletter\def\insertshortinstitute{airis4D}\makeatother
+
+% Footline template
+\setbeamertemplate{footline}{%
+ \leavevmode%
+ \hbox{%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+     \usebeamerfont{title in head/foot}\insertshorttitle%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
+     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
+     \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
+   \end{beamercolorbox}}%
+ \vskip0pt%
+}
+
+% Additional settings
+\setbeamersize{text margin left=5pt,text margin right=5pt}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=true]
+% Title setup
+\title{The Sloan Digital Sky Survey}
+\subtitle{SDSS}
+\author{Ninan Sajeeth Philip}
+\institute{\textcolor{mygreen}{Artificial Intelligence Research and Intelligent Systems (airis4D)}}
+\date{\today}
+
+    % Additional packages for special characters and units
+    \usepackage{textcomp}      % For \textmu, \textendash, etc.
+    \usepackage{siunitx}       % For proper units (Ω·cm², etc.)
+    \usepackage{amsmath}       % Enhanced math support
+    \usepackage{amssymb}       % Additional math symbols
+
+    % Configure siunitx for proper formatting
+    \sisetup{
+        per-mode = symbol,
+        output-decimal-marker = {.},
+        group-separator = {,}
+    }
+
+
+    % Color Information for TikZ Figures
+    % Use these color definitions for consistent theming
+    % Text colors are automatically chosen using XOR rule
+
+    % Default color palette
+    \definecolor{airis4d_blue}{RGB}{41,128,185}
+    \definecolor{airis4d_green}{RGB}{39,174,96}
+    \definecolor{airis4d_orange}{RGB}{243,156,18}
+    \definecolor{airis4d_red}{RGB}{231,76,60}
+    \definecolor{airis4d_purple}{RGB}{155,89,182}
+    \definecolor{airis4d_teal}{RGB}{26,188,156}
+    \definecolor{airis4d_gray}{RGB}{149,165,166}
+
+    % XOR Rule for text colors:
+    % - Use text=white on dark backgrounds (luminance < 0.179)
+    % - Use text=black on light backgrounds (luminance > 0.179)
+
+    % Example usage:
+    % \node[fill=airis4d_blue, text=white] {White text on blue};
+    % \node[fill=airis4d_orange, text=black] {Black text on orange};
+    
+\begin{document}
+
+\begin{frame}[plain]
+\titlepage
+\end{frame}
+
+\begin{frame}{Abstract \& Objectives}
+\frametitle{Abstract \& Objectives}
+
+\textbf{Abstract \& Objectives}
+\begin{block}{The "Artificial Photosynthesis" Model}
+DSSCs mimic photosynthetic systems: a molecular dye harvests light and injects electrons into a wide-bandgap semiconductor, separating charge without a traditional p-n junction.
+\end{block}
+\textbf{Objectives:}
+\begin{itemize}
+\item Understand the photoelectrochemical operating principle.
+\item Analyze energy-level alignment, kinetics, and recombination.
+\item Review materials: sensitizers, redox mediators, electrodes.
+\item Discuss efficiency limits, stability, and emerging applications.
+\end{itemize}
+\vspace{2mm}
+\cite{Grätzel2001, Hagfeldt2010}
+\end{frame}
+
+
+\begin{frame}{Evolution of Solar Technology}
+\frametitle{Evolution of Solar Technology}
+
+\textbf{Evolution of Solar Technology} — 1st to 3rd Generation
+\begin{table}
+\centering
+\begin{tabular}{lll}
+\toprule
+Generation & Technology & Key Limitation \\
+\midrule
+1st & Crystalline Si (mono/poly) & High cost, rigid \\
+2nd & Thin-film (CIGS, CdTe) & Scarce/toxic materials \\
+3rd & DSSC, Perovskites, OPV & Stability (DSSC: electrolyte leakage) \\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{itemize}
+\item DSSCs: Low-cost, flexible, work under diffuse light.
+\item Record lab efficiency (DSSC): $\sim$13\% (2022, co-sensitized).
+\end{itemize}
+\cite{Green2022}
+\end{frame}
+
+
+\begin{frame}{The Breakthrough (1991)}
+\frametitle{The Breakthrough (1991)}
+
+\textbf{The Breakthrough (1991)} — O'Regan \& Grätzel, \textit{Nature
+}
+\begin{quote}
+"A low-cost, high-efficiency solar cell based on dye-sensitized colloidal $TiO_2$ films"
+\end{quote}
+\textbf{Key innovations:}
+\begin{itemize}
+\item Mesoporous $TiO_2$ (10–20 nm particles) → high surface area.
+\item Ruthenium polypyridyl dye (efficient visible absorption).
+\item Iodine/triiodide redox electrolyte.
+\item Achieved 7.1–7.9\% efficiency under AM 1.5.
+\end{itemize}
+\textbf{Impact:} Launched third-generation photovoltaics; $>$30,000 citations.
+\cite{ORegan1991}
+\end{frame}
+
+
+\begin{frame}{Defining DSSCs}
+\frametitle{Defining DSSCs}
+
+\textbf{Defining DSSCs} — Photoelectrochemical vs. Solid-State
+\begin{columns}
+\column{0.5\textwidth}
+\textbf{DSSC = Photoelectrochemical system}
+\begin{itemize}
+\item Charge separation at dye/electrolyte interface.
+\item No depletion layer; diffusion-driven transport.
+\item Liquid or solid-state redox mediator.
+\end{itemize}
+\column{0.5\textwidth}
+\textbf{Conventional p-n junction}
+\begin{itemize}
+\item Built-in electric field.
+\item Drift-dominated charge extraction.
+\item Rigid architecture.
+\end{itemize}
+\end{columns}
+\vspace{3mm}
+\textit{Result:} DSSCs tolerate defects, work indoors, and offer transparency.
+\cite{Peter2007}
+\end{frame}
+
+
+\begin{frame}{General Anatomy}
+\frametitle{General Anatomy}
+
+\textbf{General Anatomy} — The "Sandwich" Structure
+\begin{center}
+\fbox{\parbox{0.85\textwidth}{\centering
+Glass / FTO substrate \\
+$\uparrow$ \\
+Mesoporous TiO$_2$ + Dye monolayer (Photoanode) \\
+$\uparrow$ \\
+Redox Electrolyte ($I^-/I_3^-$ or Co$^{\text{II/III}}$) \\
+$\uparrow$ \\
+Platinum / Carbon (Counter Electrode) \\
+$\uparrow$ \\
+Glass / FTO substrate
+}}
+\end{center}
+Thickness: $\sim$10 \textmu m TiO$_2$, $\sim$2 mm electrolyte gap (lab cells).
+\cite{Kalyanasundaram2010}
+\end{frame}
+
+
+\begin{frame}{The Substrate}
+\frametitle{The Substrate}
+
+\textbf{The Substrate} — FTO and ITO Requirements
+\begin{itemize}
+\item \textbf{FTO (Fluorine-doped Tin Oxide):}
+\begin{itemize}
+\item High thermal stability (up to 500°C for sintering).
+\item Sheet resistance $\sim$ 7–15 $\Omega$/sq.
+\item Preferred for DSSCs.
+\end{itemize}
+\begin{itemize}
+\item \textbf{ITO (Indium Tin Oxide):}
+\end{itemize}
+\begin{itemize}
+\item Higher conductivity but degrades under sintering.
+\item Used for flexible, low-temperature DSSCs.
+\end{itemize}
+\end{itemize}
+Transmittance $>$80\% in visible needed for front illumination.
+\cite{Gordillo2006}
+\end{frame}
+
+
+\begin{frame}{The Photoanode}
+\frametitle{The Photoanode}
+
+\textbf{The Photoanode} — Mesoporous Metal Oxides
+\textbf{Common oxides:}
+\begin{itemize}
+\item \textbf{TiO$_2$ (anatase):} Bandgap $\sim$3.2 eV; CB edge $\sim$ -0.5 V vs. NHE.
+\item \textbf{ZnO:} Higher electron mobility but lower chemical stability.
+\item \textbf{SnO$_2$:} Higher CB edge → lower $V_{oc}$; used in some high-voltage designs.
+\end{itemize}
+\textbf{Key property:} Mesoporosity (pore size 15–30 nm) allows electrolyte penetration and dye loading.
+\cite{Hagfeldt2010}
+\end{frame}
+
+
+\begin{frame}{Role of Nanostructure}
+\frametitle{Role of Nanostructure}
+
+\textbf{Role of Nanostructure} — High Surface-to-Volume Ratio
+\begin{itemize}
+\item Planar TiO$_2$: Dye loading $\sim$ 0.1 nmol/cm$^2$ → negligible current.
+\item Mesoporous film (10 \textmu m thick, 20 nm particles): Roughness factor $\sim$ 1000 → loading $\sim$ 100 nmol/cm$^2$.
+\end{itemize}
+\textbf{Consequence:} Optical density $\gg$1 possible even with monolayer dye coverage.
+\vspace{2mm}
+\textit{Why not thicker?} Increased recombination and mass transport limitations.
+\cite{Grätzel2005}
+\end{frame}
+
+
+\begin{frame}{The Sensitizer (Dye)}
+\frametitle{The Sensitizer (Dye)}
+
+\textbf{The Sensitizer (Dye)} — Molecular Interface
+\textbf{Functions:}
+\begin{enumerate}
+\item Absorb photons (350–900 nm ideally).
+\item Inject electrons into TiO$_2$ CB ($\tau_{inj} \sim$ fs–ps).
+\item Be regenerated by redox mediator before recombination.
+\end{enumerate}
+\textbf{Types:}
+\begin{itemize}
+\item Ru-complexes (N719, Black dye) – high efficiency, expensive.
+\item Organic D-$\pi$-A – high extinction, tunable.
+\item Porphyrins – strong absorbers, used in record cells.
+\end{itemize}
+\cite{Mathew2014}
+\end{frame}
+
+
+\begin{frame}{The Electrolyte}
+\frametitle{The Electrolyte}
+
+\textbf{The Electrolyte} — Redox Mediator
+\textbf{Classic system:} Iodine/triiodide ($I^-/I_3^-$) in acetonitrile.
+\begin{itemize}
+\item $E^0 \approx +0.35$ V vs. NHE.
+\item Fast dye regeneration ($\mu$s).
+\item Limitation: Corrodes silver contacts, absorbs blue light.
+\end{itemize}
+\textbf{Alternatives:}
+\begin{itemize}
+\item Cobalt complexes ($\text{Co}^{\text{II/III}}$): Higher $V_{oc}$ but slower regeneration.
+\item Copper complexes ($\text{Cu}^{\text{I/II}}$): Emerging high-performance.
+\end{itemize}
+\cite{Feldt2010}
+\end{frame}
+
+
+\begin{frame}{Counter Electrode}
+\frametitle{Counter Electrode}
+
+\textbf{Counter Electrode} — Catalyst Requirements
+\textbf{Role:} Reduce $I_3^-$ to $I^-$ (or equivalent) efficiently.
+\begin{itemize}
+\item \textbf{Platinum:} Best catalytic activity; high cost.
+\item \textbf{Carbon materials:} Carbon black, graphene, CNTs – stable, cheap.
+\item \textbf{Conducting polymers:} PEDOT:PSS – flexible, transparent.
+\end{itemize}
+\textit{Requirements:} Low charge-transfer resistance ($R_{ct} < 5\ \Omega\cdot$cm$^2$), good adhesion.
+\cite{Trancik2007}
+\end{frame}
+
+
+\begin{frame}{The 5-Step Operational Cycle}
+\frametitle{The 5-Step Operational Cycle}
+
+\textbf{The 5-Step Operational Cycle} — From Absorption to Regeneration
+\begin{enumerate}
+\item \textbf{Photoexcitation:} $D + h\nu \rightarrow D^*$
+\item \textbf{Electron injection:} $D^* \rightarrow D^+ + e^- (\text{TiO}_2)$
+\item \textbf{Transport:} $e^-$ diffuses through TiO$_2$ network to FTO.
+\item \textbf{Dye regeneration:} $2D^+ + 3I^- \rightarrow 2D + I_3^-$
+\item \textbf{Counter electrode reaction:} $I_3^- + 2e^- (\text{Pt}) \rightarrow 3I^-$
+\end{enumerate}
+Overall: $h\nu + e^- (\text{Pt}) \rightarrow e^- (\text{TiO}_2)$ no net chemical change.
+\end{frame}
+
+
+\begin{frame}{Step 1: Photoexcitation}
+\frametitle{Step 1: Photoexcitation}
+
+\textbf{Step 1: Photoexcitation} — $D + h\nu \rightarrow D^*$
+\begin{itemize}
+\item Absorbed photon promotes electron from HOMO to LUMO.
+\item Singlet excited state ($^1D^*$) with lifetime 0.1–10 ns (organic) or 10–100 ns (Ru).
+\item Must overlap solar spectrum: AM1.5G peak at $\sim$550 nm.
+\end{itemize}
+\textbf{Key metric:} Molar extinction coefficient $\varepsilon$ (M$^{-1}$cm$^{-1}$).
+\begin{itemize}
+\item Ru-complexes: $\varepsilon \approx 10^4$ at 530 nm.
+\item Organic dyes: $\varepsilon \approx 2–5 \times 10^4$ – thinner films possible.
+\end{itemize}
+\cite{Ardo2009}
+\end{frame}
+
+
+\begin{frame}{Step 2: Electron Injection}
+\frametitle{Step 2: Electron Injection}
+
+\textbf{Step 2: Electron Injection} $\rightarrow D^* \rightarrow D^+ + e^{-CB}$
+\textbf{Kinetics:}
+\begin{itemize}
+\item Ultrafast: typical $\tau_{inj} = 10$ fs – 100 ps.
+\item Requires LUMO above TiO$_2$ CB edge (overpotential $\Delta E > 0.2$ eV).
+\end{itemize}
+\textbf{Mechanisms:}
+\begin{itemize}
+\item Adiabatic injection via anchoring group (carboxylate).
+\item Non-adiabatic electron tunneling.
+\end{itemize}
+\textbf{Competing process:} Excited-state decay to ground state (fluorescence/heat).
+\cite{Koops2009}
+\end{frame}
+
+
+\begin{frame}{Step 3: Charge Transport}
+\frametitle{Step 3: Charge Transport}
+
+\textbf{Step 3: Charge Transport} — Diffusion-Driven Network
+\begin{itemize}
+\item Electrons move by \textbf{multiple trapping} and release in TiO$_2$ nanoparticle network.
+\item Effective diffusion coefficient $D_n \approx 10^{-4} – 10^{-3}$ cm$^2$/s (single crystal $D \approx 1$ cm$^2$/s).
+\item Transport limited by trap states (surface oxygen vacancies).
+\end{itemize}
+\textbf{Consequence:} Films $>$20 \textmu m cause collection losses.
+\vspace{2mm}
+\emph{Model:} Random walk among particles; grain boundaries dominate.
+\cite{Nelson2003}
+\end{frame}
+
+
+\begin{frame}{Step 4: Dye Regeneration}
+\frametitle{Step 4: Dye Regeneration}
+
+\textbf{Step 4: Dye Regeneration} — $2D^+ + 3I^- \rightarrow 2D + I_3^-$
+\begin{itemize}
+\item Oxidized dye ($D^+$) must be reduced before recombination with TiO$_2$ electrons.
+\item Typical regeneration time: $\tau_{reg} \approx 1–10\ \mu$s (with $I^-$).
+\item Overpotential for regeneration: $E_{\text{HOMO}}(D) - E^0(I^-/I_3^-) \approx 0.4–0.6$ eV.
+\end{itemize}
+\textbf{Failure mode:} If $\tau_{reg} > \tau_{rec}$ (recombination), efficiency drops.
+\cite{Clifford2011}
+\end{frame}
+
+
+\begin{frame}{Step 5: Electrolyte Regeneration at Counter Electrode}
+\frametitle{Step 5: Electrolyte Regeneration at Counter Electrode}
+
+\textbf{Step 5: Electrolyte Regeneration at Counter Electrode} — $I_3^- + 2e^- \rightarrow 3I^-$
+\begin{itemize}
+\item Two-electron reduction occurs via Volmer–Heyrovský mechanism on Pt.
+\item Fast kinetics: exchange current density $\sim$ mA/cm$^2$.
+\item Poor catalysts (e.g., bare FTO) cause large overpotential → reduced $FF$.
+\end{itemize}
+\textbf{Design:} Sputtered Pt ($\sim$10 nm) or thermally decomposed H$_2$PtCl$_6$.
+\cite{Hilgendorff2000}
+\end{frame}
+
+
+\begin{frame}{Kinetics}
+\frametitle{Kinetics}
+
+\textbf{Kinetics} — Time Scales of Forward vs. Recombination
+\begin{table}
+\centering
+\begin{tabular}{lcc}
+\toprule
+Process & Time scale & Rate constant \\
+\midrule
+Injection & 10 fs – 100 ps & $k_{inj} \sim 10^{10} – 10^{13}$ s$^{-1}$ \\
+Dye regeneration & 1 – 10 $\mu$s & $k_{reg} \sim 10^{5}$ s$^{-1}$ \\
+Recombination (TiO$_2$ $e^-$ + $D^+$) & 10 $\mu$s – 1 ms & $k_{rec} \sim 10^{3}$ s$^{-1}$ \\
+Recombination (TiO$_2$ $e^-$ + $I_3^-$) & 1 – 100 ms & $k_{ct} \sim 10$ s$^{-1}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+\textit{Golden rule:} $k_{inj} \gg k_{reg} \gg k_{rec}$ for high efficiency.
+\cite{Durrant2004}
+\end{frame}
+
+
+\begin{frame}{Charge Extraction vs. Recombination}
+\frametitle{Charge Extraction vs. Recombination}
+
+\textbf{Charge Extraction vs. Recombination} — Diffusion Length Concept
+\[
+L_n = \sqrt{D_n \cdot \tau_n}
+\]
+\begin{itemize}
+\item $D_n$: electron diffusion coefficient in TiO$_2$.
+\item $\tau_n$: electron lifetime (determined by recombination with $I_3^-$).
+\end{itemize}
+\textbf{Criterion for efficient collection:} $L_n >$ film thickness ($\sim$10 \textmu m).
+\vspace{2mm}
+In good DSSCs: $D_n \approx 10^{-4}$ cm$^2$/s, $\tau_n \approx 10$ ms → $L_n \approx 30\ \mu$m.
+\vspace{2mm}
+Recombination reduces $\tau_n$ → shorter $L_n$ → lower $J_{sc}$.
+\cite{Frank2004}
+\end{frame}
+
+
+\begin{frame}{Energy Level Alignment}
+\frametitle{Energy Level Alignment}
+
+\textbf{Energy Level Alignment} — LUMO, HOMO, Fermi Levels
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{\centering
+\vspace{1cm}
+[Energy diagram: Vacuum level → CB TiO$_2$ (-0.5 V) → LUMO dye → HOMO dye → Redox potential (0.35 V) → VB TiO$_2$]
+\vspace{1cm}
+}}
+\end{center}
+$V_{oc} = E_{F,\text{TiO}_2} - E_{\text{redox}}$ (under illumination).
+\cite{Cahen2003}
+\end{frame}
+
+
+\begin{frame}{Thermodynamics of Electron Injection}
+\frametitle{Thermodynamics of Electron Injection}
+
+\textbf{Thermodynamics of Electron Injection} — Overpotential Requirements
+\begin{itemize}
+\item Driving force: $\Delta G_{inj} = E_{\text{LUMO}}(\text{dye}) - E_{\text{CB}}(\text{TiO}_2)$ (must be negative).
+\item Typically 0.2–0.4 eV overpotential for efficient injection.
+\item Too large overpotential ($>$0.6 eV) wastes $V_{oc}$.
+\end{itemize}
+\textbf{Optimization:} Tune dye LUMO by electron-withdrawing anchoring group.
+\vspace{2mm}
+Example: N719 dye LUMO $\approx$ -1.1 V vs. NHE, CB TiO$_2$ $\approx$ -0.5 V → $\Delta G \approx -0.6$ eV.
+\cite{Nazeeruddin2003}
+\end{frame}
+
+
+\begin{frame}{Open-Circuit Voltage ($V_{oc}$)}
+\frametitle{Open-Circuit Voltage ($V_{oc}$)}
+
+{Fermi Level of TiO$_2$ vs. Redox Potential}
+At open circuit: $V_{oc} = \frac{kT}{q} \ln\left(\frac{J_{sc}}{J_0} + 1\right)$ but more useful:
+\[
+V_{oc} = \frac{E_{\text{CB}}}{q} - \frac{E_{\text{redox}}}{q} + \frac{kT}{q}\ln\left(\frac{n_{\text{CB}}}{N_{\text{CB}}}\right)
+\]
+\begin{itemize}
+\item $n_{\text{CB}}$: electron density in TiO$_2$ at open circuit.
+\item $N_{\text{CB}}$: effective density of states.
+\end{itemize}
+\textbf{Increasing $V_{oc}$:}
+\begin{itemize}
+\item Raise TiO$_2$ CB (e.g., MgO coating).
+\item Use redox couples with more positive potential (Co$^{\text{III/II}}$).
+\end{itemize}
+\cite{Robertson2006}
+\end{frame}
+
+
+\begin{frame}{Fill Factor ($FF$)}
+\frametitle{Fill Factor ($FF$)}
+
+\textbf{Fill Factor ($FF$)} — Series and Shunt Resistance
+\[
+FF = \frac{P_{\max}}{J_{sc} V_{oc}}
+\]
+\textbf{Limiting factors:}
+\begin{itemize}
+\item \textbf{Series resistance ($R_s$):} FTO resistance, counter electrode catalysis, electrolyte conductivity. High $R_s$ reduces FF.
+\item \textbf{Shunt resistance ($R_{sh}$):} Pinholes, direct contact between FTO and electrolyte. Low $R_{sh}$ reduces FF and $V_{oc}$.
+\end{itemize}
+Typical good DSSC: $R_s < 10\ \Omega\cdot$cm$^2$, $R_{sh} > 1000\ \Omega\cdot$cm$^2$ → $FF \approx 0.65–0.75$.
+\cite{Snaith2007}
+\end{frame}
+
+
+\begin{frame}{Inorganic Sensitizers}
+\frametitle{Inorganic Sensitizers}
+
+\textbf{Inorganic Sensitizers} — Polypyridyl Ruthenium Complexes
+\begin{itemize}
+\item \textbf{N3:} [Ru(dcbpy)$_2$(NCS)$_2$] – 10.4\% efficiency.
+\item \textbf{N719:} Di-tetrabutylammonium salt of N3 – 11.2\%.
+\item \textbf{Black dye:} [Ru(tcterpy)(NCS)$_3$] – panchromatic absorption to 920 nm – 11.4\%.
+\end{itemize}
+\textbf{Pros:} Broad absorption, excellent stability, high efficiency.
+\textbf{Cons:} Expensive, low extinction coefficient, contains heavy metal.
+\cite{Nazeeruddin2005}
+\end{frame}
+
+
+\begin{frame}{Metal-Free Organic Dyes}
+\frametitle{Metal-Free Organic Dyes}
+
+\textbf{Metal-Free Organic Dyes} — D-$\pi$-A Architecture
+\begin{center}
+Donor (D) – $\pi$-bridge – Acceptor (A) + anchoring group
+\end{center}
+\textbf{Examples:}
+\begin{itemize}
+\item Coumarin derivatives (NKX-2677): 8–9\%.
+\item Indoline (D149): high efficiency with Co-electrolyte.
+\item Porphyrin (YD2-o-C8): 13\% record (2014).
+\end{itemize}
+\textbf{Advantages:}
+\begin{itemize}
+\item High $\varepsilon$ ($>5\times10^4$ M$^{-1}$cm$^{-1}$).
+\item Tunable HOMO/LUMO.
+\item Low cost, no noble metals.
+\end{itemize}
+\cite{Mishra2009}
+\end{frame}
+
+
+\begin{frame}{Natural Pigments}
+\frametitle{Natural Pigments}
+
+\textbf{Natural Pigments} — Anthocyanins and Chlorophyll
+\begin{itemize}
+\item \textbf{Anthocyanins} (berries, red cabbage): $\lambda_{\max} \approx 530$ nm, efficiency 0.5–1.5\%.
+\item \textbf{Chlorophyll derivatives:} Better red absorption, but poor stability.
+\end{itemize}
+\textbf{Pros:} Biocompatible, extremely cheap, educational.
+\textbf{Cons:} Narrow absorption, low efficiency, fast degradation.
+\vspace{2mm}
+\textit{Research use only} – not practical for commercial cells.
+\cite{Calogero2012}
+\end{frame}
+
+
+\begin{frame}{Molar Extinction Coefficients}
+\frametitle{Molar Extinction Coefficients}
+
+\textbf{Molar Extinction Coefficients} — Why Organic Dyes Excel in Thin Layers
+\begin{itemize}
+\item Ru N719: $\varepsilon_{530} = 1.4 \times 10^4$ M$^{-1}$cm$^{-1}$.
+\item Organic D149: $\varepsilon_{530} = 6.8 \times 10^4$ M$^{-1}$cm$^{-1}$.
+\end{itemize}
+\textbf{Consequence for film thickness:}
+\[
+\text{Absorbance} = \varepsilon \cdot c_{\text{dye}} \cdot L
+\]
+With high $\varepsilon$, a 2–4 \textmu m TiO$_2$ film suffices → lower recombination, faster transport.
+\vspace{2mm}
+Enables flexible, transparent DSSCs.
+\cite{Grätzel2009}
+\end{frame}
+
+
+\begin{frame}{Anchoring Groups}
+\frametitle{Anchoring Groups}
+
+\textbf{Anchoring Groups} — Binding to TiO$_2$
+\textbf{Most common:} Carboxylic acid (–COOH)
+\begin{itemize}
+\item Forms ester-like bond with Ti(IV) sites.
+\item Provides electronic coupling for injection.
+\end{itemize}
+\textbf{Alternatives:}
+\begin{itemize}
+\item Phosphonic acid (–PO$_3$H$_2$): More stable, slower injection.
+\item Siloxane: Stable but poor electronic coupling.
+\end{itemize}
+\textbf{Desorption risk:} In water or high pH, carboxylic anchors detach → stability issue.
+\cite{Galoppini2004}
+\end{frame}
+
+
+\begin{frame}{Liquid Electrolytes}
+\frametitle{Liquid Electrolytes}
+
+\textbf{Liquid Electrolytes} — Acetonitrile and $I^-/I_3^-$
+\textbf{Composition:}
+\begin{itemize}
+\item Solvent: acetonitrile (low viscosity) or valeronitrile (less volatile).
+\item 0.5 M LiI, 0.05 M I$_2$, 0.5 M tert-butylpyridine (TBP) – improves $V_{oc}$.
+\end{itemize}
+\textbf{Advantages:} High conductivity ($\sim$10 mS/cm), good pore penetration.
+\textbf{Drawbacks:} Volatile, leakage, solvent evaporation over time.
+\vspace{2mm}
+Record efficiency with liquid: 13\% (co-sensitized, 2022).
+\cite{Yella2011}
+\end{frame}
+
+
+\begin{frame}{Alternative Redox Couples}
+\frametitle{Alternative Redox Couples}
+
+\textbf{Alternative Redox Couples} — Cobalt and Copper Complexes
+\begin{itemize}
+\item \textbf{Cobalt(III/II) tris(bipyridine):} $E^0 \approx +0.56$ V vs. NHE → $V_{oc}$ up to 1.0 V.
+\item \textbf{Problem:} Slower dye regeneration; requires high extinction organic dyes.
+\item \textbf{Copper(I/II) complexes:} Very fast regeneration, low recombination – promising $>$14\%.
+\end{itemize}
+\textbf{Recent record:} Cu-based electrolyte + organic dye → 14.3\% (2021, lab scale).
+\cite{Saygili2018}
+\end{frame}
+
+
+\begin{frame}{Solid-State DSSCs}
+\frametitle{Solid-State DSSCs}
+
+\textbf{Solid-State DSSCs} — Spiro-OMeTAD as HTM
+\begin{itemize}
+\item Replace liquid electrolyte with organic hole transporter (e.g., Spiro-OMeTAD).
+\item No leakage, easier encapsulation.
+\item Challenges: Poor pore filling, faster recombination.
+\end{itemize}
+\textbf{Improvements:}
+\begin{itemize}
+\item Add LiTFSI and Co(tbp)$_2$(TFSI)$_2$ to dope Spiro-OMeTAD.
+\item Record ssDSSC: 8.5\% (small area).
+\end{itemize}
+Still far behind liquid cells due to incomplete contact.
+\cite{Bach1998}
+\end{frame}
+
+
+\begin{frame}{Quasi-Solid State}
+\frametitle{Quasi-Solid State}
+
+\textbf{Quasi-Solid State} — Polymer Gels and Ionic Liquids
+\textbf{Approaches:}
+\begin{itemize}
+\item \textbf{Polymer gel electrolytes:} PMMA, PEO + liquid electrolyte → high viscosity.
+\item \textbf{Ionic liquids:} 1-ethyl-3-methylimidazolium iodide – negligible vapor pressure.
+\end{itemize}
+\textbf{Performance:}
+\begin{itemize}
+\item Gel: 7–9\% efficiency, improved stability (1000h at 60°C).
+\item Ionic liquid: 8–10\%, slower kinetics.
+\end{itemize}
+Best compromise for commercial flexible DSSCs.
+\cite{Wang2003}
+\end{frame}
+
+
+\begin{frame}{Mechanism of Triiodide Reduction}
+\frametitle{Mechanism of Triiodide Reduction}
+
+\textbf{Mechanism of Triiodide Reduction} — At the Counter Electrode
+Overall: $I_3^- + 2e^- \rightarrow 3I^-$
+\vspace{2mm}
+\textbf{Electrochemical steps (on Pt):}
+\begin{enumerate}
+\item $I_3^- + e^- \rightarrow I_2^- + I^-$ (rate-determining)
+\item $I_2^- + e^- \rightarrow 2I^-$
+\end{enumerate}
+\textbf{Catalyst quality:} Measured by $R_{ct}$ from EIS (Electrochemical Impedance Spectroscopy).
+\vspace{2mm}
+Good Pt: $R_{ct} \approx 1\ \Omega$; poor carbon: $R_{ct} > 50\ \Omega$.
+\cite{Hauch2001}
+\end{frame}
+
+
+\begin{frame}{Platinum (Pt)}
+\frametitle{Platinum (Pt)}
+
+\textbf{Platinum (Pt)} — The Gold Standard
+\textbf{Preparation:}
+\begin{itemize}
+\item Sputtering: $<$10 nm, high cost.
+\item Thermal decomposition: H$_2$PtCl$_6$ in isopropanol, 400°C – industrial.
+\end{itemize}
+\textbf{Performance:}
+\begin{itemize}
+\item Low $R_{ct}$, high exchange current density.
+\item Stable in $I^-/I_3^-$.
+\end{itemize}
+\textbf{Drawback:} Pt dissolves in $I_3^-$ over long term (thousands of hours) – requires excess $I^-$.
+\cite{Olsen2000}
+\end{frame}
+
+
+\begin{frame}{Carbon-Based Alternatives}
+\frametitle{Carbon-Based Alternatives}
+
+\textbf{Carbon-Based Alternatives} — Graphene, CNTs, Carbon Black
+\textbf{Advantages:}
+\begin{itemize}
+\item Cheap, abundant, corrosion-resistant.
+\item High surface area (active sites).
+\end{itemize}
+\textbf{Types:}
+\begin{itemize}
+\item Carbon black + graphite: $R_{ct} \approx 10–20\ \Omega$ – acceptable for low-cost cells.
+\item Graphene: Superior conductivity, $R_{ct} \approx 5\ \Omega$.
+\item CNT networks: Excellent 3D catalytic surface.
+\end{itemize}
+Efficiency comparable to Pt (10–11\%) with optimized carbon.
+\cite{Kavan2011}
+\end{frame}
+
+
+\begin{frame}{Conducting Polymers (PEDOT:PSS)}
+\frametitle{Conducting Polymers (PEDOT:PSS)}
+
+\textbf{Conducting Polymers (PEDOT:PSS)} — Affordable and Flexible
+\begin{itemize}
+\item Poly(3,4-ethylenedioxythiophene):polystyrene sulfonate.
+\item Solution-processable, transparent, flexible.
+\item Catalytic for $I_3^-$ reduction (redox-active polymer).
+\end{itemize}
+\textbf{Performance:}
+\begin{itemize}
+\item $R_{ct} \approx 10–30\ \Omega$ (needs optimization).
+\item Efficiency: 7–9\% in lab-scale.
+\end{itemize}
+Ideal for roll-to-roll printing on plastic.
+\cite{Yoo2012}
+\end{frame}
+
+
+\begin{frame}{Power Conversion Efficiency (PCE)}
+\frametitle{Power Conversion Efficiency (PCE)}
+
+\textbf{Power Conversion Efficiency (PCE)} — Formula and Components
+\[
+\eta = \frac{J_{sc} \cdot V_{oc} \cdot FF}{P_{\text{in}}}
+\]
+where $P_{\text{in}} = 100\ \text{mW/cm}^2$ (AM 1.5G).
+\vspace{2mm}
+\textbf{Typical values for DSSC:}
+\begin{itemize}
+\item $J_{sc} = 15–22$ mA/cm$^2$
+\item $V_{oc} = 0.7–0.9$ V
+\item $FF = 0.65–0.75$
+\item $\eta = 10–13\%$ (lab record)
+\end{itemize}
+\textbf{Shockley-Queisser limit for single-junction DSSC:} $\sim$32\%.
+\cite{Hagfeldt2010}
+\end{frame}
+
+
+\begin{frame}{IPCE}
+\frametitle{IPCE}
+
+\textbf{IPCE} — Spectral Response Analysis
+\[
+\text{IPCE}(\lambda) = \frac{1240 \cdot J_{sc}(\lambda)}{\lambda \cdot P_{\text{in}}(\lambda)} \times 100\%
+\]
+\begin{itemize}
+\item Measures how efficiently each wavelength is converted.
+\item For DSSCs: IPCE = LHE($\lambda$) $\cdot$ $\phi_{inj}$ $\cdot$ $\phi_{coll}$.
+\end{itemize}
+\textbf{Typical IPCE:} 80–90\% at peak wavelength (550 nm) for Ru-dye cells.
+\vspace{2mm}
+Integration of IPCE over AM1.5G gives $J_{sc}$ – diagnostic tool.
+\cite{Snaith2005}
+\end{frame}
+
+
+\begin{frame}{Light Harvesting Efficiency (LHE) and Quantum Yield}
+\frametitle{Light Harvesting Efficiency (LHE) and Quantum Yield}
+
+\textbf{Light Harvesting Efficiency (LHE) and Quantum Yield}
+\[
+\text{LHE}(\lambda) = 1 - 10^{-A(\lambda)} = 1 - 10^{-\varepsilon c L}
+\]
+\begin{itemize}
+\item $A(\lambda)$: absorbance of dye-loaded film.
+\end{itemize}
+\textbf{Internal Quantum Efficiency (IQE)} = $\phi_{inj} \cdot \phi_{coll}$.
+\begin{itemize}
+\item Near 1.0 in good DSSCs (100\% of injected electrons collected).
+\end{itemize}
+\textbf{External Quantum Efficiency (EQE)} = IPCE = LHE $\cdot$ IQE.
+\cite{Hagfeldt2008}
+\end{frame}
+
+
+\begin{frame}{Current Efficiency Records}
+\frametitle{Current Efficiency Records}
+
+\textbf{Current Efficiency Records} — Lab-Scale vs. Module
+\begin{table}
+\centering
+\begin{tabular}{lll}
+\toprule
+Type & Efficiency & Reference \\
+\midrule
+Ru-dye (N719) + liquid & 11.2\% & Nazeeruddin (2005) \\
+Black dye + liquid & 11.4\% & Nazeeruddin (2005) \\
+Porphyrin (YD2-o-C8) + Co & 13.0\% & Mathew (2014) \\
+Co-sensitized (organic + porphyrin) & 14.3\% & Kakiage (2015) \\
+Module (substrate 10 cm$^2$) & 9.9\% & Sharp (2017) \\
+\bottomrule
+\end{tabular}
+\end{table}
+\textit{Note:} Perovskite cells have overtaken DSSC (25.7\%), but DSSC excels in stability and indoor light.
+\cite{Green2022}
+\end{frame}
+
+
+\begin{frame}{Co-sensitization}
+\frametitle{Co-sensitization}
+
+\textbf{Co-sensitization} — Covering the Full Solar Spectrum
+\begin{itemize}
+\item Use two or more dyes with complementary absorption.
+\item Example: Porphyrin (red/NIR) + organic D-$\pi$-A (blue/green).
+\item Requires careful control to avoid energy transfer quenching.
+\end{itemize}
+\textbf{Record (2015, Kakiage):} Co-sensitized with alkoxy-substituted organic dyes + porphyrin → $J_{sc} = 19.5$ mA/cm$^2$, $V_{oc}=0.94$ V, $\eta=14.3\%$.
+\cite{Kakiage2015}
+\end{frame}
+
+
+\begin{frame}{Light Scattering Layers}
+\frametitle{Light Scattering Layers}
+
+\textbf{Light Scattering Layers} — Trapping Photons
+\begin{itemize}
+\item Add a 4–5 \textmu m top layer of larger TiO$_2$ particles (200–400 nm).
+\item Increases optical path length without more dye.
+\item Enhances red/NIR absorption.
+\end{itemize}
+\textbf{Effect:} $J_{sc}$ increase by 10–30\%.
+\vspace{2mm}
+\textit{Drawback:} Thicker film → more recombination. Optimized cells use bilayer: 10 \textmu m transparent + 5 \textmu m scattering.
+\cite{Hore2005}
+\end{frame}
+
+
+\begin{frame}{Plasmonic Enhancement}
+\frametitle{Plasmonic Enhancement}
+
+\textbf{Plasmonic Enhancement} — Metal Nanoparticles (Ag, Au)
+\begin{itemize}
+\item Localized surface plasmon resonance (LSPR) in Ag or Au nanoparticles (5–30 nm) embedded near dye.
+\item Enhanced electromagnetic field → higher dye absorption.
+\item Can also increase electron injection via hot-electron transfer.
+\end{itemize}
+\textbf{Results:} Up to 20\% increase in $J_{sc}$ reported.
+\vspace{2mm}
+\textit{Caution:} Metal can also act as recombination center if not insulated (e.g., SiO$_2$ shell).
+\cite{Standridge2009}
+\end{frame}
+
+
+\begin{frame}{Surface Passivation}
+\frametitle{Surface Passivation}
+
+\textbf{Surface Passivation} — Atomic Layer Deposition (ALD) to Reduce Recombination
+\begin{itemize}
+\item TiO$_2$ surface has oxygen vacancies and defects → recombination sites for electrons with $I_3^-$.
+\item Coating with ultrathin insulator (Al$_2$O$_3$, Nb$_2$O$_5$, MgO) reduces back-electron transfer.
+\end{itemize}
+\textbf{ALD Al$_2$O$_3$ (1–2 monolayers):}
+\begin{itemize}
+\item Increases $V_{oc}$ by 50–100 mV.
+\item Preserves injection efficiency.
+\end{itemize}
+Standard technique in high-efficiency cells.
+\cite{Palomares2004}
+\end{frame}
+
+
+\begin{frame}{Stability Challenges}
+\frametitle{Stability Challenges}
+
+\textbf{Stability Challenges} — Dye Desorption, Electrolyte Leakage, UV Degradation
+\begin{enumerate}
+\item \textbf{Dye desorption:} Polar solvents (water) displace anchoring group.
+\item \textbf{Electrolyte leakage:} Liquid cells lose solvent → performance drop.
+\item \textbf{UV degradation:} TiO$_2$ photocatalysis degrades dye; UV-filtering cover glass helps.
+\end{enumerate}
+\textbf{Test protocols:} ISOS-D-1 (dark, 85°C), ISOS-L-1 (light soaking at 60°C).
+\vspace{2mm}
+Best cells: 1000h at 80°C with $<$10\% loss.
+\cite{Kato2009}
+\end{frame}
+
+
+\begin{frame}{Encapsulation Technologies}
+\frametitle{Encapsulation Technologies}
+
+\textbf{Encapsulation Technologies} — Glass-to-Glass and Thermoplastic Sealing
+\textbf{Materials:}
+\begin{itemize}
+\item Surlyn (ionomer resin) – heat-sealed at 120°C.
+\item UV-curable epoxy – for rigid substrates.
+\end{itemize}
+\textbf{Architecture:}
+\begin{itemize}
+\item Glass-FTO – TiO$_2$/dye – electrolyte – Pt/FTO – Glass.
+\item Laser-welded glass frit for hermetic seal.
+\end{itemize}
+Flexible cells require barrier films (e.g., PET/Al multilayer) – still challenging.
+\cite{Sastrawan2006}
+\end{frame}
+
+
+\begin{frame}{Unique Advantages}
+\frametitle{Unique Advantages}
+
+\textbf{Unique Advantages} — Low-Light and Indoor Performance
+\begin{itemize}
+\item DSSCs work efficiently under diffuse, low-intensity light (100–500 lux).
+\item Indoor light (LED, fluorescent): 10–25\% efficiency under 200 lux (vs. Si 8–12\%).
+\item Excellent for IoT sensors, wearables, indoor electronics.
+\end{itemize}
+\textbf{Why?} Low series resistance losses, no need for full sunlight to overcome diode ideality factor.
+\vspace{2mm}
+Commercial examples: Ambient Photonics (DSSC-powered keyboards, price tags).
+\cite{Freitag2017}
+\end{frame}
+
+
+\begin{frame}{Building Integrated PV (BIPV)}
+\frametitle{Building Integrated PV (BIPV)}
+
+\textbf{Building Integrated PV (BIPV)} — Transparency and Aesthetic Color
+\begin{itemize}
+\item DSSCs can be made semitransparent (replace dye with scattering particles or thin film).
+\item Colors tuned by dye choice (red, blue, green, purple).
+\item Suitable for windows, facades, noise barriers.
+\end{itemize}
+\textbf{Efficiency-transparency trade-off:}
+\begin{itemize}
+\item Opaque: 10–12\%.
+\item 30\% transparent: 6–8\%.
+\end{itemize}
+Pilot installations: Fraunhofer ISE (Germany), Sony (Japan).
+\cite{Yoon2011}
+\end{frame}
+
+
+\begin{frame}{Summary and Outlook}
+\frametitle{Summary and Outlook}
+
+\textbf{Summary and Outlook} — Bridging Lab Efficiency and Commercial Durability
+\textbf{Strengths:}
+\begin{itemize}
+\item Low-cost materials, non-vacuum processing.
+\item Works indoors, flexible, colorful.
+\end{itemize}
+\textbf{Weaknesses:}
+\begin{itemize}
+\item Liquid electrolyte stability.
+\item Efficiency lagging behind perovskites and Si.
+\end{itemize}
+\textbf{Future directions:}
+\begin{itemize}
+\item Solid-state DSSCs with robust HTMs.
+\item Machine learning for dye/electrolyte discovery.
+\item Niche markets: indoor IoT, BIPV, portable charging.
+\end{itemize}
+DSSCs will remain relevant as a sustainable, design-flexible PV technology.
+\cite{Grätzel2021}
+\end{frame}
+
+
+\begin{frame}[allowframebreaks]{References (Page 1/4)}
+\frametitle{References (Page 1/4)}
+\vspace{0.5em}\begin{center}\textcolor{gray}{\small Page 1/4} \hfill \hyperlink{page.2}{\textcolor{blue}{\small Next Page →}}\end{center}
+
+\begin{thebibliography}{99}
+\bibitem{ORegan1991} B. O'Regan, M. Grätzel, \textit{Nature} \textbf{1991}, 353, 737. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.3}{3}]}
+\bibitem{Grätzel2001} M. Grätzel, \textit{Nature} \textbf{2001}, 414, 338.
+\bibitem{Hagfeldt2010} A. Hagfeldt et al., \textit{Chem. Rev.} \textbf{2010}, 110, 6595. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.7}{7}, \hyperlink{page.37}{37}]}
+\bibitem{Green2022} M. Green et al., \textit{Prog. Photovolt.} \textbf{2022}, 30, 3. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.2}{2}, \hyperlink{page.40}{40}]}
+\bibitem{Peter2007} L. M. Peter, \textit{Phys. Chem. Chem. Phys.} \textbf{2007}, 9, 2630. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.4}{4}]}
+\bibitem{Kalyanasundaram2010} K. Kalyanasundaram, \textit{Energy Environ. Sci.} \textbf{2010}, 3, 919. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.5}{5}]}
+\bibitem{Gordillo2006} G. Gordillo et al., \textit{Sol. Energy Mater. Sol. Cells} \textbf{2006}, 90, 2556. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.6}{6}]}
+\bibitem{Grätzel2005} M. Grätzel, \textit{Inorg. Chem.} \textbf{2005}, 44, 6841. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.8}{8}]}
+\bibitem{Mathew2014} S. Mathew et al., \textit{Nat. Chem.} \textbf{2014}, 6, 242. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.9}{9}]}
+\bibitem{Feldt2010} S. M. Feldt et al., \textit{J. Am. Chem. Soc.} \textbf{2010}, 132, 16714. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.10}{10}]}
+\bibitem{Trancik2007} J. E. Trancik et al., \textit{Adv. Mater.} \textbf{2007}, 19, 657. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.11}{11}]}
+\bibitem{Ardo2009} S. Ardo, G. J. Meyer, \textit{Chem. Soc. Rev.} \textbf{2009}, 38, 115. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.13}{13}]}
+\end{thebibliography}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References (Page 2/4)}
+\frametitle{References (Page 2/4)}
+\vspace{0.5em}\begin{center}\hyperlink{page.1}{\textcolor{blue}{\small ← Previous Page}} \hfill \textcolor{gray}{\small Page 2/4} \hfill \hyperlink{page.3}{\textcolor{blue}{\small Next Page →}}\end{center}
+
+\begin{thebibliography}{99}
+\bibitem{Koops2009} S. E. Koops et al., \textit{J. Am. Chem. Soc.} \textbf{2009}, 131, 5218. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.14}{14}]}
+\bibitem{Nelson2003} J. Nelson, \textit{Phys. Rev. B} \textbf{2003}, 67, 155209. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.15}{15}]}
+\bibitem{Clifford2011} J. N. Clifford et al., \textit{J. Phys. Chem. C} \textbf{2011}, 115, 21847. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.16}{16}]}
+\bibitem{Hilgendorff2000} M. Hilgendorff, M. Grätzel, \textit{Electrochim. Acta} \textbf{2000}, 45, 4577. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.17}{17}]}
+\bibitem{Durrant2004} J. R. Durrant, \textit{J. Photochem. Photobiol. A} \textbf{2004}, 164, 23. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.18}{18}]}
+\bibitem{Frank2004} A. J. Frank et al., \textit{Coord. Chem. Rev.} \textbf{2004}, 248, 1165. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.19}{19}]}
+\bibitem{Cahen2003} D. Cahen et al., \textit{J. Phys. Chem. B} \textbf{2003}, 107, 10253. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.20}{20}]}
+\bibitem{Nazeeruddin2003} M. K. Nazeeruddin et al., \textit{J. Am. Chem. Soc.} \textbf{2003}, 125, 14522. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.21}{21}]}
+\bibitem{Robertson2006} N. Robertson, \textit{Angew. Chem. Int. Ed.} \textbf{2006}, 45, 2338. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.22}{22}]}
+\bibitem{Snaith2007} H. J. Snaith, M. Grätzel, \textit{Appl. Phys. Lett.} \textbf{2007}, 91, 092103. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.23}{23}]}
+\bibitem{Nazeeruddin2005} M. K. Nazeeruddin et al., \textit{J. Am. Chem. Soc.} \textbf{2005}, 127, 16835. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.24}{24}]}
+\bibitem{Mishra2009} A. Mishra et al., \textit{Angew. Chem. Int. Ed.} \textbf{2009}, 48, 2474. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.25}{25}]}
+\end{thebibliography}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References (Page 3/4)}
+\frametitle{References (Page 3/4)}
+\vspace{0.5em}\begin{center}\hyperlink{page.2}{\textcolor{blue}{\small ← Previous Page}} \hfill \textcolor{gray}{\small Page 3/4} \hfill \hyperlink{page.4}{\textcolor{blue}{\small Next Page →}}\end{center}
+
+\begin{thebibliography}{99}
+\bibitem{Calogero2012} G. Calogero et al., \textit{Energy Environ. Sci.} \textbf{2012}, 5, 9882. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.26}{26}]}
+\bibitem{Grätzel2009} M. Grätzel, \textit{Acc. Chem. Res.} \textbf{2009}, 42, 1788. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.27}{27}]}
+\bibitem{Galoppini2004} E. Galoppini, \textit{Coord. Chem. Rev.} \textbf{2004}, 248, 1283. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.28}{28}]}
+\bibitem{Yella2011} A. Yella et al., \textit{Science} \textbf{2011}, 334, 629. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.29}{29}]}
+\bibitem{Saygili2018} Y. Saygili et al., \textit{J. Mater. Chem. A} \textbf{2018}, 6, 15433. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.30}{30}]}
+\bibitem{Bach1998} U. Bach et al., \textit{Nature} \textbf{1998}, 395, 583. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.31}{31}]}
+\bibitem{Wang2003} P. Wang et al., \textit{J. Am. Chem. Soc.} \textbf{2003}, 125, 1166. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.32}{32}]}
+\bibitem{Hauch2001} A. Hauch, A. Georg, \textit{Electrochim. Acta} \textbf{2001}, 46, 3457. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.33}{33}]}
+\bibitem{Olsen2000} E. Olsen et al., \textit{Sol. Energy Mater. Sol. Cells} \textbf{2000}, 63, 267. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.34}{34}]}
+\bibitem{Kavan2011} L. Kavan, J. H. Yum, M. Grätzel, \textit{ACS Nano} \textbf{2011}, 5, 165. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.35}{35}]}
+\bibitem{Yoo2012} D. Yoo et al., \textit{Nano Energy} \textbf{2012}, 1, 414. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.36}{36}]}
+\bibitem{Snaith2005} H. J. Snaith, L. Schmidt-Mende, \textit{Adv. Mater.} \textbf{2005}, 17, 2851. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.38}{38}]}
+\end{thebibliography}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References (Page 4/4)}
+\frametitle{References (Page 4/4)}
+\vspace{0.5em}\begin{center}\hyperlink{page.3}{\textcolor{blue}{\small ← Previous Page}} \hfill \textcolor{gray}{\small Page 4/4}\end{center}
+
+\begin{thebibliography}{99}
+\bibitem{Hagfeldt2008} A. Hagfeldt, M. Grätzel, \textit{Acc. Chem. Res.} \textbf{2008}, 33, 269. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.39}{39}]}
+\bibitem{Kakiage2015} K. Kakiage et al., \textit{Chem. Commun.} \textbf{2015}, 51, 6315. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.41}{41}]}
+\bibitem{Hore2005} S. Hore et al., \textit{Chem. Commun.} \textbf{2005}, 40, 511. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.42}{42}]}
+\bibitem{Standridge2009} S. D. Standridge et al., \textit{J. Am. Chem. Soc.} \textbf{2009}, 131, 18428. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.43}{43}]}
+\bibitem{Palomares2004} E. Palomares et al., \textit{J. Am. Chem. Soc.} \textbf{2004}, 126, 12250. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.44}{44}]}
+\bibitem{Kato2009} N. Kato et al., \textit{Sol. Energy Mater. Sol. Cells} \textbf{2009}, 93, 893. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.45}{45}]}
+\bibitem{Sastrawan2006} R. Sastrawan et al., \textit{Sol. Energy Mater. Sol. Cells} \textbf{2006}, 90, 1680. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.46}{46}]}
+\bibitem{Freitag2017} M. Freitag et al., \textit{Nat. Photonics} \textbf{2017}, 11, 372. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.47}{47}]}
+\bibitem{Yoon2011} J. H. Yoon et al., \textit{Energy Build.} \textbf{2011}, 43, 1735. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.48}{48}]}
+\bibitem{Grätzel2021} M. Grätzel, \textit{Acc. Chem. Res.} \textbf{2021}, 54, 3015. \hfill\textcolor{gray}{\tiny [Cited on slides: \hyperlink{page.49}{49}]}
+\end{thebibliography}
+\end{frame}
+
+\end{document}
