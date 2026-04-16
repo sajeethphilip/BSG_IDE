@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BSG-IDE Complete Build and Deployment Script
-Version: 5.1.4
+Version: 5.3
 """
 
 import os
@@ -12,7 +12,7 @@ import argparse
 from pathlib import Path
 
 # Configuration
-VERSION = "5.2.3"
+VERSION = "5.3.2"
 PACKAGE_NAME = "bsg_ide"
 PYPI_NAME = "bsg-ide"
 AUTHOR = "Ninan Sajeeth Philip"
