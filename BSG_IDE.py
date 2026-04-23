@@ -122,6 +122,7 @@ except ImportError as e:
 import os,re
 import sys
 import tempfile
+import shutil
 import subprocess
 #------------------------------------------------------------------------------------------------------
 import json
@@ -2204,6 +2205,7 @@ class SearchReplacePanel(ctk.CTkToplevel):
         self.geometry(f"+{x}+{y}")
 
         self.create_widgets()
+        self.create_app_menu()
 
     def create_widgets(self):
         """Create search and replace widgets"""
@@ -7431,7 +7433,7 @@ class BeamerSlideEditor(ctk.CTk):
       / /\\ \\
      /_/  \\_\\ LABS
     """
-        self.__version__ = "5.6.4"
+        self.__version__ = "5.7.4"
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
@@ -11860,18 +11862,183 @@ Created by {self.__author__}
 #----------------------------------------------------------------------------------------
     def setup_top_menu(self) -> None:
         """Create top menu bar with proper spacing and visibility"""
+
+        # Create a proper menu bar using tkinter Menu
+        self.menu_bar = tk.Menu(self)
+        self.config(menu=self.menu_bar)
+
+        # ========== FILE MENU ==========
+        file_menu = tk.Menu(self.menu_bar, tearoff=0)
+        file_menu.add_command(label="New", command=self.new_file, accelerator="Ctrl+N")
+        file_menu.add_command(label="Open...", command=self.open_file, accelerator="Ctrl+O")
+        file_menu.add_command(label="Save", command=self.save_file, accelerator="Ctrl+S")
+        file_menu.add_separator()
+
+        # Recent Files submenu
+        self.recent_menu = tk.Menu(file_menu, tearoff=0)
+        file_menu.add_cascade(label="Recent Files", menu=self.recent_menu)
+        self.update_recent_menu()
+
+        file_menu.add_separator()
+        file_menu.add_command(label="Load TeX File...", command=self.load_tex_file)
+        file_menu.add_command(label="Get Source from TeX...", command=self.get_source_from_tex)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export to Overleaf...", command=self.create_overleaf_zip)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.on_closing, accelerator="Ctrl+Q")
+        self.menu_bar.add_cascade(label="File", menu=file_menu)
+
+        # ========== EDIT MENU ==========
+        edit_menu = tk.Menu(self.menu_bar, tearoff=0)
+        edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Cut", command=lambda: self._editor_action('cut'), accelerator="Ctrl+X")
+        edit_menu.add_command(label="Copy", command=lambda: self._editor_action('copy'), accelerator="Ctrl+C")
+        edit_menu.add_command(label="Paste", command=lambda: self._editor_action('paste'), accelerator="Ctrl+V")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Find/Replace", command=self.show_search_replace_dialog, accelerator="Ctrl+F")
+        edit_menu.add_separator()
+
+        # Slide Operations submenu
+        slide_ops = tk.Menu(edit_menu, tearoff=0)
+        slide_ops.add_command(label="New Slide", command=self.new_slide, accelerator="Ctrl+N")
+        slide_ops.add_command(label="Insert Below", command=self.insert_slide_below, accelerator="Ctrl+I")
+        slide_ops.add_command(label="Duplicate Slide", command=self.duplicate_slide, accelerator="Ctrl+D")
+        slide_ops.add_separator()
+        slide_ops.add_command(label="Move Up", command=lambda: self.move_slide(-1), accelerator="Ctrl+Up")
+        slide_ops.add_command(label="Move Down", command=lambda: self.move_slide(1), accelerator="Ctrl+Down")
+        edit_menu.add_cascade(label="Slide Operations", menu=slide_ops)
+
+        # Mask/Unmask submenu
+        mask_ops = tk.Menu(edit_menu, tearoff=0)
+        mask_ops.add_command(label="Mask/Unmask Line", command=self.mask_line_in_editor, accelerator="Ctrl+Delete")
+        mask_ops.add_command(label="Mask Current Slide", command=self.mask_current_slide)
+        mask_ops.add_command(label="Restore Current Slide", command=self.restore_deleted_slide, accelerator="Ctrl+Shift+R")
+        mask_ops.add_separator()
+        mask_ops.add_command(label="Restore All Deleted", command=self.restore_all_deleted_slides)
+        mask_ops.add_command(label="Permanently Delete Masked", command=self.permanently_delete_masked_slides)
+        edit_menu.add_cascade(label="Mask/Unmask", menu=mask_ops)
+
+        self.menu_bar.add_cascade(label="Edit", menu=edit_menu)
+
+        # ========== VIEW MENU ==========
+        view_menu = tk.Menu(self.menu_bar, tearoff=0)
+        view_menu.add_checkbutton(label="Syntax Highlighting", variable=self.highlight_var,
+                                  command=self.toggle_highlighting)
+        view_menu.add_command(label="Toggle Terminal", command=self.toggle_terminal, accelerator="Ctrl+T")
+        view_menu.add_separator()
+
+        # Notes Mode submenu
+        notes_menu = tk.Menu(view_menu, tearoff=0)
+        self.notes_mode_var = tk.StringVar(value="both")
+        notes_menu.add_radiobutton(label="Slides Only", variable=self.notes_mode_var,
+                                   value="slides", command=lambda: self.set_notes_mode("slides"))
+        notes_menu.add_radiobutton(label="Notes Only", variable=self.notes_mode_var,
+                                   value="notes", command=lambda: self.set_notes_mode("notes"))
+        notes_menu.add_radiobutton(label="Slides + Notes", variable=self.notes_mode_var,
+                                   value="both", command=lambda: self.set_notes_mode("both"))
+        view_menu.add_cascade(label="Notes Mode", menu=notes_menu)
+
+        self.menu_bar.add_cascade(label="View", menu=view_menu)
+
+        # ========== INSERT MENU ==========
+        insert_menu = tk.Menu(self.menu_bar, tearoff=0)
+
+        # LaTeX Commands
+        insert_menu.add_command(label="LaTeX Command Index...", command=self.show_enhanced_command_index)
+        insert_menu.add_separator()
+
+        # List Environments
+        list_menu = tk.Menu(insert_menu, tearoff=0)
+        list_menu.add_command(label="Bullet Point", command=lambda: self._insert_text("- "))
+        list_menu.add_command(label="Itemize Environment",
+                             command=lambda: self._insert_text("\\begin{itemize}\n    \\item \n\\end{itemize}"))
+        list_menu.add_command(label="Enumerate Environment",
+                             command=lambda: self._insert_text("\\begin{enumerate}\n    \\item \n\\end{enumerate}"))
+        insert_menu.add_cascade(label="List Environments", menu=list_menu)
+
+        # Text Formatting
+        format_menu = tk.Menu(insert_menu, tearoff=0)
+        format_menu.add_command(label="Bold", command=lambda: self._wrap_selection(r'\textbf{', '}'))
+        format_menu.add_command(label="Italic", command=lambda: self._wrap_selection(r'\textit{', '}'))
+        format_menu.add_command(label="Color", command=self._insert_color_command)
+        format_menu.add_command(label="Highlight", command=lambda: self._wrap_selection(r'\hl{', '}'))
+        insert_menu.add_cascade(label="Text Formatting", menu=format_menu)
+
+        # Media
+        media_menu = tk.Menu(insert_menu, tearoff=0)
+        media_menu.add_command(label="Local File...", command=self.browse_media)
+        media_menu.add_command(label="YouTube Video...", command=self.youtube_dialog)
+        media_menu.add_command(label="Search Images...", command=self.search_images)
+        media_menu.add_command(label="Screen Capture...", command=self.capture_screen)
+        media_menu.add_command(label="Camera Capture...", command=self.open_camera)
+        insert_menu.add_cascade(label="Media", menu=media_menu)
+
+        # TikZ
+        tikz_menu = tk.Menu(insert_menu, tearoff=0)
+        tikz_menu.add_command(label="TikZ Color Helper...", command=self.show_tikz_color_helper)
+        tikz_menu.add_command(label="Basic Node",
+                             command=lambda: self._insert_text("\\node[fill=airis4d_blue, text=white] {Text};"))
+        tikz_menu.add_command(label="Simple Diagram", command=self._insert_tikz_diagram)
+        insert_menu.add_cascade(label="TikZ Elements", menu=tikz_menu)
+
+        self.menu_bar.add_cascade(label="Insert", menu=insert_menu)
+
+        # ========== TOOLS MENU ==========
+        tools_menu = tk.Menu(self.menu_bar, tearoff=0)
+
+        # Presentation Tools
+        tools_menu.add_command(label="Presentation Settings...", command=self.show_settings_dialog)
+        tools_menu.add_command(label="Edit Preamble...", command=self.edit_preamble)
+        tools_menu.add_separator()
+
+        # Generation Tools
+        gen_menu = tk.Menu(tools_menu, tearoff=0)
+        gen_menu.add_command(label="Generate PDF", command=self.generate_pdf)
+        gen_menu.add_command(label="Convert to TeX", command=self.convert_to_tex)
+        gen_menu.add_command(label="Preview PDF", command=self.preview_pdf)
+        gen_menu.add_command(label="Present with Notes", command=self.present_with_notes)
+        tools_menu.add_cascade(label="Generation", menu=gen_menu)
+
+        tools_menu.add_separator()
+
+        # Grammar & Spell Check
+        tools_menu.add_command(label="Grammarly Settings...", command=self.toggle_grammarly)
+        tools_menu.add_command(label="Spell Check Settings...", command=self.show_spellcheck_settings)
+        tools_menu.add_separator()
+
+        # Color Tools
+        tools_menu.add_command(label="TikZ Color Helper...", command=self.show_tikz_color_helper)
+
+        self.menu_bar.add_cascade(label="Tools", menu=tools_menu)
+
+        # ========== HELP MENU ==========
+        help_menu = tk.Menu(self.menu_bar, tearoff=0)
+        help_menu.add_command(label="LaTeX Command Reference...", command=self.show_enhanced_command_index)
+        help_menu.add_separator()
+        help_menu.add_command(label="Create Desktop Shortcut", command=self.create_desktop_shortcut)
+        help_menu.add_separator()
+        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_keyboard_shortcuts)
+        help_menu.add_separator()
+        help_menu.add_command(label="About BSG-IDE", command=self.create_about_dialog)
+        self.menu_bar.add_cascade(label="Help", menu=help_menu)
+
+        # Keep the original button row for backward compatibility (optional)
+        # You can comment this out if you want only the menu bar
+        self._create_button_row()
+
+    def _create_button_row(self):
+        """Create the original button row (kept for compatibility)"""
         # Main menu container
         self.menu_frame = ctk.CTkFrame(self)
         self.menu_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        self.menu_frame.grid_columnconfigure(1, weight=1)
 
-        # Configure menu frame grid properly
-        self.menu_frame.grid_columnconfigure(1, weight=1)  # Make middle section expandable
-
-        # Left side buttons with fixed minimum widths
+        # Left side buttons
         left_buttons = ctk.CTkFrame(self.menu_frame, fg_color="transparent")
         left_buttons.grid(row=0, column=0, sticky="w", padx=5)
 
-        # Add menu buttons with minimum width
         menu_buttons = [
             ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble"),
             ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings"),
@@ -11880,13 +12047,8 @@ Created by {self.__author__}
             ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF"),
         ]
 
-        for i, (text, command, tooltip) in enumerate(menu_buttons):
-            btn = ctk.CTkButton(
-                left_buttons,
-                text=text,
-                command=command,
-                width=130  # Fixed minimum width for buttons
-            )
+        for text, command, tooltip in menu_buttons:
+            btn = ctk.CTkButton(left_buttons, text=text, command=command, width=130)
             btn.pack(side="left", padx=5)
             self.create_tooltip(btn, tooltip)
 
@@ -11894,16 +12056,282 @@ Created by {self.__author__}
         right_buttons = ctk.CTkFrame(self.menu_frame, fg_color="transparent")
         right_buttons.grid(row=0, column=1, sticky="e", padx=5)
 
-        # Add syntax highlighting switch
         self.highlight_var = ctk.BooleanVar(value=True)
         self.highlight_switch = ctk.CTkSwitch(
             right_buttons,
             text="Syntax Highlighting",
             variable=self.highlight_var,
             command=self.toggle_highlighting,
-            width=150  # Fixed minimum width for switch
+            width=150
         )
         self.highlight_switch.pack(side="right", padx=5)
+
+    # ========== HELPER METHODS FOR MENU ACTIONS ==========
+
+    def _editor_action(self, action):
+        """Perform edit action on focused widget"""
+        focused = self.focus_get()
+        if focused in [self.content_editor._textbox, self.notes_editor._textbox]:
+            try:
+                if action == 'cut':
+                    focused.event_generate('<<Cut>>')
+                elif action == 'copy':
+                    focused.event_generate('<<Copy>>')
+                elif action == 'paste':
+                    focused.event_generate('<<Paste>>')
+            except:
+                pass
+
+    def _insert_text(self, text):
+        """Insert text into focused editor"""
+        focused = self.focus_get()
+        if focused == self.content_editor._textbox:
+            self.content_editor.insert("insert", text)
+        elif focused == self.notes_editor._textbox:
+            self.notes_editor.insert("insert", text)
+        elif focused == self.title_entry:
+            self.title_entry.insert("insert", text)
+
+    def _wrap_selection(self, prefix, suffix):
+        """Wrap selected text with prefix and suffix"""
+        focused = self.focus_get()
+        if focused in [self.content_editor._textbox, self.notes_editor._textbox]:
+            try:
+                selection = focused.get('sel.first', 'sel.last')
+                focused.delete('sel.first', 'sel.last')
+                focused.insert('insert', f'{prefix}{selection}{suffix}')
+            except tk.TclError:
+                focused.insert('insert', f'{prefix}{suffix}')
+
+    def _insert_color_command(self):
+        """Insert textcolor command"""
+        from tkinter import simpledialog
+        color = simpledialog.askstring("Color", "Enter color name or RGB (e.g., red, blue, #FF0000):")
+        if color:
+            self._wrap_selection(f'\\textcolor{{{color}}}{{', '}')
+
+    def _insert_tikz_diagram(self):
+        """Insert a simple TikZ diagram template"""
+        diagram = """\\begin{tikzpicture}
+        \\draw[fill=airis4d_blue] (0,0) rectangle (2,1);
+        \\node[text=white] at (1,0.5) {Label};
+    \\end{tikzpicture}"""
+        self._insert_text(diagram)
+
+    def show_search_replace_dialog(self):
+        """Show search/replace dialog for the focused editor"""
+        focused = self.focus_get()
+        if focused in [self.content_editor._textbox, self.notes_editor._textbox]:
+            SearchReplacePanel(self, focused)
+
+    def _show_keyboard_shortcuts(self):
+        """Show keyboard shortcuts dialog"""
+        shortcuts_text = """
+        ╔══════════════════════════════════════════════════════════════╗
+        ║                   BSG-IDE KEYBOARD SHORTCUTS                 ║
+        ╚══════════════════════════════════════════════════════════════╝
+
+        ┌─────────────── FILE OPERATIONS ───────────────┐
+        │ Ctrl+N   - New presentation                    │
+        │ Ctrl+O   - Open file                          │
+        │ Ctrl+S   - Save file                          │
+        │ Ctrl+Q   - Exit                               │
+        └────────────────────────────────────────────────┘
+
+        ┌─────────────── EDIT OPERATIONS ───────────────┐
+        │ Ctrl+Z   - Undo                               │
+        │ Ctrl+Y   - Redo                               │
+        │ Ctrl+X   - Cut                                │
+        │ Ctrl+C   - Copy                               │
+        │ Ctrl+V   - Paste                              │
+        │ Ctrl+F   - Find/Replace                       │
+        │ Ctrl+Delete - Mask/Unmask current line        │
+        └────────────────────────────────────────────────┘
+
+        ┌─────────────── SLIDE NAVIGATION ──────────────┐
+        │ Ctrl+Up/Down     - Move current slide         │
+        │ Ctrl+Left/Right  - Navigate slides            │
+        │ Delete           - Delete/mask current slide  │
+        │ Ctrl+Shift+R     - Restore deleted slide      │
+        └────────────────────────────────────────────────┘
+
+        ┌─────────────── SLIDE CREATION ────────────────┐
+        │ Ctrl+N   - New slide (in slide list)          │
+        │ Ctrl+I   - Insert slide below                 │
+        │ Ctrl+D   - Duplicate slide                    │
+        └────────────────────────────────────────────────┘
+
+        ┌─────────────── VIEW OPERATIONS ───────────────┐
+        │ Ctrl+T   - Toggle terminal                    │
+        └────────────────────────────────────────────────┘
+        """
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Keyboard Shortcuts")
+        dialog.geometry("650x550")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 650) // 2
+        y = (dialog.winfo_screenheight() - 550) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        text_widget = ctk.CTkTextbox(dialog, font=("Courier", 11))
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+        text_widget.insert("1.0", shortcuts_text)
+        text_widget.configure(state="disabled")
+
+        button_frame = ctk.CTkFrame(dialog)
+        button_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkButton(button_frame, text="Close", command=dialog.destroy).pack(side="right", padx=5)
+
+    def update_recent_menu(self):
+        """Update the recent files menu"""
+        if hasattr(self, 'recent_menu'):
+            self.recent_menu.delete(0, 'end')
+            if hasattr(self, 'session_data') and self.session_data.get('recent_files'):
+                for filepath in self.session_data['recent_files'][-10:]:
+                    if os.path.exists(filepath):
+                        self.recent_menu.add_command(
+                            label=os.path.basename(filepath),
+                            command=lambda f=filepath: self.load_file(f)
+                        )
+            else:
+                self.recent_menu.add_command(label="No recent files", state="disabled")
+
+    def create_desktop_shortcut(self):
+        """Create desktop shortcut/menu entry from within the IDE"""
+        import platform
+        import subprocess
+        from pathlib import Path
+
+        system = platform.system()
+        home = Path.home()
+
+        # Check if already exists
+        if system == "Linux":
+            desktop_file = home / ".local" / "share" / "applications" / "bsg-ide.desktop"
+            if desktop_file.exists():
+                response = messagebox.askyesno("Shortcut Exists",
+                    "A menu entry already exists.\n\nDo you want to recreate it?")
+                if not response:
+                    return
+
+        elif system == "Windows":
+            start_menu = Path(os.environ.get('APPDATA', '')) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+            shortcut_path = start_menu / "BSG-IDE" / "BSG-IDE.lnk"
+            if shortcut_path.exists():
+                response = messagebox.askyesno("Shortcut Exists",
+                    "A Start Menu shortcut already exists.\n\nDo you want to recreate it?")
+                if not response:
+                    return
+
+        elif system == "Darwin":
+            app_path = home / "Applications" / "BSG-IDE.app"
+            if app_path.exists():
+                response = messagebox.askyesno("Shortcut Exists",
+                    "An application bundle already exists.\n\nDo you want to recreate it?")
+                if not response:
+                    return
+
+        try:
+            self.write("Creating system menu entry...\n", "cyan")
+
+            if system == "Linux":
+                # Create desktop entry for Linux
+                desktop_content = f"""[Desktop Entry]
+    Version=1.0
+    Type=Application
+    Name=BSG-IDE
+    Comment=Beamer Slide Generator IDE
+    Exec=bsg-ide
+    Icon=bsg-ide
+    Terminal=false
+    Categories=Office;Development;Education;
+    StartupNotify=true
+    """
+                desktop_file = home / ".local" / "share" / "applications" / "bsg-ide.desktop"
+                desktop_file.parent.mkdir(parents=True, exist_ok=True)
+                desktop_file.write_text(desktop_content)
+                desktop_file.chmod(0o755)
+
+                # Update desktop database
+                subprocess.run(['update-desktop-database', str(desktop_file.parent)],
+                             capture_output=True)
+                self.write("✓ Menu entry created in Applications menu\n", "green")
+                messagebox.showinfo("Success",
+                    "Menu entry created!\n\nYou can now find BSG-IDE in your Applications menu.")
+
+            elif system == "Windows":
+                # Create Start Menu shortcut for Windows
+                start_menu = Path(os.environ.get('APPDATA', '')) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+                start_menu_dir = start_menu / "BSG-IDE"
+                start_menu_dir.mkdir(parents=True, exist_ok=True)
+
+                shortcut_path = start_menu_dir / "BSG-IDE.lnk"
+
+                # Find the Python executable and module path
+                import bsg_ide
+                bsg_path = Path(bsg_ide.__file__).parent
+
+                # Create using PowerShell
+                ps_script = f'''
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $Shortcut = $WScriptShell.CreateShortcut("{shortcut_path}")
+    $Shortcut.TargetPath = "python"
+    $Shortcut.Arguments = "-c ""from bsg_ide.BSG_IDE import launch_ide; launch_ide()"""
+    $Shortcut.WorkingDirectory = "{os.path.expanduser('~')}\\Documents"
+    $Shortcut.IconLocation = "{bsg_path / 'resources' / 'bsg-ide.ico' if (bsg_path / 'resources' / 'bsg-ide.ico').exists() else 'python.exe'}"
+    $Shortcut.Save()
+    '''
+                result = subprocess.run(['powershell', '-Command', ps_script],
+                                      capture_output=True, text=True)
+
+                if result.returncode == 0:
+                    self.write("✓ Start Menu shortcut created\n", "green")
+                    messagebox.showinfo("Success",
+                        "Start Menu shortcut created!\n\nYou can now find BSG-IDE in your Start Menu.")
+                else:
+                    self.write("⚠ Shortcut created with warnings\n", "yellow")
+                    messagebox.showwarning("Partial Success",
+                        "Shortcut created but with warnings.\n\nYou may need to run as administrator.")
+
+            elif system == "Darwin":  # macOS
+                # Create application bundle for macOS
+                app_path = home / "Applications" / "BSG-IDE.app"
+                contents = app_path / "Contents"
+                macos = contents / "MacOS"
+                resources = contents / "Resources"
+
+                for d in [macos, resources]:
+                    d.mkdir(parents=True, exist_ok=True)
+
+                # Create launcher script
+                launcher = macos / "bsg-ide"
+                launcher.write_text('''#!/bin/bash
+    exec python3 -c "from bsg_ide.BSG_IDE import launch_ide; launch_ide()"
+    ''')
+                launcher.chmod(0o755)
+
+                self.write("✓ Application bundle created in Applications folder\n", "green")
+                messagebox.showinfo("Success",
+                    "Application bundle created!\n\nYou can now find BSG-IDE in your Applications folder.")
+
+            else:
+                self.write(f"⚠ Menu entry creation not supported on {system}\n", "yellow")
+                messagebox.showwarning("Not Supported",
+                    f"Automatic menu entry creation is not supported on {system}.\n\n"
+                    "You can still launch BSG-IDE from the command line using 'bsg-ide'.")
+
+        except Exception as e:
+            error_msg = f"Failed to create menu entry: {str(e)}"
+            self.write(f"✗ {error_msg}\n", "red")
+            messagebox.showerror("Error",
+                f"{error_msg}\n\n"
+                "You can still launch BSG-IDE from the command line using 'bsg-ide'.")
 
     def get_source_from_tex(self) -> None:
         """Convert a tex file back to source text format using simple converter"""
@@ -12160,6 +12588,102 @@ Created by {self.__author__}
         self.title_entry.focus_set()
         self.title_entry.select_range(0, 'end')
 
+    def create_app_menu(self):
+        """Create a proper application menu bar"""
+
+        # Create menu bar
+        self.menu_bar = tk.Menu(self)
+        self.config(menu=self.menu_bar)
+
+        # ========== FILE MENU ==========
+        file_menu = tk.Menu(self.menu_bar, tearoff=0)
+        file_menu.add_command(label="New", command=self.new_file, accelerator="Ctrl+N")
+        file_menu.add_command(label="Open...", command=self.open_file, accelerator="Ctrl+O")
+        file_menu.add_command(label="Save", command=self.save_file, accelerator="Ctrl+S")
+        file_menu.add_separator()
+        file_menu.add_command(label="Load TeX File...", command=self.load_tex_file)
+        file_menu.add_command(label="Get Source from TeX...", command=self.get_source_from_tex)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export to Overleaf...", command=self.create_overleaf_zip)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.on_closing, accelerator="Ctrl+Q")
+        self.menu_bar.add_cascade(label="File", menu=file_menu)
+
+        # ========== EDIT MENU ==========
+        edit_menu = tk.Menu(self.menu_bar, tearoff=0)
+        edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Cut", command=lambda: self._editor_action('cut'), accelerator="Ctrl+X")
+        edit_menu.add_command(label="Copy", command=lambda: self._editor_action('copy'), accelerator="Ctrl+C")
+        edit_menu.add_command(label="Paste", command=lambda: self._editor_action('paste'), accelerator="Ctrl+V")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Mask/Unmask Line", command=self.mask_line_in_editor, accelerator="Ctrl+Delete")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Presentation Settings...", command=self.show_settings_dialog)
+        edit_menu.add_command(label="Edit Preamble...", command=self.edit_preamble)
+        self.menu_bar.add_cascade(label="Edit", menu=edit_menu)
+
+        # ========== SLIDE MENU ==========
+        slide_menu = tk.Menu(self.menu_bar, tearoff=0)
+        slide_menu.add_command(label="New Slide", command=self.new_slide, accelerator="Ctrl+N")
+        slide_menu.add_command(label="Insert Below", command=self.insert_slide_below, accelerator="Ctrl+I")
+        slide_menu.add_command(label="Duplicate Slide", command=self.duplicate_slide, accelerator="Ctrl+D")
+        slide_menu.add_separator()
+        slide_menu.add_command(label="Move Up", command=lambda: self.move_slide(-1), accelerator="Ctrl+Up")
+        slide_menu.add_command(label="Move Down", command=lambda: self.move_slide(1), accelerator="Ctrl+Down")
+        slide_menu.add_separator()
+        slide_menu.add_command(label="Mask Current Slide", command=self.mask_current_slide)
+        slide_menu.add_command(label="Restore Current Slide", command=self.restore_deleted_slide, accelerator="Ctrl+Shift+R")
+        slide_menu.add_separator()
+        slide_menu.add_command(label="Restore All Deleted", command=self.restore_all_deleted_slides)
+        slide_menu.add_command(label="Permanently Delete Masked", command=self.permanently_delete_masked_slides)
+        self.menu_bar.add_cascade(label="Slide", menu=slide_menu)
+
+        # ========== VIEW MENU ==========
+        view_menu = tk.Menu(self.menu_bar, tearoff=0)
+        view_menu.add_checkbutton(label="Syntax Highlighting", variable=self.highlight_var,
+                                  command=self.toggle_highlighting)
+        view_menu.add_command(label="Toggle Terminal", command=self.toggle_terminal, accelerator="Ctrl+T")
+        view_menu.add_separator()
+
+        # Notes Mode submenu
+        notes_menu = tk.Menu(view_menu, tearoff=0)
+        self.notes_mode_var = tk.StringVar(value="both")
+        notes_menu.add_radiobutton(label="Slides Only", variable=self.notes_mode_var,
+                                   value="slides", command=lambda: self.set_notes_mode("slides"))
+        notes_menu.add_radiobutton(label="Notes Only", variable=self.notes_mode_var,
+                                   value="notes", command=lambda: self.set_notes_mode("notes"))
+        notes_menu.add_radiobutton(label="Slides + Notes", variable=self.notes_mode_var,
+                                   value="both", command=lambda: self.set_notes_mode("both"))
+        view_menu.add_cascade(label="Notes Mode", menu=notes_menu)
+
+        self.menu_bar.add_cascade(label="View", menu=view_menu)
+
+        # ========== TOOLS MENU ==========
+        tools_menu = tk.Menu(self.menu_bar, tearoff=0)
+        tools_menu.add_command(label="Generate PDF", command=self.generate_pdf)
+        tools_menu.add_command(label="Convert to TeX", command=self.convert_to_tex)
+        tools_menu.add_command(label="Preview PDF", command=self.preview_pdf)
+        tools_menu.add_command(label="Present with Notes", command=self.present_with_notes)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="TikZ Color Helper...", command=self.show_tikz_color_helper)
+        tools_menu.add_command(label="Command Index...", command=self.show_enhanced_command_index)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Grammarly", command=self.toggle_grammarly)
+        tools_menu.add_command(label="Spell Check Settings...", command=self.show_spellcheck_settings)
+        self.menu_bar.add_cascade(label="Tools", menu=tools_menu)
+
+        # ========== HELP MENU ==========
+        help_menu = tk.Menu(self.menu_bar, tearoff=0)
+        help_menu.add_command(label="LaTeX Command Reference...", command=self.show_enhanced_command_index)
+        help_menu.add_separator()
+        help_menu.add_command(label="Create Desktop Shortcut", command=self.create_desktop_shortcut)
+        help_menu.add_separator()
+        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_keyboard_shortcuts)
+        help_menu.add_separator()
+        help_menu.add_command(label="About BSG-IDE", command=self.create_about_dialog)
+        self.menu_bar.add_cascade(label="Help", menu=help_menu)
 
     def on_list_focus(self, event) -> None:
         """Handle slide list focus"""
@@ -12401,7 +12925,6 @@ Created by {self.__author__}
         )
         help_label.pack(side="left")
 
-
     def check_dependencies(self) -> dict:
         """Check if required packages are installed in current environment"""
         dependencies = {
@@ -12420,228 +12943,580 @@ Created by {self.__author__}
         return dependencies
 
 #-------------------------------------------------------Capture Screen ---------------------------------------
+
     def capture_screen(self):
-        """Cross-platform screen capture with animation support"""
+        """
+        Screen capture by pasting from clipboard.
+        User takes screenshot, then clicks OK to paste.
+        Does NOT clear or modify clipboard contents.
+        """
         try:
+            from PIL import Image
+            import time
             import platform
-            import pyautogui
-            from PIL import ImageGrab
-            from screeninfo import get_monitors, ScreenInfoError
+            import subprocess
 
             system = platform.system()
 
-            # Get monitor info safely
-            try:
-                monitors = get_monitors()
-                total_width = max(m.x + m.width for m in monitors)
-                total_height = max(m.y + m.height for m in monitors)
-                screen_left = min(m.x for m in monitors)
-                screen_top = min(m.y for m in monitors)
-            except (ScreenInfoError, ValueError):
-                # Fallback to primary screen
-                total_width = self.winfo_screenwidth()
-                total_height = self.winfo_screenheight()
-                screen_left = 0
-                screen_top = 0
+            # Create media_files directory
+            os.makedirs('media_files', exist_ok=True)
 
-            # Create root window
-            root = tk.Tk()
-            root.withdraw()
+            # Generate timestamp for filename
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
 
-            # Create overlay window
-            overlay = tk.Toplevel(root)
-            overlay.title("Screen Capture")
-
-            # OS-specific setup
-            if system == "Darwin":  # macOS
-                overlay.attributes('-transparent', True)
-                overlay.attributes('-alpha', 0.1)
-            elif system == "Windows":
-                overlay.attributes('-alpha', 0.01)
-                overlay.attributes('-transparentcolor', 'black')
-            else:  # Linux
-                overlay.attributes('-type', 'splash')
-                overlay.attributes('-alpha', 0.01)
-                overlay.attributes('-topmost', True)
-
-            overlay.overrideredirect(True)
-            overlay.geometry(f"{total_width}x{total_height}+{screen_left}+{screen_top}")
-
-            # Create canvas
-            canvas = tk.Canvas(
-                overlay,
-                highlightthickness=0,
-                cursor="crosshair",
-                bg="black"
-            )
-            canvas.pack(fill='both', expand=True)
-
-            selection = {'start_x': None, 'start_y': None, 'current_rect': None}
-
-            def capture_area(bbox):
-                """Capture screen area with OS-specific handling"""
-                overlay.withdraw()
-                root.update()
-                time.sleep(0.2)
+            # Helper function to get clipboard image on Linux - NON-BLOCKING
+            def get_clipboard_image_linux():
+                """Get image from clipboard on Linux without blocking"""
                 try:
-                    if system == "Darwin":
-                        try:
-                            import Quartz
-                            region = Quartz.CGRectMake(bbox[0], bbox[1], bbox[2]-bbox[0], bbox[3]-bbox[1])
-                            image = Quartz.CGWindowListCreateImage(
-                                region,
-                                Quartz.kCGWindowListOptionOnScreenOnly,
-                                Quartz.kCGNullWindowID,
-                                Quartz.kCGWindowImageDefault
-                            )
-                            width = Quartz.CGImageGetWidth(image)
-                            height = Quartz.CGImageGetHeight(image)
-                            data = Quartz.CGDataProviderCopyData(
-                                Quartz.CGImageGetDataProvider(image))
-                            return Image.frombytes("RGBA", (width, height), data)
-                        except ImportError:
-                            return ImageGrab.grab(bbox=bbox)
-                    else:
-                        return ImageGrab.grab(bbox=bbox)
-                finally:
-                    if not selection.get('is_cancelled'):
-                        overlay.deiconify()
+                    # Try wl-paste (Wayland) with short timeout
+                    if shutil.which('wl-paste'):
+                        # First check if there's an image in clipboard
+                        check_cmd = ['wl-paste', '--list-types']
+                        check_result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=2)
+                        if 'image/png' in check_result.stdout or 'image' in check_result.stdout:
+                            result = subprocess.run(['wl-paste', '--type', 'image/png'],
+                                                   capture_output=True, timeout=3)
+                            if result.returncode == 0 and result.stdout:
+                                from PIL import Image
+                                import io
+                                return Image.open(io.BytesIO(result.stdout))
 
-            def on_mouse_down(event):
-                selection['start_x'] = event.x
-                selection['start_y'] = event.y
-                if selection.get('current_rect'):
-                    canvas.delete(selection['current_rect'])
+                    # Try xclip (X11)
+                    if shutil.which('xclip'):
+                        # Check if there's an image in clipboard
+                        check_cmd = ['xclip', '-selection', 'clipboard', '-o', '-t', 'image/png']
+                        result = subprocess.run(check_cmd, capture_output=True, timeout=2)
+                        if result.returncode == 0 and result.stdout:
+                            from PIL import Image
+                            import io
+                            return Image.open(io.BytesIO(result.stdout))
 
-            def on_mouse_move(event):
-                if selection['start_x'] is None:
-                    return
-                if selection.get('current_rect'):
-                    canvas.delete(selection['current_rect'])
-                selection['current_rect'] = canvas.create_rectangle(
-                    selection['start_x'], selection['start_y'],
-                    event.x, event.y,
-                    outline='red', width=2
-                )
-                # Show dimensions
-                width = abs(event.x - selection['start_x'])
-                height = abs(event.y - selection['start_y'])
-                canvas.delete('dimensions')
-                canvas.create_text(
-                    event.x + 10, event.y + 10,
-                    text=f"{width}x{height}",
-                    fill='red',
-                    anchor='nw',
-                    tags='dimensions'
-                )
+                    return None
 
-            def on_mouse_up(event):
-                if selection['start_x'] is None:
-                    return
-                try:
-                    # Calculate coordinates
-                    x1 = min(selection['start_x'], event.x)
-                    y1 = min(selection['start_y'], event.y)
-                    x2 = max(selection['start_x'], event.x)
-                    y2 = max(selection['start_y'], event.y)
-
-                    # Adjust for screen offset
-                    x1 += screen_left
-                    y1 += screen_top
-                    x2 += screen_left
-                    y2 += screen_top
-
-                    bbox = (x1, y1, x2, y2)
-
-                    if self.capture_mode.get() == "animation":
-                        frames = []
-                        progress = tk.Toplevel(root)
-                        progress.title("Capturing Animation")
-                        progress.transient(root)
-                        progress_label = tk.Label(progress, text="Capturing frames...")
-                        progress_label.pack(pady=10)
-                        pbar = ttk.Progressbar(progress, length=200, mode='determinate')
-                        pbar.pack(pady=10)
-
-                        try:
-                            for i in range(self.frame_count.get()):
-                                if selection.get('is_cancelled'):
-                                    break
-                                progress_label['text'] = f"Capturing frame {i+1}/{self.frame_count.get()}"
-                                pbar['value'] = (i + 1) / self.frame_count.get() * 100
-                                progress.update()
-                                frame = capture_area(bbox)
-                                if frame:
-                                    frames.append(frame)
-                                time.sleep(self.frame_delay.get())  # Use the specified delay
-                                if i == self.frame_count.get() - 1:  # Last frame captured
-                                    break
-
-                            if frames and not selection.get('is_cancelled'):
-                                # Save as GIF
-                                os.makedirs('media_files', exist_ok=True)
-                                timestamp = time.strftime("%Y%m%d-%H%M%S")
-                                filename = f"screen_animation_{timestamp}.gif"
-                                filepath = os.path.join('media_files', filename)
-                                frames[0].save(
-                                    filepath,
-                                    save_all=True,
-                                    append_images=frames[1:],
-                                    duration=int(self.frame_delay.get() * 1000),  # Convert to milliseconds
-                                    loop=0
-                                )
-                                self.media_entry.delete(0, 'end')
-                                self.media_entry.insert(0, f"\\file media_files/{filename}")
-                                messagebox.showinfo("Success", f"Animation saved as:\n{filename}")
-                        finally:
-                            progress.destroy()
-                            cleanup()  # Automatically clean up after capturing frames
-                    else:
-                        # Single frame capture
-                        screenshot = capture_area(bbox)
-                        if screenshot and not selection.get('is_cancelled'):
-                            os.makedirs('media_files', exist_ok=True)
-                            timestamp = time.strftime("%Y%m%d-%H%M%S")
-                            filename = f"screen_capture_{timestamp}.png"
-                            filepath = os.path.join('media_files', filename)
-                            screenshot.save(filepath)
-                            self.media_entry.delete(0, 'end')
-                            self.media_entry.insert(0, f"\\file media_files/{filename}")
-                            messagebox.showinfo("Success", f"Screenshot saved as:\n{filename}")
+                except subprocess.TimeoutExpired:
+                    # Timeout is fine - just means no image or command hung
+                    return None
                 except Exception as e:
-                    messagebox.showerror("Error", f"Capture failed:\n{str(e)}")
-                finally:
-                    cleanup()
+                    self.write(f"  Clipboard check error: {e}\n", "yellow")
+                    return None
 
-            def on_escape(event=None):
-                selection['is_cancelled'] = True
-                cleanup()
-
-            def cleanup():
+            # Helper function to get clipboard image on macOS
+            def get_clipboard_image_macos():
+                """Get image from clipboard on macOS"""
                 try:
-                    overlay.destroy()
-                    root.destroy()
-                    root.quit()
+                    from PIL import ImageGrab
+                    return ImageGrab.grabclipboard()
                 except:
-                    pass
+                    return None
 
-            # Bind events
-            canvas.bind('<Button-1>', on_mouse_down)
-            canvas.bind('<B1-Motion>', on_mouse_move)
-            canvas.bind('<ButtonRelease-1>', on_mouse_up)
-            overlay.bind('<Escape>', on_escape)
-            overlay.protocol("WM_DELETE_WINDOW", on_escape)
+            # Helper function to get clipboard image on Windows
+            def get_clipboard_image_windows():
+                """Get image from clipboard on Windows"""
+                try:
+                    from PIL import ImageGrab
+                    return ImageGrab.grabclipboard()
+                except:
+                    return None
 
-            root.mainloop()
+            # Check which mode we're in from the toolbar
+            mode = self.capture_mode.get()
+
+            if mode == "animation":
+                self.write(f"\n🎬 Animation Capture Mode (Paste from Clipboard)\n", "cyan")
+                self.write(f"  Settings: {self.frame_count.get()} frames, {self.frame_delay.get()}s delay\n", "cyan")
+                self.write(f"\n  Instructions:\n", "yellow")
+                self.write(f"    For each frame:\n", "white")
+                self.write(f"      1. Take a screenshot using your system's tool\n", "white")
+                self.write(f"      2. The screenshot is now in your clipboard\n", "white")
+                self.write(f"      3. Click 'Yes' to paste it\n", "white")
+                self.write(f"      4. The image will be captured WITHOUT clearing the clipboard\n\n", "white")
+
+                frames = []
+                frame_count = self.frame_count.get()
+
+                # Create progress dialog for animation
+                progress = tk.Toplevel(self)
+                progress.title("Capturing Animation Frames")
+                progress.geometry("400x250")
+                progress.transient(self)
+
+                # Center progress dialog
+                progress.update_idletasks()
+                x = (progress.winfo_screenwidth() - 400) // 2
+                y = (progress.winfo_screenheight() - 250) // 2
+                progress.geometry(f"+{x}+{y}")
+
+                # Instructions in progress dialog
+                instr_label = tk.Label(progress, text="", font=("Arial", 10), wraplength=350)
+                instr_label.pack(pady=10)
+
+                progress_label = tk.Label(progress, text="", font=("Arial", 12, "bold"))
+                progress_label.pack(pady=10)
+
+                pbar = ttk.Progressbar(progress, length=350, mode='determinate')
+                pbar.pack(pady=10)
+
+                cancel_flag = {'cancelled': False}
+
+                def cancel_capture():
+                    cancel_flag['cancelled'] = True
+                    progress.destroy()
+
+                cancel_btn = tk.Button(progress, text="Cancel", command=cancel_capture)
+                cancel_btn.pack(pady=10)
+
+                try:
+                    for i in range(frame_count):
+                        if cancel_flag['cancelled']:
+                            self.write(f"\n❌ Animation capture cancelled at frame {i+1}\n", "yellow")
+                            break
+
+                        progress_label.config(text=f"Frame {i+1}/{frame_count}")
+                        pbar['value'] = (i + 1) / frame_count * 100
+                        instr_label.config(text=f"Take screenshot for frame {i+1}\nThen click Yes to paste")
+                        progress.update()
+
+                        # Show dialog for each frame
+                        response = messagebox.askyesno(
+                            f"Capture Frame {i+1}/{frame_count}",
+                            f"Frame {i+1} of {frame_count}\n\n"
+                            f"1. Take a screenshot using your system's tool\n"
+                            f"   - Windows: Win+Shift+S (region) or PrtScn\n"
+                            f"   - macOS: Cmd+Shift+4 (region) or Cmd+Shift+3\n"
+                            f"   - Linux: PrtScn or use your desktop's screenshot tool\n\n"
+                            f"2. The screenshot is now in your clipboard\n\n"
+                            f"Click Yes to paste this frame (clipboard will NOT be cleared)"
+                        )
+
+                        if not response:
+                            self.write(f"❌ Frame {i+1} skipped by user\n", "yellow")
+                            continue
+
+                        self.write(f"  Pasting frame {i+1}/{frame_count}...\n", "cyan")
+
+                        # Get image from clipboard based on OS (NON-BLOCKING)
+                        if system == "Linux":
+                            screenshot = get_clipboard_image_linux()
+                        elif system == "Darwin":
+                            screenshot = get_clipboard_image_macos()
+                        else:
+                            screenshot = get_clipboard_image_windows()
+
+                        if screenshot is None:
+                            self.write(f"  ❌ No image in clipboard for frame {i+1}\n", "red")
+                            self.write(f"  💡 Make sure you took a screenshot and it's in the clipboard\n", "yellow")
+
+                            retry = messagebox.askyesno("No Image Found",
+                                f"No image found in clipboard for frame {i+1}!\n\n"
+                                f"Please take a screenshot and make sure it's in the clipboard.\n\n"
+                                f"Retry frame {i+1}?")
+
+                            if retry:
+                                i -= 1  # Retry this frame
+                                continue
+                            else:
+                                continue
+
+                        # Save frame
+                        frame_path = os.path.join('media_files', f'temp_frame_{timestamp}_{i:03d}.png')
+                        screenshot.save(frame_path, 'PNG')
+                        frames.append(frame_path)
+                        self.write(f"  ✓ Frame {i+1} captured and saved\n", "green")
+
+                        if i < frame_count - 1:
+                            time.sleep(self.frame_delay.get())
+
+                    progress.destroy()
+
+                    if len(frames) >= 2:
+                        # Create GIF from frames
+                        filename = f"screen_animation_{timestamp}.gif"
+                        filepath = os.path.join('media_files', filename)
+
+                        images = []
+                        for f in frames:
+                            img = Image.open(f)
+                            images.append(img)
+
+                        delay_ms = int(self.frame_delay.get() * 1000)
+                        images[0].save(filepath, save_all=True, append_images=images[1:],
+                                      duration=delay_ms, loop=0, format='GIF')
+
+                        # Clean up temp frames
+                        for f in frames:
+                            try:
+                                os.unlink(f)
+                            except:
+                                pass
+
+                        size_kb = os.path.getsize(filepath) / 1024
+                        self.write(f"\n✅ Animation saved: {filename} ({len(frames)} frames, {size_kb:.1f} KB)\n", "green")
+                        self.write(f"   Full path: {os.path.abspath(filepath)}\n", "green")
+
+                        # Update media entry
+                        self.media_entry.delete(0, 'end')
+                        self.media_entry.insert(0, f"\\file media_files/{filename}")
+                        self.save_current_slide()
+
+                        # Refresh slide display
+                        if self.current_slide_index >= 0:
+                            self.load_slide(self.current_slide_index)
+                            self.update_slide_list()
+
+                        messagebox.showinfo("Success",
+                            f"Animation created successfully!\n\n"
+                            f"Saved as: {filename}\n"
+                            f"Frames: {len(frames)}\n"
+                            f"Size: {size_kb:.1f} KB")
+                    elif len(frames) == 1:
+                        self.write(f"⚠ Only 1 frame captured. Need at least 2 frames for animation.\n", "yellow")
+                        messagebox.showwarning("Not Enough Frames",
+                            "Only 1 frame was captured.\n\n"
+                            "Animation requires at least 2 frames.\n"
+                            "The single frame has been saved as a screenshot instead.")
+
+                        # Save as single screenshot instead
+                        filename = f"screen_capture_{timestamp}.png"
+                        filepath = os.path.join('media_files', filename)
+                        img = Image.open(frames[0])
+                        img.save(filepath, 'PNG')
+                        os.unlink(frames[0])
+
+                        self.media_entry.delete(0, 'end')
+                        self.media_entry.insert(0, f"\\file media_files/{filename}")
+                        self.save_current_slide()
+
+                    else:
+                        self.write(f"❌ Failed to capture any frames\n", "red")
+
+                except Exception as e:
+                    progress.destroy()
+                    raise e
+
+            else:  # Single mode
+                self.write(f"\n📸 Single Screenshot Mode (Paste from Clipboard)\n", "cyan")
+                self.write(f"  Instructions:\n", "yellow")
+                self.write(f"    1. Take a screenshot using your system's tool:\n", "white")
+                self.write(f"       - Windows: Win+Shift+S (region) or PrtScn\n", "white")
+                self.write(f"       - macOS: Cmd+Shift+4 (region) or Cmd+Shift+3\n", "white")
+                self.write(f"       - Linux: PrtScn or use your desktop's screenshot tool\n", "white")
+                self.write(f"    2. The screenshot is now in your clipboard\n", "white")
+                self.write(f"    3. Click OK to paste it (clipboard will NOT be cleared)\n\n", "white")
+
+                # Ask user if they've taken the screenshot
+                response = messagebox.askyesno(
+                    "Paste from Clipboard",
+                    "Have you taken a screenshot?\n\n"
+                    "Make sure it's in your clipboard.\n\n"
+                    "Click Yes to paste the screenshot into this slide.\n\n"
+                    "Note: The clipboard will NOT be cleared."
+                )
+
+                if not response:
+                    self.write("❌ Capture cancelled by user\n", "yellow")
+                    return
+
+                # Get image from clipboard based on OS (NON-BLOCKING)
+                self.write("  Pasting from clipboard...\n", "cyan")
+
+                if system == "Linux":
+                    screenshot = get_clipboard_image_linux()
+                elif system == "Darwin":
+                    screenshot = get_clipboard_image_macos()
+                else:
+                    screenshot = get_clipboard_image_windows()
+
+                if screenshot is None:
+                    self.write("❌ No image found in clipboard\n", "red")
+                    messagebox.showerror("Error",
+                        "No image found in clipboard!\n\n"
+                        "Please take a screenshot first.\n\n"
+                        "Make sure the screenshot is copied to your clipboard.\n\n"
+                        "On Linux, ensure wl-clipboard or xclip is installed:\n"
+                        "  sudo apt install wl-clipboard   # For Wayland\n"
+                        "  sudo apt install xclip          # For X11")
+                    return
+
+                # Save the image
+                filename = f"screen_capture_{timestamp}.png"
+                filepath = os.path.join('media_files', filename)
+                screenshot.save(filepath, 'PNG')
+
+                # Verify file was saved
+                if os.path.exists(filepath):
+                    size_kb = os.path.getsize(filepath) / 1024
+                    self.write(f"✅ Screenshot pasted and saved: {filename} ({size_kb:.1f} KB)\n", "green")
+                    self.write(f"   Full path: {os.path.abspath(filepath)}\n", "green")
+                    self.write(f"   Note: Clipboard content was preserved\n", "cyan")
+
+                    # Update media entry
+                    self.media_entry.delete(0, 'end')
+                    self.media_entry.insert(0, f"\\file media_files/{filename}")
+                    self.save_current_slide()
+
+                    # Refresh slide display
+                    if self.current_slide_index >= 0:
+                        self.load_slide(self.current_slide_index)
+                        self.update_slide_list()
+
+                    messagebox.showinfo("Success",
+                        f"Screenshot pasted successfully!\n\n"
+                        f"Saved as: {filename}\n"
+                        f"Size: {size_kb:.1f} KB\n\n"
+                        f"The image has been linked to your slide.\n\n"
+                        f"Your clipboard content was preserved.")
+                else:
+                    self.write(f"❌ Failed to save screenshot\n", "red")
+                    messagebox.showerror("Error", "Failed to save screenshot to file.")
 
         except Exception as e:
-            messagebox.showerror("Error", f"Screen capture failed:\n{str(e)}")
+            self.write(f"❌ Capture failed: {str(e)}\n", "red")
+            import traceback
             traceback.print_exc()
-            if 'root' in locals():
+            messagebox.showerror("Error", f"Capture failed:\n{str(e)}")
+
+    def debug_file_location(self):
+        """Debug method to show where files are being saved"""
+        self.write("\n=== FILE LOCATION DEBUG ===\n", "cyan")
+
+        # Current working directory
+        cwd = os.getcwd()
+        self.write(f"Current working directory: {cwd}\n", "white")
+
+        # Media_files directory
+        media_path = os.path.join(cwd, 'media_files')
+        self.write(f"Expected media_files path: {media_path}\n", "white")
+
+        # Check if exists
+        if os.path.exists(media_path):
+            self.write(f"media_files EXISTS\n", "green")
+            files = os.listdir(media_path)
+            if files:
+                self.write(f"Files in media_files:\n", "cyan")
+                for f in files:
+                    self.write(f"  - {f}\n", "white")
+            else:
+                self.write(f"media_files is EMPTY\n", "yellow")
+        else:
+            self.write(f"media_files does NOT exist\n", "red")
+
+            # Try to create it
+            try:
+                os.makedirs(media_path, exist_ok=True)
+                self.write(f"Created media_files directory\n", "green")
+            except Exception as e:
+                self.write(f"Could not create media_files: {e}\n", "red")
+
+        # If we have a current file, check its directory
+        if self.current_file:
+            file_dir = os.path.dirname(os.path.abspath(self.current_file))
+            self.write(f"\nCurrent file directory: {file_dir}\n", "white")
+            media_in_file_dir = os.path.join(file_dir, 'media_files')
+            self.write(f"media_files in file dir: {media_in_file_dir}\n", "white")
+            if os.path.exists(media_in_file_dir):
+                self.write(f"EXISTS - files: {os.listdir(media_in_file_dir)}\n", "green")
+            else:
+                self.write(f"DOES NOT EXIST\n", "yellow")
+
+        self.write("==========================\n\n", "cyan")
+
+    def _preview_captured_file(self, filepath):
+        """Preview a captured image or animation"""
+        try:
+            if filepath.endswith('.gif'):
+                # For GIFs, try to open with default application
+                if sys.platform.startswith('win'):
+                    os.startfile(filepath)
+                elif sys.platform.startswith('darwin'):
+                    subprocess.run(['open', filepath])
+                else:
+                    subprocess.run(['xdg-open', filepath])
+            else:
+                # For images, try to show a quick preview
+                from PIL import Image, ImageTk
+
+                preview = ctk.CTkToplevel(self)
+                preview.title("Preview - Captured Image")
+                preview.geometry("600x500")
+                preview.transient(self)
+
+                # Load and display image
+                img = Image.open(filepath)
+
+                # Scale to fit window while maintaining aspect ratio
+                display_size = (550, 400)
+                img.thumbnail(display_size, Image.Resampling.LANCZOS)
+
+                photo = ImageTk.PhotoImage(img)
+
+                label = tk.Label(preview, image=photo)
+                label.image = photo  # Keep reference
+                label.pack(pady=20, padx=20)
+
+                # Info label
+                info = ctk.CTkLabel(
+                    preview,
+                    text=f"File: {os.path.basename(filepath)}\nSize: {img.size[0]}x{img.size[1]} pixels",
+                    font=("Arial", 10)
+                )
+                info.pack(pady=10)
+
+                # Close button
+                ctk.CTkButton(
+                    preview,
+                    text="Close",
+                    command=preview.destroy,
+                    width=100
+                ).pack(pady=10)
+
+                # Center preview window
+                preview.update_idletasks()
+                x = (preview.winfo_screenwidth() - 600) // 2
+                y = (preview.winfo_screenheight() - 500) // 2
+                preview.geometry(f"+{x}+{y}")
+
+        except Exception as e:
+            self.write(f"Could not preview: {e}\n", "yellow")
+
+    def _create_animation_capture_dialog(self, parent, bbox, capture_func):
+        """Create dialog for animation capture with progress"""
+        dialog = ctk.CTkToplevel(parent)
+        dialog.title("Capturing Animation")
+        dialog.geometry("400x200")
+        dialog.transient(parent)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 400) // 2
+        y = (dialog.winfo_screenheight() - 200) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Status label
+        status_label = ctk.CTkLabel(
+            dialog,
+            text="Preparing capture...",
+            font=("Arial", 12)
+        )
+        status_label.pack(pady=20)
+
+        # Progress bar
+        progress_bar = ctk.CTkProgressBar(dialog, width=300)
+        progress_bar.pack(pady=10)
+        progress_bar.set(0)
+
+        # Cancel flag
+        cancelled = {'value': False}
+
+        def update_progress(current, total):
+            if cancelled['value']:
+                return False
+            progress = (current + 1) / total
+            progress_bar.set(progress)
+            status_label.configure(text=f"Capturing frame {current + 1}/{total}...")
+            dialog.update()
+            return True
+
+        def start_capture():
+            try:
+                # Override the capture function's callback
+                original_capture = capture_func
+
+                def wrapped_capture(bbox):
+                    # Create a modified capture function that updates progress
+                    self.screen_capture.capture_animation(
+                        bbox,
+                        self.frame_count.get(),
+                        self.frame_delay.get(),
+                        None,  # We'll save later
+                        update_progress
+                    )
+                    return original_capture(bbox)
+
+                wrapped_capture(bbox)
+                dialog.destroy()
+            except Exception as e:
+                status_label.configure(text=f"Error: {str(e)}", text_color="red")
+                dialog.after(2000, dialog.destroy)
+
+        def cancel_capture():
+            cancelled['value'] = True
+            dialog.destroy()
+
+        # Button frame
+        button_frame = ctk.CTkFrame(dialog)
+        button_frame.pack(fill="x", padx=20, pady=20)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Start Capture",
+            command=start_capture,
+            width=120,
+            fg_color="#28a745"
+        ).pack(side="left", padx=10)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            command=cancel_capture,
+            width=120,
+            fg_color="#dc3545"
+        ).pack(side="right", padx=10)
+
+        return dialog
+
+    def _fix_x11_authorization(self):
+        """Fix X11 authorization issues on Linux"""
+        import platform
+        import subprocess
+        from pathlib import Path
+
+        if platform.system() != "Linux":
+            return True
+
+        try:
+            # Set DISPLAY if not set
+            if not os.environ.get('DISPLAY'):
+                os.environ['DISPLAY'] = ':0'
+
+            # Try to fix xauth
+            xauth_path = shutil.which('xauth')
+            if xauth_path:
+                user_xauth = Path.home() / '.Xauthority'
+
+                # Try to merge system Xauthority if it exists
+                system_xauth = '/run/user/1000/gdm/Xauthority'
+                if not os.path.exists(system_xauth):
+                    system_xauth = '/etc/X11/xauth/Xauthority'
+
+                if os.path.exists(system_xauth) and user_xauth.exists():
+                    try:
+                        subprocess.run([xauth_path, '-f', system_xauth, 'extract', '/tmp/xauth.tmp', os.environ['DISPLAY']],
+                                     capture_output=True, timeout=5)
+                        subprocess.run([xauth_path, '-f', str(user_xauth), 'merge', '/tmp/xauth.tmp'],
+                                     capture_output=True, timeout=5)
+                        os.environ['XAUTHORITY'] = str(user_xauth)
+                    except:
+                        pass
+
+            # Try xhost as fallback
+            xhost_path = shutil.which('xhost')
+            if xhost_path:
                 try:
-                    root.destroy()
+                    # Allow local connections
+                    subprocess.run([xhost_path, '+local:'], capture_output=True, timeout=5)
+                    # Allow current user
+                    user = os.environ.get('USER', '')
+                    if user:
+                        subprocess.run([xhost_path, f'+SI:localuser:{user}'], capture_output=True, timeout=5)
                 except:
                     pass
+
+            return True
+
+        except Exception as e:
+            print(f"Warning: Could not fix X11 authorization: {e}")
+            return False
 
 #---------------------------------------------------------------------------------------------------------------------
 
@@ -19848,10 +20723,28 @@ Created by {self.__author__}
         return frames
 
     def _generate_default_layout(self, params: str, content: list, frame_title: str) -> str:
-        """Generate default layout with automatic two-column split when first line is an image"""
+        """
+        Generate default layout with automatic two-column split when first line is an image.
 
-        # ========== CHECK FOR BIBLIOGRAPHY/REFERENCES ==========
-        # Check for explicit bibliography environment
+        SUPPORTED FEATURES:
+        1. Bibliography/References with multi-page splitting and back-references
+        2. Columns environment (preserved exactly with user-specified widths)
+        3. Mosaic directives (converted to tabular grids)
+        4. Math expressions (quote-bracket notation and standard LaTeX)
+        5. YouTube videos (converted to movie commands)
+        6. URL images (downloaded and embedded)
+        7. Local images (file paths)
+        8. Tables (tabular environments)
+        9. Itemize/Enumerate lists
+        10. Bullet points (converted to itemize)
+        11. Text formatting (textbf, textcolor, etc.)
+        12. Play directives for videos
+        13. Two-column layout (image + content) - preserves user widths
+        14. Single image layout (centered)
+        15. Single content layout
+        """
+
+        # ========== 1. BIBLIOGRAPHY/REFERENCES HANDLING ==========
         is_bibliography = False
         bib_content = []
         in_bibliography = False
@@ -19867,165 +20760,286 @@ Created by {self.__author__}
             elif in_bibliography:
                 bib_content.append(line)
 
-        # If this is a bibliography/references frame, use multi-page splitting
         if is_bibliography and bib_content:
             frames = self._split_bibliography_across_frames(bib_content, frame_title)
             if frames:
                 if len(frames) == 1:
                     return frames[0]
                 else:
-                    # Add navigation between pages
                     frames = self._add_bibliography_navigation(frames, len(frames))
                     return '\n\n'.join(frames)
 
-        # ========== NORMAL LAYOUT PROCESSING ==========
-        # Clean the frame title for LaTeX
+        # ========== 2. PREPARE CONTENT ==========
         clean_title = self.clean_frame_title_for_latex(frame_title)
+        full_content = '\n'.join(content)
 
-        latex = f"\\begin{{frame}}{{{clean_title}}}\n"
-        latex += f"\\frametitle{{{clean_title}}}\n"
+        import re
+        import hashlib
 
-        # Initialize containers
+        # ========== 3. PROTECT ALL MATH EXPRESSIONS WITH PLACEHOLDERS ==========
+        math_placeholders = {}
+        placeholder_counter = 0
+
+        def protect_math(match):
+            nonlocal placeholder_counter
+            expr = match.group(0)
+            placeholder = f"<<<MATH_PLACEHOLDER_{placeholder_counter}>>>"
+            math_placeholders[placeholder] = expr
+            placeholder_counter += 1
+            return placeholder
+
+        # Protect inline math $...$
+        full_content = re.sub(r'\$[^\$]+\$', protect_math, full_content, flags=re.DOTALL)
+        # Protect display math \[...\]
+        full_content = re.sub(r'\\\[.*?\\\]', protect_math, full_content, flags=re.DOTALL)
+        # Protect quote-bracket math '[...]' and "[...]"
+        full_content = re.sub(r'[\'"]\[.*?[\'"]\]', protect_math, full_content, flags=re.DOTALL)
+        # Protect math environments
+        full_content = re.sub(r'\\begin\{align\*?\}.*?\\end\{align\*?\}', protect_math, full_content, flags=re.DOTALL)
+        full_content = re.sub(r'\\begin\{equation\}.*?\\end\{equation\}', protect_math, full_content, flags=re.DOTALL)
+
+        # Convert any remaining unprotected quote-bracket math to display math
+        def convert_math_expression(match):
+            math_content = match.group(1).strip()
+            if '\\\\' in math_content:
+                lines = math_content.split('\\\\')
+                aligned_lines = []
+                for line in lines:
+                    line = line.strip()
+                    if line:
+                        if '&' not in line:
+                            line = f"& {line}"
+                        aligned_lines.append(line)
+                return "\\begin{align*}\n" + "\\\\\n".join(aligned_lines) + "\n\\end{align*}"
+            else:
+                return f"\\[{math_content}\\]"
+
+        full_content = re.sub(r'[\'"]\[(.*?)[\'"]\]', convert_math_expression, full_content, flags=re.DOTALL)
+
+        # ========== 4. YOUTUBE VIDEO CONVERSION ==========
+        def convert_youtube_to_movie(match):
+            url = match.group(1).strip()
+            video_id = None
+            if 'youtube.com/watch?v=' in url:
+                video_id = url.split('v=')[1].split('&')[0]
+            elif 'youtu.be/' in url:
+                video_id = url.split('youtu.be/')[1].split('?')[0]
+
+            if video_id:
+                thumbnail_url = f"https://img.youtube.com/vi/{video_id}/0.jpg"
+                return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{thumbnail_url}}}}}{{{url}}}"
+            else:
+                return f"\\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}"
+
+        youtube_patterns = [
+            r'\\play\s+(https?://(?:www\.)?youtube\.com/watch\?v=[^\s\n]+)',
+            r'\\play\s+(https?://(?:www\.)?youtu\.be/[^\s\n]+)',
+        ]
+
+        for pattern in youtube_patterns:
+            full_content = re.sub(pattern, convert_youtube_to_movie, full_content)
+
+        # ========== 5. URL IMAGE CONVERSION ==========
+        def convert_url_image(match):
+            url = match.group(1).strip()
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+            extension = url.split('.')[-1].split('?')[0].lower()
+            if extension not in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
+                extension = 'png'
+            filename = f"url_image_{url_hash}.{extension}"
+            filepath = f"media_files/{filename}"
+            return f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{filepath}}}"
+
+        url_image_pattern = r'\\file\s+(https?://[^\s\n]+\.(?:png|jpg|jpeg|gif|webp))'
+        full_content = re.sub(url_image_pattern, convert_url_image, full_content)
+
+        # ========== 6. MOSAIC DIRECTIVE CONVERSION ==========
+        def convert_mosaic_to_tabular(match, col_width=0.47):
+            rows = int(match.group(1))
+            cols = int(match.group(2))
+            images = [img.strip() for img in match.group(3).split(',')]
+
+            tabular = "\\begin{center}\n"
+            tabular += f"\\begin{{tabular}}{{{'c' * cols}}}\n"
+            tabular += "\\hline\n"
+
+            for idx, img in enumerate(images):
+                img = img.strip()
+                if img.startswith('http'):
+                    url_hash = hashlib.md5(img.encode()).hexdigest()[:16]
+                    img_path = f"media_files/url_image_{url_hash}.png"
+                elif not img.startswith(('media_files/', './', '/')):
+                    img_path = f"media_files/{img}"
+                else:
+                    img_path = img
+
+                tabular += f"\\includegraphics[width={col_width}\\textwidth,height=0.25\\textheight,keepaspectratio]{{{img_path}}}"
+
+                if (idx + 1) % cols == 0:
+                    if idx < len(images) - 1:
+                        tabular += "\\\\ \\hline\n"
+                else:
+                    tabular += " & "
+
+            if not tabular.endswith('\\hline\n'):
+                tabular += "\\\\ \\hline\n"
+            tabular += "\\end{tabular}\n"
+            tabular += "\\end{center}"
+            return tabular
+
+        # ========== 7. PLAY DIRECTIVE CONVERSION ==========
+        def convert_play_directive(match):
+            file_path = match.group(1).strip()
+            if not file_path.startswith(('media_files/', './', '/')):
+                file_path = f"media_files/{file_path}"
+            return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}}}{{{file_path}}}"
+
+        # ========== 8. CHECK FOR COLUMNS ENVIRONMENT - PRESERVE EXACTLY ==========
+        # IMPORTANT: If columns exist, preserve them EXACTLY without modifying column widths
+        if '\\begin{columns}' in full_content and '\\end{columns}' in full_content:
+            # Extract columns content
+            columns_pattern = r'(\\begin\{columns\}(?:\[[^\]]*\])?\s*\n(.*?)\\end\{columns\})'
+            columns_match = re.search(columns_pattern, full_content, re.DOTALL)
+
+            if columns_match:
+                columns_content = columns_match.group(1)
+
+                # Only convert mosaic directives inside columns (preserve everything else)
+                columns_content = re.sub(
+                    r'\\mosaic\{(\d+),(\d+)\}\{([^}]+)\}',
+                    lambda m: convert_mosaic_to_tabular(m, col_width=0.47),
+                    columns_content
+                )
+
+                # Convert YouTube inside columns
+                for pattern in youtube_patterns:
+                    columns_content = re.sub(pattern, convert_youtube_to_movie, columns_content)
+
+                # Convert URL images inside columns
+                columns_content = re.sub(url_image_pattern, convert_url_image, columns_content)
+
+                # Convert play directives inside columns
+                columns_content = re.sub(r'\\play\s+\\file\s+([^\s\n]+)', convert_play_directive, columns_content)
+
+                # Restore math placeholders inside columns
+                for placeholder, math_expr in math_placeholders.items():
+                    columns_content = columns_content.replace(placeholder, math_expr)
+
+                # Build frame with preserved columns (including user-specified widths)
+                latex = f"\\begin{{frame}}{{{clean_title}}}\n"
+                latex += f"\\frametitle{{{clean_title}}}\n"
+                latex += columns_content + "\n"
+                latex += "\\end{frame}\n"
+                return latex
+
+        # ========== 9. PROCESS NON-COLUMNS CONTENT ==========
+        # Convert mosaic directives
+        full_content = re.sub(r'\\mosaic\{(\d+),(\d+)\}\{([^}]+)\}',
+                             lambda m: convert_mosaic_to_tabular(m, col_width=0.7),
+                             full_content)
+
+        # Convert play directives
+        full_content = re.sub(r'\\play\s+\\file\s+([^\s\n]+)', convert_play_directive, full_content)
+
+        # ========== 10. IMAGE DETECTION ==========
         has_image = False
         image_path = None
-        table_content = []
-        regular_content = []
-        in_table = False
-        is_first_line_image = False
 
-        # First, check params for image
+        # Check params for image
         if params and params != "\\None":
-            is_media_file = False
-            if any(x in params for x in ['\\includegraphics', '.png', '.jpg', '.jpeg', '.pdf', '.gif']):
-                is_media_file = True
-            elif params.strip().startswith(('media_files/', './', '/')) and params.endswith(('.png', '.jpg', '.jpeg', '.pdf', '.gif')):
-                is_media_file = True
-
-            if is_media_file:
+            if any(x in params for x in ['\\includegraphics', '.png', '.jpg', '.jpeg', '.pdf', '.gif', '.webp']):
                 has_image = True
                 image_path = params.strip()
-                if not image_path.startswith(('media_files/', './', '/')):
-                    image_path = f"media_files/{image_path}"
                 if image_path.startswith('\\file'):
                     image_path = image_path.replace('\\file', '').strip()
+                if image_path.startswith('http'):
+                    url_hash = hashlib.md5(image_path.encode()).hexdigest()[:16]
+                    image_path = f"media_files/url_image_{url_hash}.png"
+                elif not image_path.startswith(('media_files/', './', '/')):
+                    image_path = f"media_files/{image_path}"
 
-        # Parse content to separate images, tables, and regular content
-        if content:
-            first_line = True
-            for line in content:
+        # Check content for image (first non-empty line)
+        if not has_image:
+            lines_for_image = full_content.split('\n')
+            for line in lines_for_image:
                 line_stripped = line.strip()
-
-                # Skip empty lines
-                if not line_stripped:
-                    continue
-
-                # Check if first line is an image (and we don't already have an image from params)
-                if first_line:
-                    first_line = False
-                    if not has_image:
-                        # Check if this line is an image directive
-                        if (line_stripped.startswith('\\file') and
-                            any(ext in line_stripped.lower() for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif'])):
-                            is_first_line_image = True
-                            has_image = True
-                            # Extract image path
-                            image_path = line_stripped
-                            if image_path.startswith('\\file'):
-                                image_path = image_path.replace('\\file', '').strip()
-                            if not image_path.startswith(('media_files/', './', '/')):
-                                image_path = f"media_files/{image_path}"
-                            continue  # Skip adding this line to content
-
-                # Detect table boundaries
-                if '\\begin{tabular}' in line_stripped:
-                    in_table = True
-                    table_content.append(line)
-                    continue
-                elif '\\end{tabular}' in line_stripped:
-                    in_table = False
-                    table_content.append(line)
-                    continue
-
-                # Detect images in content (not first line)
-                if not in_table and not has_image:
+                if line_stripped and not line_stripped.startswith('%'):
                     if (line_stripped.startswith('\\file') and
-                        any(ext in line_stripped.lower() for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif'])):
+                        any(ext in line_stripped.lower() for ext in ['.png', '.jpg', '.jpeg', '.pdf', '.gif', '.webp'])):
                         has_image = True
                         image_path = line_stripped
                         if image_path.startswith('\\file'):
                             image_path = image_path.replace('\\file', '').strip()
-                        if not image_path.startswith(('media_files/', './', '/')):
+                        if image_path.startswith('http'):
+                            url_hash = hashlib.md5(image_path.encode()).hexdigest()[:16]
+                            image_path = f"media_files/url_image_{url_hash}.png"
+                        elif not image_path.startswith(('media_files/', './', '/')):
                             image_path = f"media_files/{image_path}"
-                        continue
+                        # Remove the image line from content
+                        full_content = re.sub(r'^\\file\s+[^\n]+\n?', '', full_content, flags=re.MULTILINE)
+                        break
 
-                # Collect content
-                if in_table:
-                    # Fix any escaped newlines in table content
-                    if '\\\\' in line and line.endswith('\\\\'):
-                        line = line.rstrip('\\')
-                    table_content.append(line)
-                elif line_stripped and not line_stripped.startswith('\\file'):
-                    regular_content.append(line)
+        # ========== 11. BULLET POINT PROCESSING ==========
+        def process_bullet_points(text):
+            """Convert bullet points to itemize environment."""
+            lines = text.split('\n')
+            result_lines = []
+            in_itemize = False
 
-        # Fix table formatting
-        if table_content:
-            table_content = self._fix_table_formatting(table_content)
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    result_lines.append(line)
+                    continue
 
-        # CRITICAL: Determine layout based on what we have
-        # If we have an image AND (table OR regular content), use two columns
-        if has_image and (table_content or regular_content):
-            # Two-column layout: image on left, all remaining content on right
+                if stripped.startswith(('-', '•')):
+                    if not in_itemize:
+                        result_lines.append("\\begin{itemize}")
+                        in_itemize = True
+                    bullet_content = re.sub(r'^[-•]\s*', '', stripped)
+                    result_lines.append(f"\\item {bullet_content}")
+                else:
+                    if in_itemize:
+                        result_lines.append("\\end{itemize}")
+                        in_itemize = False
+                    result_lines.append(line)
+
+            if in_itemize:
+                result_lines.append("\\end{itemize}")
+
+            return '\n'.join(result_lines)
+
+        has_tabular = '\\begin{tabular}' in full_content
+        has_itemize = '\\begin{itemize}' in full_content or '\\begin{enumerate}' in full_content
+
+        if not has_tabular and not has_itemize:
+            full_content = process_bullet_points(full_content)
+
+        # ========== 12. RESTORE ALL MATH EXPRESSIONS ==========
+        for placeholder, math_expr in math_placeholders.items():
+            full_content = full_content.replace(placeholder, math_expr)
+
+        # ========== 13. BUILD THE FRAME ==========
+        latex = f"\\begin{{frame}}{{{clean_title}}}\n"
+        latex += f"\\frametitle{{{clean_title}}}\n"
+
+        if has_image and full_content.strip():
+            # Two-column layout - preserve user-specified widths or use defaults
             latex += "\\begin{columns}[T]\n"
-
-            # Left column: Image (45% width)
             latex += "\\column{0.45\\textwidth}\n"
             latex += "\\begin{center}\n"
             latex += f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}\n"
             latex += "\\end{center}\n"
-            latex += "\n"
-
-            # Right column: All remaining content (50% width)
             latex += "\\column{0.5\\textwidth}\n"
-
-            # Add table if present
-            if table_content:
-                table_text = '\n'.join(table_content)
-                latex += table_text + "\n"
-
-            # Add regular content (text, bullet points, etc.)
-            if regular_content:
-                # Check if regular content contains itemize-like structure
-                has_bullets = any(line.strip().startswith(('-', '•')) for line in regular_content)
-                if has_bullets or len(regular_content) > 1:
-                    # Format as itemized list
-                    content_items = self._format_content_items(regular_content)
-                    if content_items:
-                        latex += content_items + "\n"
-                else:
-                    # Just plain text
-                    latex += '\n'.join(regular_content) + "\n"
-
+            latex += full_content + "\n"
             latex += "\\end{columns}\n"
         elif has_image:
-            # Just image centered (no other content)
             latex += "\\begin{center}\n"
             latex += f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{image_path}}}\n"
             latex += "\\end{center}\n"
-        elif table_content:
-            # Just table (no image)
-            table_text = '\n'.join(table_content)
-            latex += table_text + "\n"
-        elif regular_content:
-            # Just text (no image, no table)
-            # Check if this is a single line of text that should be centered
-            if len(regular_content) == 1 and len(regular_content[0]) < 100:
-                latex += "\\begin{center}\n"
-                latex += regular_content[0] + "\n"
-                latex += "\\end{center}\n"
-            else:
-                content_items = self._format_content_items(regular_content)
-                if content_items:
-                    latex += content_items + "\n"
+        else:
+            if full_content.strip():
+                latex += full_content + "\n"
 
         latex += "\\end{frame}\n"
         return latex
@@ -21505,6 +22519,476 @@ Created by {self.__author__}
 
         return '\n'.join(lines)
 
+    def download_url_image(self, url: str) -> str:
+        """Download image from URL and save to media_files directory"""
+        import urllib.request
+        import hashlib
+
+        os.makedirs('media_files', exist_ok=True)
+
+        # Create unique filename from URL
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+        extension = url.split('.')[-1].split('?')[0].lower()
+        if extension not in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
+            extension = 'png'
+
+        filename = f"url_image_{url_hash}.{extension}"
+        filepath = os.path.join('media_files', filename)
+
+        if not os.path.exists(filepath):
+            try:
+                urllib.request.urlretrieve(url, filepath)
+                self.write(f"✓ Downloaded image from URL: {filename}\n", "green")
+            except Exception as e:
+                self.write(f"✗ Failed to download image: {e}\n", "red")
+                return ""
+
+        return filepath
+
+# Add these classes right after the imports and before the BeamerSlideEditor class
+
+class ScreenCaptureMethod:
+    """Detect and manage screen capture methods for different environments"""
+
+    WAYLAND = "wayland"
+    X11 = "x11"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def detect(cls):
+        """Detect current display server and available capture methods"""
+        session_type = os.environ.get('XDG_SESSION_TYPE', '').lower()
+        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
+        x11_display = os.environ.get('DISPLAY', '')
+
+        available_methods = []
+
+        if session_type == 'wayland' or wayland_display:
+            session_type = cls.WAYLAND
+            if shutil.which('grim'):
+                available_methods.append('grim')
+            if shutil.which('slurp'):
+                available_methods.append('slurp')
+            if shutil.which('import'):
+                available_methods.append('import_wayland')
+        elif x11_display:
+            session_type = cls.X11
+            if shutil.which('import'):
+                available_methods.append('import')
+            if shutil.which('ffmpeg'):
+                available_methods.append('ffmpeg')
+        else:
+            session_type = cls.UNKNOWN
+
+        available_methods.append('pil_fallback')
+        return session_type, available_methods
+
+
+class WaylandScreenCapture:
+    """Screen capture for Wayland using grim/slurp"""
+
+    def __init__(self, parent=None, verbose=True):
+        self.parent = parent
+        self.verbose = verbose
+
+    def write(self, text, color="white"):
+        if self.parent and hasattr(self.parent, 'write'):
+            self.parent.write(text, color)
+        elif self.verbose:
+            print(text)
+
+    def capture_region(self, bbox, output_path):
+        """Capture region using PIL ImageGrab with absolute path support"""
+        try:
+            from PIL import ImageGrab
+
+            x, y, w, h = bbox
+            # PIL expects (left, top, right, bottom)
+            bbox_pil = (x, y, x + w, y + h)
+
+            self.write(f"     PIL capturing: {bbox_pil}\n", "cyan")
+
+            screenshot = ImageGrab.grab(bbox=bbox_pil)
+
+            # Ensure directory exists for absolute path
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+
+            screenshot.save(output_path)
+
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                self.write(f"     PIL saved to: {output_path}\n", "green")
+                return True
+            else:
+                self.write(f"     PIL save failed: file not created or empty\n", "red")
+                return False
+
+        except Exception as e:
+            self.write(f"  PIL capture error: {e}\n", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def capture_animation(self, bbox, frame_count, frame_delay, output_path, callback=None):
+        """Capture animation frames on Wayland"""
+        frames = []
+        temp_dir = tempfile.mkdtemp()
+
+        try:
+            for i in range(frame_count):
+                if callback and not callback(i, frame_count):
+                    return False
+
+                frame_path = os.path.join(temp_dir, f"frame_{i:04d}.png")
+                if self.capture_region(bbox, frame_path):
+                    frames.append(frame_path)
+
+                if i < frame_count - 1:
+                    time.sleep(frame_delay)
+
+            if frames:
+                return self._create_gif(frames, output_path, frame_delay)
+            return False
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _create_gif(self, frames, output_path, delay):
+        """Create GIF from frames"""
+        if shutil.which('ffmpeg'):
+            try:
+                delay_ms = int(delay * 100)
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-framerate', str(1.0/delay),
+                    '-i', os.path.join(os.path.dirname(frames[0]), 'frame_%04d.png'),
+                    '-vf', 'fps=10,scale=800:-1',
+                    '-loop', '0',
+                    output_path
+                ]
+                subprocess.run(cmd, capture_output=True, check=True, timeout=30)
+                return True
+            except:
+                pass
+
+        try:
+            from PIL import Image
+            images = [Image.open(f) for f in frames]
+            if images:
+                delay_ms = int(delay * 1000)
+                images[0].save(output_path, save_all=True, append_images=images[1:],
+                              duration=delay_ms, loop=0)
+                return True
+        except:
+            pass
+
+        return False
+
+
+class X11ScreenCapture:
+    """Screen capture for X11 using import or ffmpeg"""
+
+    def __init__(self, parent=None, verbose=True):
+        self.parent = parent
+        self.verbose = verbose
+
+    def write(self, text, color="white"):
+        if self.parent and hasattr(self.parent, 'write'):
+            self.parent.write(text, color)
+        elif self.verbose:
+            print(text)
+
+    def capture_region(self, bbox, output_path):
+        """Capture region using best X11 method"""
+        x, y, w, h = bbox
+
+        # Method 1: import (ImageMagick)
+        if shutil.which('import'):
+            try:
+                cmd = ['import', '-window', 'root', '-crop', f'{w}x{h}+{x}+{y}', output_path]
+                result = subprocess.run(cmd, capture_output=True, timeout=10)
+                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    self.write("  ✓ import capture successful\n", "green")
+                    return True
+            except Exception as e:
+                self.write(f"  import capture error: {e}\n", "yellow")
+
+        # Method 2: ffmpeg x11grab
+        if shutil.which('ffmpeg'):
+            try:
+                display = os.environ.get('DISPLAY', ':0')
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-f', 'x11grab',
+                    '-framerate', '30',
+                    '-video_size', f'{w}x{h}',
+                    '-i', f'{display}+{x},{y}',
+                    '-vframes', '1',
+                    '-update', '1',
+                    output_path
+                ]
+                result = subprocess.run(cmd, capture_output=True, timeout=15)
+                if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    self.write("  ✓ ffmpeg x11grab capture successful\n", "green")
+                    return True
+            except Exception as e:
+                self.write(f"  ffmpeg capture error: {e}\n", "yellow")
+
+        return False
+
+    def capture_animation(self, bbox, frame_count, frame_delay, output_path, callback=None):
+        """Capture animation frames on X11"""
+        frames = []
+        temp_dir = tempfile.mkdtemp()
+
+        try:
+            for i in range(frame_count):
+                if callback and not callback(i, frame_count):
+                    return False
+
+                frame_path = os.path.join(temp_dir, f"frame_{i:04d}.png")
+                if self.capture_region(bbox, frame_path):
+                    frames.append(frame_path)
+
+                if i < frame_count - 1:
+                    time.sleep(frame_delay)
+
+            if frames:
+                return self._create_gif(frames, output_path, frame_delay)
+            return False
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _create_gif(self, frames, output_path, delay):
+        """Create GIF from frames"""
+        if shutil.which('ffmpeg'):
+            try:
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-framerate', str(1.0/delay),
+                    '-i', os.path.join(os.path.dirname(frames[0]), 'frame_%04d.png'),
+                    '-vf', 'fps=10,scale=800:-1',
+                    '-loop', '0',
+                    output_path
+                ]
+                subprocess.run(cmd, capture_output=True, check=True, timeout=30)
+                return True
+            except:
+                pass
+
+        try:
+            from PIL import Image
+            images = [Image.open(f) for f in frames]
+            if images:
+                delay_ms = int(delay * 1000)
+                images[0].save(output_path, save_all=True, append_images=images[1:],
+                              duration=delay_ms, loop=0)
+                return True
+        except:
+            pass
+
+        return False
+
+
+class PILFallbackCapture:
+    """Fallback screen capture using PIL (works everywhere)"""
+
+    def __init__(self, parent=None, verbose=True):
+        self.parent = parent
+        self.verbose = verbose
+
+    def write(self, text, color="white"):
+        if self.parent and hasattr(self.parent, 'write'):
+            self.parent.write(text, color)
+        elif self.verbose:
+            print(text)
+
+    def capture_region(self, bbox, output_path):
+        """Capture region using PIL ImageGrab"""
+        try:
+            from PIL import ImageGrab
+
+            x, y, w, h = bbox
+            bbox_pil = (x, y, x + w, y + h)
+
+            screenshot = ImageGrab.grab(bbox=bbox_pil)
+            screenshot.save(output_path)
+
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                self.write("  ✓ PIL fallback capture successful\n", "green")
+                return True
+            return False
+
+        except Exception as e:
+            self.write(f"  PIL capture error: {e}\n", "red")
+            return False
+
+    def capture_animation(self, bbox, frame_count, frame_delay, output_path, callback=None):
+        """Capture animation using PIL"""
+        try:
+            from PIL import Image, ImageGrab
+
+            frames = []
+            for i in range(frame_count):
+                if callback and not callback(i, frame_count):
+                    return False
+
+                x, y, w, h = bbox
+                bbox_pil = (x, y, x + w, y + h)
+                screenshot = ImageGrab.grab(bbox=bbox_pil)
+                frames.append(screenshot)
+
+                if i < frame_count - 1:
+                    time.sleep(frame_delay)
+
+            if frames:
+                delay_ms = int(frame_delay * 1000)
+                frames[0].save(output_path, save_all=True, append_images=frames[1:],
+                              duration=delay_ms, loop=0)
+                self.write(f"  ✓ PIL animation captured ({len(frames)} frames)\n", "green")
+                return True
+            return False
+
+        except Exception as e:
+            self.write(f"  PIL animation error: {e}\n", "red")
+            return False
+
+
+class UnifiedScreenCapture:
+    """Unified screen capture that automatically selects the best method"""
+
+    def __init__(self, parent=None, verbose=True):
+        self.parent = parent
+        self.verbose = verbose
+        self.session_type = None
+        self.available_methods = []
+        self.wayland_capture = None
+        self.x11_capture = None
+        self.pil_capture = PILFallbackCapture(parent, verbose)
+
+        self._detect_environment()
+        self._initialize_captures()
+
+    def _detect_environment(self):
+        """Detect the current display environment"""
+        self.session_type, self.available_methods = ScreenCaptureMethod.detect()
+        if self.parent and hasattr(self.parent, 'write'):
+            self.parent.write(f"\n📺 Display: {self.session_type}\n", "cyan")
+            self.parent.write(f"   Methods: {', '.join(self.available_methods)}\n", "cyan")
+
+    def _initialize_captures(self):
+        """Initialize appropriate capture handlers"""
+        if self.session_type == ScreenCaptureMethod.WAYLAND:
+            self.wayland_capture = WaylandScreenCapture(self.parent, self.verbose)
+        elif self.session_type == ScreenCaptureMethod.X11:
+            self.x11_capture = X11ScreenCapture(self.parent, self.verbose)
+
+    def write(self, text, color="white"):
+        if self.parent and hasattr(self.parent, 'write'):
+            self.parent.write(text, color)
+        elif self.verbose:
+            print(text)
+
+    def get_screen_geometry(self):
+        """
+        Get the bounding box of ALL monitors combined.
+        Returns (min_x, min_y, total_width, total_height)
+        """
+        try:
+            from screeninfo import get_monitors
+
+            monitors = get_monitors()
+            if monitors and len(monitors) > 0:
+                # Calculate the bounding box of all monitors
+                min_x = min(m.x for m in monitors)
+                min_y = min(m.y for m in monitors)
+                max_x = max(m.x + m.width for m in monitors)
+                max_y = max(m.y + m.height for m in monitors)
+
+                total_width = max_x - min_x
+                total_height = max_y - min_y
+
+                if self.parent and hasattr(self.parent, 'write'):
+                    self.parent.write(f"   Detected {len(monitors)} monitor(s):\n", "cyan")
+                    for i, m in enumerate(monitors):
+                        self.parent.write(f"     Monitor {i+1}: {m.width}x{m.height} at ({m.x}, {m.y})\n", "cyan")
+                    self.parent.write(f"   Total area: {total_width}x{total_height}\n", "cyan")
+
+                return (min_x, min_y, total_width, total_height)
+        except Exception as e:
+            if self.parent and hasattr(self.parent, 'write'):
+                self.parent.write(f"   screeninfo error: {e}, falling back to tkinter\n", "yellow")
+
+        # Fallback: try to get combined geometry using tkinter
+        try:
+            import tkinter as tk
+
+            # Create a temporary root window
+            root = tk.Tk()
+            root.withdraw()
+
+            # Get the geometry of the entire virtual desktop
+            # This works on Windows and some X11 configurations
+            try:
+                # Try to get virtual screen dimensions
+                width = root.winfo_screenwidth()
+                height = root.winfo_screenheight()
+
+                # On multi-monitor systems, winfo_screenwidth/height may return combined size
+                # But we need to find the offset as well
+                x = root.winfo_x()
+                y = root.winfo_y()
+
+                root.destroy()
+
+                if self.parent and hasattr(self.parent, 'write'):
+                    self.parent.write(f"   Fallback geometry: {width}x{height} at ({x}, {y})\n", "yellow")
+
+                return (x, y, width, height)
+            except:
+                root.destroy()
+                raise
+        except Exception as e:
+            if self.parent and hasattr(self.parent, 'write'):
+                self.parent.write(f"   tkinter fallback error: {e}\n", "yellow")
+
+        # Ultimate fallback: assume single monitor at 0,0
+        return (0, 0, 1920, 1080)
+
+    def capture_region(self, bbox, output_path):
+        """Capture screen region using best available method"""
+        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else 'media_files',
+                   exist_ok=True)
+
+        if self.session_type == ScreenCaptureMethod.WAYLAND and self.wayland_capture:
+            if self.wayland_capture.capture_region(bbox, output_path):
+                return True
+
+        if self.session_type == ScreenCaptureMethod.X11 and self.x11_capture:
+            if self.x11_capture.capture_region(bbox, output_path):
+                return True
+
+        return self.pil_capture.capture_region(bbox, output_path)
+
+    def capture_animation(self, bbox, frame_count, frame_delay, output_path, callback=None):
+        """Capture animation frames"""
+        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else 'media_files',
+                   exist_ok=True)
+
+        if self.session_type == ScreenCaptureMethod.WAYLAND and self.wayland_capture:
+            if self.wayland_capture.capture_animation(bbox, frame_count, frame_delay,
+                                                       output_path, callback):
+                return True
+
+        if self.session_type == ScreenCaptureMethod.X11 and self.x11_capture:
+            if self.x11_capture.capture_animation(bbox, frame_count, frame_delay,
+                                                   output_path, callback):
+                return True
+
+        return self.pil_capture.capture_animation(bbox, frame_count, frame_delay,
+                                                   output_path, callback)
 
 #-----------------------------------------------Help Functions --------------------------------------------
 def modify_preamble_for_notes_mode(tex_content: str, mode: str) -> str:
