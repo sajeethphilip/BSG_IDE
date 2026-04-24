@@ -15091,7 +15091,7 @@ Created by {self.__author__}
     def generate_tex_with_preserved_masking(self):
         """Generate TeX content - remove masked content, preserve original styling and layout directives"""
         try:
-            # Get the original custom preamble (with all styling)
+            # Get the original custom preamble
             full_tex_content = self.get_custom_preamble()
 
             # Find the exact position of \begin{document}
@@ -15100,16 +15100,13 @@ Created by {self.__author__}
                 self.write("Error: Could not find \\begin{document} in preamble\n", "red")
                 return None
 
-            # Extract preamble (everything before \begin{document})
+            # Extract preamble
             preamble = full_tex_content[:doc_pos].strip()
-
             if not preamble.endswith('\n'):
                 preamble += '\n'
 
             # Start building new document body
             new_document_body = "\\begin{document}\n\n"
-
-            # Create title page slide
             new_document_body += "\\begin{frame}[plain]\n"
             new_document_body += "\\titlepage\n"
             new_document_body += "\\end{frame}\n\n"
@@ -15118,103 +15115,188 @@ Created by {self.__author__}
             total_visible_slides = 0
             total_skipped_slides = 0
 
-            # COMPLETE list of ALL layout directives (these are special, not regular LaTeX)
-            ALL_LAYOUT_DIRECTIVES = [
-                '\\mosaic', '\\wm', '\\ff', '\\pip', '\\split',
-                '\\hl', '\\bg', '\\tb', '\\ol', '\\corner'
-            ]
+            # ========== HELPER FUNCTIONS FOR MEDIA CONVERSION ==========
 
-            def is_layout_directive(line):
-                """Check if line contains a layout directive (NOT regular LaTeX commands)"""
-                if not line or not line.strip():
-                    return False
-                stripped = line.strip()
+            def convert_file_to_includegraphics(file_path):
+                """Convert file path to includegraphics command"""
+                file_path = file_path.strip()
+                # Remove quotes
+                if file_path.startswith('"') and file_path.endswith('"'):
+                    file_path = file_path[1:-1]
+                if file_path.startswith("'") and file_path.endswith("'"):
+                    file_path = file_path[1:-1]
+                # Remove braces
+                file_path = file_path.rstrip('}').lstrip('{')
 
-                # IMPORTANT: Only check against specific layout directives
-                # Do NOT match standard LaTeX environments
-                layout_directives = [
-                    '\\mosaic', '\\wm', '\\ff', '\\pip', '\\split',
-                    '\\hl', '\\bg', '\\tb', '\\ol', '\\corner'
-                ]
+                # Remove any trailing garbage
+                if '\\' in file_path:
+                    file_path = file_path.split('\\')[0].strip()
 
-                for directive in layout_directives:
-                    if stripped.startswith(directive):
-                        return True
+                actual_path = None
+                if os.path.exists(file_path):
+                    actual_path = file_path
+                elif os.path.exists(f"media_files/{file_path}"):
+                    actual_path = f"media_files/{file_path}"
+                elif os.path.exists(f"media_files/{os.path.basename(file_path)}"):
+                    actual_path = f"media_files/{os.path.basename(file_path)}"
 
-                # Explicitly exclude standard LaTeX environments
-                if stripped.startswith('\\begin{') or stripped.startswith('\\end{'):
-                    return False
+                if actual_path:
+                    # Log that we found the file
+                    self.write(f"    [DEBUG] Found image: {actual_path}\n", "cyan")
 
-                return False
-
-            def find_layout_in_content(content_list):
-                """
-                Find layout directive anywhere in content.
-                Returns (layout_type, layout_params, line_index) or (None, None, -1)
-                NOTE: This only detects explicit layout directives, NOT regular LaTeX environments
-                """
-                layout_directives = ['\\mosaic', '\\wm', '\\ff', '\\pip', '\\split',
-                                     '\\hl', '\\bg', '\\tb', '\\ol', '\\corner']
-
-                for i, line in enumerate(content_list):
-                    if not line or not line.strip():
-                        continue
-                    stripped = line.strip()
-
-                    # Skip standard LaTeX environments
-                    if stripped.startswith('\\begin{') or stripped.startswith('\\end{'):
-                        continue
-
-                    for directive in layout_directives:
-                        if stripped.startswith(directive):
-                            # Extract directive type and params
-                            if directive == '\\mosaic':
-                                import re
-                                match = re.search(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', stripped)
-                                if match:
-                                    return ('mosaic', stripped, i)
-                                else:
-                                    return ('mosaic', stripped, i)
-                            else:
-                                params = stripped[len(directive):].strip()
-                                return (directive[1:], params, i)
-                return (None, None, -1)
-
-            # Valid media directives
-            valid_media_directives = ['\\file', '\\play', '\\url', '\\movie', '\\sound',
-                                       '\\includegraphics', '\\href']
-
-            def is_valid_media_directive(line):
-                if not line or not line.strip():
-                    return False
-                stripped = line.strip()
-                if is_layout_directive(stripped):
-                    return False
-                for directive in valid_media_directives:
-                    if stripped.startswith(directive):
-                        return True
-                return False
-
-            def convert_file_to_includegraphics(line):
-                if '\\file' in line and not is_layout_directive(line):
-                    file_path = line.replace('\\file', '').strip()
-                    file_path = file_path.strip('{}')
-
-                    actual_path = None
-                    if os.path.exists(file_path):
-                        actual_path = file_path
-                    elif os.path.exists(f"media_files/{file_path}"):
-                        actual_path = f"media_files/{file_path}"
+                    video_extensions = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv', '.wmv')
+                    if actual_path.lower().endswith(video_extensions):
+                        # Video file - generate preview
+                        preview_base = os.path.splitext(actual_path)[0]
+                        preview_path = f"{preview_base}_preview.png"
+                        if not os.path.exists(preview_path):
+                            try:
+                                import cv2
+                                cap = cv2.VideoCapture(actual_path)
+                                ret, frame = cap.read()
+                                if ret:
+                                    cv2.imwrite(preview_path, frame)
+                                cap.release()
+                            except:
+                                preview_path = actual_path
+                        return f"\\includegraphics[width=0.5\\textwidth,keepaspectratio]{{{preview_path}}}"
                     else:
-                        return f"\\textcolor{{gray}}{{[Image not found: {os.path.basename(file_path)}]}}"
+                        # For images inside columns, use column-appropriate width
+                        return f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{actual_path}}}"
+                else:
+                    self.write(f"    [WARNING] Image not found: {file_path}\n", "yellow")
+                    return f"\\textcolor{{gray}}{{[File not found: {os.path.basename(file_path)}]}}"
 
-                    return f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{actual_path}}}"
+            def convert_play_to_movie(line):
+                """Convert \play directive to LaTeX movie command"""
+                stripped = line.strip()
+
+                if '\\file' in stripped:
+                    file_match = re.search(r'\\file\s+(.+)$', stripped)
+                    if file_match:
+                        file_path = file_match.group(1).strip()
+                        file_path = file_path.strip('{}')
+                        if file_path.startswith('"') and file_path.endswith('"'):
+                            file_path = file_path[1:-1]
+
+                        actual_path = None
+                        if os.path.exists(file_path):
+                            actual_path = file_path
+                        elif os.path.exists(f"media_files/{file_path}"):
+                            actual_path = f"media_files/{file_path}"
+                        elif os.path.exists(f"media_files/{os.path.basename(file_path)}"):
+                            actual_path = f"media_files/{os.path.basename(file_path)}"
+
+                        if actual_path:
+                            preview_base = os.path.splitext(actual_path)[0]
+                            preview_path = f"{preview_base}_preview.png"
+                            if not os.path.exists(preview_path):
+                                try:
+                                    import cv2
+                                    cap = cv2.VideoCapture(actual_path)
+                                    ret, frame = cap.read()
+                                    if ret:
+                                        cv2.imwrite(preview_path, frame)
+                                    cap.release()
+                                except:
+                                    preview_path = actual_path
+                            return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{preview_path}}}}}{{{actual_path}}}"
+                        else:
+                            return f"\\textcolor{{gray}}{{[Video not found: {os.path.basename(file_path)}]}}"
+
+                elif 'http' in stripped or 'https' in stripped:
+                    url_match = re.search(r'(https?://[^\s]+)', stripped)
+                    if url_match:
+                        url = url_match.group(1)
+                        return f"\\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}"
+
+                return line
+
+            def convert_mosaic_to_latex(mosaic_line):
+                """Convert \mosaic directive to LaTeX tabular"""
+                match = re.search(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', mosaic_line)
+                if not match:
+                    return mosaic_line
+
+                rows = int(match.group(1))
+                cols = int(match.group(2))
+                images = [img.strip() for img in match.group(3).split(',')]
+
+                # Clean image paths
+                cleaned_images = []
+                for img in images:
+                    if not img.startswith(('media_files/', './', '/', 'http')):
+                        cleaned_images.append(f"media_files/{img}")
+                    else:
+                        cleaned_images.append(img)
+
+                # Pad with empty strings if needed
+                total_cells = rows * cols
+                while len(cleaned_images) < total_cells:
+                    cleaned_images.append('')
+
+                col_width = 0.94 / cols
+
+                latex = "\\begin{center}\n"
+                latex += f"\\begin{{tabular}}{{{'c' * cols}}}\n"
+                latex += "\\hline\n"
+
+                for idx, img in enumerate(cleaned_images):
+                    if idx > 0 and idx % cols == 0:
+                        latex = latex.rstrip('& ') + "\\\\ \\hline\n"
+
+                    if img:
+                        latex += f" \\includegraphics[width={col_width}\\textwidth,height=0.25\\textheight,keepaspectratio]{{{img}}} &"
+                    else:
+                        latex += f" \\textcolor{{gray}}{{\\rule{{{col_width}\\textwidth}}{{0.2\\textheight}}}} &"
+
+                latex = latex.rstrip('& ') + "\\\\ \\hline\n"
+                latex += "\\end{tabular}\n"
+                latex += "\\end{center}"
+                return latex
+
+            def process_line_for_media(line, inside_column=False):
+                """Process a single line, converting any media or layout directives"""
+                stripped = line.strip()
+
+                # FIRST: Check for layout directives
+                if stripped.startswith('\\mosaic'):
+                    return convert_mosaic_to_latex(line)
+                elif stripped.startswith('\\split'):
+                    return line
+                elif stripped.startswith('\\pip'):
+                    return line
+                elif stripped.startswith('\\wm') or stripped.startswith('\\ff') or stripped.startswith('\\hl') or \
+                     stripped.startswith('\\bg') or stripped.startswith('\\tb') or stripped.startswith('\\ol') or \
+                     stripped.startswith('\\corner'):
+                    return line
+
+                # THEN: Check for media directives
+                if '\\play' in stripped:
+                    return convert_play_to_movie(line)
+                elif '\\file' in stripped and '\\play' not in stripped:
+                    file_match = re.search(r'\\file\s+(.+?)(?=\s*$|\s*\\|$)', stripped)
+                    if file_match:
+                        file_path = file_match.group(1).strip()
+                        converted = convert_file_to_includegraphics(file_path)
+                        if converted:
+                            # If we're inside a column, don't add extra centering
+                            if inside_column:
+                                return converted
+                            else:
+                                remaining = stripped[file_match.end():].strip()
+                                if remaining:
+                                    return f"\\begin{{center}}{converted}\\end{{center}} {remaining}"
+                                return f"\\begin{{center}}{converted}\\end{{center}}"
+                        else:
+                            return f"\\textcolor{{gray}}{{[File not found: {os.path.basename(file_path)}]}}"
+                    return line
+
                 return line
 
             # Process each slide
             for idx, slide in enumerate(self.slides):
                 is_fully_masked = slide.get('_fully_masked', False)
-
                 if is_fully_masked:
                     total_skipped_slides += 1
                     continue
@@ -15228,370 +15310,75 @@ Created by {self.__author__}
                 if media_masked:
                     media = ""
 
+                # Get visible content
                 raw_content = slide.get('content', [])
                 visible_content = []
-
                 for i, line in enumerate(raw_content):
                     if i not in hidden_content_indices:
                         visible_content.append(line)
 
+                # Get visible notes
                 visible_notes = []
                 for i, note in enumerate(slide.get('notes', [])):
                     if note.strip() and i not in hidden_note_indices:
                         visible_notes.append(note)
 
-                # ========== BIBLIOGRAPHY DETECTION ==========
-                # Check if this slide contains a bibliography environment
-                # This runs BEFORE any other processing to ensure proper splitting
-                is_bibliography = False
-                bib_content_lines = []
-                in_bibliography = False
-
-                for line in visible_content:
-                    if '\\begin{thebibliography}' in line:
-                        is_bibliography = True
-                        in_bibliography = True
-                        bib_content_lines.append(line)
-                    elif '\\end{thebibliography}' in line:
-                        in_bibliography = False
-                        bib_content_lines.append(line)
-                    elif in_bibliography:
-                        bib_content_lines.append(line)
-
-                # If this is a bibliography slide, process it with the professional handler
-                if is_bibliography and bib_content_lines:
-                    self.write(f"  ✓ Processing bibliography slide {idx + 1}\n", "cyan")
-                    slide_title = slide.get('title', 'References')
-                    clean_title = re.sub(r'^\[DELETED\]\s*', '', slide_title)
-
-                    # Use the professional bibliography handler
-                    frame_latex = self._handle_bibliography_slide(bib_content_lines, clean_title, idx)
-                    new_document_body += frame_latex + "\n\n"
-                    total_visible_slides += 1
-                    continue  # Skip to next slide - prevents double-processing
-
-                # ========== END OF BIBLIOGRAPHY DETECTION ==========
-
-                # Check if slide has a valid image (not masked and not empty)
-                has_valid_image = False
-                image_path = None
-
-                if media and media != "\\None" and not media_masked:
-                    if media.startswith('\\file') and not is_layout_directive(media):
-                        file_path = media.replace('\\file', '').strip()
-                        file_path = file_path.strip('{}')
-                        if file_path and 'example-image' not in file_path.lower():
-                            if os.path.exists(file_path):
-                                has_valid_image = True
-                                image_path = file_path
-                            elif os.path.exists(f"media_files/{file_path}"):
-                                has_valid_image = True
-                                image_path = f"media_files/{file_path}"
-
-                # Check if content already has columns (regular LaTeX, NOT a layout directive)
-                has_existing_columns = any('\\begin{columns}' in line for line in visible_content)
-
-                if not visible_content and not visible_notes and not has_valid_image:
-                    total_skipped_slides += 1
-                    continue
-
-                total_visible_slides += 1
-
                 slide_title = slide.get('title', 'Untitled')
                 clean_title = re.sub(r'^\[DELETED\]\s*', '', slide_title)
 
-                # ============================================================
-                # CHECK FOR LAYOUT DIRECTIVES ANYWHERE IN CONTENT
-                # IMPORTANT: This ONLY detects explicit layout directives like \mosaic, \wm, etc.
-                # NOT regular LaTeX environments like \begin{columns}
-                # ============================================================
-                layout_type, layout_params, layout_line_index = find_layout_in_content(visible_content)
-                has_layout = layout_type is not None
+                # ========== PROCESS ALL LINES ==========
+                processed_content = []
+                for line in visible_content:
+                    processed_line = process_line_for_media(line)
+                    processed_content.append(processed_line)
 
-                # ============================================================
-                # CASE 1: Layout directive found - use specialized handler
-                # ============================================================
-                if has_layout:
-                    # Remove the layout directive line from visible_content
-                    content_without_layout = [line for j, line in enumerate(visible_content) if j != layout_line_index]
+                # Process separate media field
+                media_latex = None
+                if media and media != "\\None" and not media_masked:
+                    if media.startswith('\\file'):
+                        file_path = media.replace('\\file', '').strip()
+                        media_latex = convert_file_to_includegraphics(file_path)
+                    elif media.startswith('\\play'):
+                        media_latex = convert_play_to_movie(media)
 
-                    self.write(f"  ✓ Processing {layout_type} layout in slide {idx + 1}\n", "green")
+                # ========== CHECK IF ANY MOSAIC REMAINS ==========
+                has_mosaic = any('\\mosaic' in line for line in processed_content)
 
-                    # Generate the frame using the layout handler
-                    if layout_type == 'mosaic':
-                        frame_latex = self._generate_mosaic_layout(
-                            layout_params, content_without_layout, clean_title
-                        )
-                    else:
-                        frame_latex = self._generate_layout_latex(
-                            layout_type, layout_params, content_without_layout, clean_title
-                        )
-
-                    # Add notes if any
-                    if visible_notes:
-                        real_notes = []
-                        for note in visible_notes:
-                            clean_note = re.sub(r'^[-•]\s*', '', note.strip())
-                            if clean_note and clean_note.lower() not in ["no notes for this slide", "no notes", "none"]:
-                                real_notes.append(clean_note)
-
-                        if real_notes:
-                            notes_latex = "\n\\note{\n\\begin{itemize}\n"
-                            for note in real_notes:
-                                notes_latex += f"    \\item {note}\n"
-                            notes_latex += "\\end{itemize}\n}\n"
-                            # Insert notes before \end{frame}
-                            frame_end = frame_latex.rfind('\\end{frame}')
-                            if frame_end != -1:
-                                frame_latex = frame_latex[:frame_end] + notes_latex + frame_latex[frame_end:]
-
-                    new_document_body += frame_latex + "\n\n"
-                    continue
-
-                # ============================================================
-                # CASE 2: No layout directive - use standard processing
-                # This handles regular slides with or without \begin{columns}
-                # ============================================================
+                # ========== BUILD THE FRAME ==========
                 frame_lines = []
                 frame_lines.append(f"\\begin{{frame}}{{{clean_title}}}")
                 frame_lines.append(f"\\frametitle{{{clean_title}}}")
                 frame_lines.append("")
 
-                # If we have a valid image and no existing columns, create two-column layout
-                if has_valid_image and not has_existing_columns:
-                    frame_lines.append("\\begin{columns}[T]")
-                    frame_lines.append("\\column{0.45\\textwidth}")
-                    # Add image in left column
-                    frame_lines.append(f"\\begin{{center}}")
-                    frame_lines.append(f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{image_path}}}")
-                    frame_lines.append(f"\\end{{center}}")
-                    frame_lines.append("")
-                    frame_lines.append("\\column{0.5\\textwidth}")
-
-                    # Process content for right column
-                    i = 0
-                    in_list = False
-                    list_type = None
-
-                    while i < len(visible_content):
-                        line = visible_content[i]
-                        stripped = line.strip()
-
-                        # Handle enumerate/itemize environment boundaries
-                        if '\\begin{enumerate}' in line:
-                            in_list = True
-                            list_type = 'enumerate'
+                if has_mosaic:
+                    # If there's a mosaic, just add all processed content
+                    for line in processed_content:
+                        if line.strip():
                             frame_lines.append(line)
-                            i += 1
-                            continue
-                        elif '\\begin{itemize}' in line:
-                            in_list = True
-                            list_type = 'itemize'
-                            frame_lines.append(line)
-                            i += 1
-                            continue
-                        elif '\\end{enumerate}' in line or '\\end{itemize}' in line:
-                            in_list = False
-                            list_type = None
-                            frame_lines.append(line)
-                            i += 1
-                            continue
-
-                        # Handle media directives (skip if already handled as main image)
-                        if is_valid_media_directive(line):
-                            i += 1
-                            continue
-
-                        # Handle bullet points (convert - to \item)
-                        if stripped.startswith(('- ', '• ')):
-                            bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                            if not in_list:
-                                frame_lines.append("\\begin{itemize}")
-                                frame_lines.append(f"\\item {bullet_content}")
-                                frame_lines.append("\\end{itemize}")
-                            else:
-                                frame_lines.append(f"\\item {bullet_content}")
-                            i += 1
-                            continue
-
-                        # Handle standalone \item commands
-                        if stripped.startswith('\\item'):
-                            if not in_list:
-                                frame_lines.append("\\begin{itemize}")
+                elif media_latex:
+                    # Check if there's other content
+                    has_other_content = any(l.strip() for l in processed_content if l.strip() and not l.strip().startswith('%'))
+                    if has_other_content:
+                        frame_lines.append("\\begin{columns}[T]")
+                        frame_lines.append("\\column{0.48\\textwidth}")
+                        frame_lines.append("\\begin{center}")
+                        frame_lines.append(media_latex)
+                        frame_lines.append("\\end{center}")
+                        frame_lines.append("\\column{0.48\\textwidth}")
+                        for line in processed_content:
+                            if line.strip() and not line.strip().startswith('%'):
                                 frame_lines.append(line)
-                                j = i + 1
-                                while j < len(visible_content) and visible_content[j].strip().startswith('\\item'):
-                                    frame_lines.append(visible_content[j])
-                                    j += 1
-                                i = j
-                                frame_lines.append("\\end{itemize}")
-                            else:
-                                frame_lines.append(line)
-                                i += 1
-                            continue
-
-                        # Regular line
-                        if stripped or line == '':
-                            frame_lines.append(line)
-                        i += 1
-
-                    frame_lines.append("\\end{columns}")
-
-                elif has_existing_columns:
-                    # Content already has columns - preserve as-is
-                    i = 0
-                    in_list = False
-                    list_type = None
-
-                    while i < len(visible_content):
-                        line = visible_content[i]
-                        stripped = line.strip()
-
-                        # Preserve column commands exactly
-                        if '\\begin{columns}' in line or '\\end{columns}' in line or '\\column' in line:
-                            frame_lines.append(line)
-                            i += 1
-                            continue
-
-                        # Handle enumerate/itemize environment boundaries
-                        if '\\begin{enumerate}' in line:
-                            in_list = True
-                            list_type = 'enumerate'
-                            frame_lines.append(line)
-                            i += 1
-                            continue
-                        elif '\\begin{itemize}' in line:
-                            in_list = True
-                            list_type = 'itemize'
-                            frame_lines.append(line)
-                            i += 1
-                            continue
-                        elif '\\end{enumerate}' in line or '\\end{itemize}' in line:
-                            in_list = False
-                            list_type = None
-                            frame_lines.append(line)
-                            i += 1
-                            continue
-
-                        # Handle media directives inside columns
-                        if is_valid_media_directive(line):
-                            if '\\file' in line:
-                                converted = convert_file_to_includegraphics(line)
-                                frame_lines.append(converted)
-                            else:
-                                frame_lines.append(line)
-                            i += 1
-                            continue
-
-                        # Handle bullet points
-                        if stripped.startswith(('- ', '• ')):
-                            bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                            if not in_list:
-                                frame_lines.append("\\begin{itemize}")
-                                frame_lines.append(f"\\item {bullet_content}")
-                                frame_lines.append("\\end{itemize}")
-                            else:
-                                frame_lines.append(f"\\item {bullet_content}")
-                            i += 1
-                            continue
-
-                        # Handle standalone \item commands
-                        if stripped.startswith('\\item'):
-                            if not in_list:
-                                frame_lines.append("\\begin{itemize}")
-                                frame_lines.append(line)
-                                j = i + 1
-                                while j < len(visible_content) and visible_content[j].strip().startswith('\\item'):
-                                    frame_lines.append(visible_content[j])
-                                    j += 1
-                                i = j
-                                frame_lines.append("\\end{itemize}")
-                            else:
-                                frame_lines.append(line)
-                                i += 1
-                            continue
-
-                        # Regular line
-                        if stripped or line == '':
-                            frame_lines.append(line)
-                            i += 1
-
+                        frame_lines.append("\\end{columns}")
+                    else:
+                        frame_lines.append("\\begin{center}")
+                        frame_lines.append(media_latex)
+                        frame_lines.append("\\end{center}")
                 else:
-                    # No image and no columns - normal full-width content
-                    i = 0
-                    in_list = False
-                    list_type = None
-
-                    while i < len(visible_content):
-                        line = visible_content[i]
-                        stripped = line.strip()
-
-                        # Handle enumerate/itemize environment boundaries
-                        if '\\begin{enumerate}' in line:
-                            in_list = True
-                            list_type = 'enumerate'
+                    for line in processed_content:
+                        if line.strip():
                             frame_lines.append(line)
-                            i += 1
-                            continue
-                        elif '\\begin{itemize}' in line:
-                            in_list = True
-                            list_type = 'itemize'
-                            frame_lines.append(line)
-                            i += 1
-                            continue
-                        elif '\\end{enumerate}' in line or '\\end{itemize}' in line:
-                            in_list = False
-                            list_type = None
-                            frame_lines.append(line)
-                            i += 1
-                            continue
 
-                        # Handle media directives
-                        if is_valid_media_directive(line):
-                            if '\\file' in line:
-                                converted = convert_file_to_includegraphics(line)
-                                frame_lines.append(f"\\begin{{center}}")
-                                frame_lines.append(converted)
-                                frame_lines.append(f"\\end{{center}}")
-                            else:
-                                frame_lines.append(line)
-                            i += 1
-                            continue
-
-                        # Handle bullet points
-                        if stripped.startswith(('- ', '• ')):
-                            bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                            if not in_list:
-                                frame_lines.append("\\begin{itemize}")
-                                frame_lines.append(f"\\item {bullet_content}")
-                                frame_lines.append("\\end{itemize}")
-                            else:
-                                frame_lines.append(f"\\item {bullet_content}")
-                            i += 1
-                            continue
-
-                        # Handle standalone \item commands
-                        if stripped.startswith('\\item'):
-                            if not in_list:
-                                frame_lines.append("\\begin{itemize}")
-                                frame_lines.append(line)
-                                j = i + 1
-                                while j < len(visible_content) and visible_content[j].strip().startswith('\\item'):
-                                    frame_lines.append(visible_content[j])
-                                    j += 1
-                                i = j
-                                frame_lines.append("\\end{itemize}")
-                            else:
-                                frame_lines.append(line)
-                                i += 1
-                            continue
-
-                        # Regular line
-                        if stripped or line == '':
-                            frame_lines.append(line)
-                        i += 1
-
-                # Add notes
+                # ========== ADD NOTES ==========
                 if visible_notes:
                     real_notes = []
                     for note in visible_notes:
@@ -15610,17 +15397,13 @@ Created by {self.__author__}
 
                 frame_lines.append("\\end{frame}")
                 frame_lines.append("")
-
                 new_document_body += "\n".join(frame_lines) + "\n\n"
+                total_visible_slides += 1
 
             new_document_body += "\\end{document}\n"
-
             full_tex = preamble + "\n" + new_document_body
 
-            # ========== ADD CITATION BACK-REFERENCES ==========
-            # This adds hyperref package and configurations for clickable citations
-            full_tex = self._add_citation_back_references_to_slides(full_tex)
-
+            # Debug output
             debug_file = "debug_output.tex"
             with open(debug_file, 'w', encoding='utf-8') as f:
                 f.write(full_tex)
