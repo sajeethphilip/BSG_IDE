@@ -3347,26 +3347,34 @@ class MediaURLDialog(ctk.CTkToplevel):
     def __init__(self, parent, slide_index, media_entry):
         super().__init__(parent)
         self.title("Update Media Location")
-        self.geometry("500x150")
+        self.geometry("600x200")  # Made wider for YouTube message
         self.media_entry = media_entry
 
-        # Center dialog
         self.transient(parent)
         self.grab_set()
 
         # Create widgets
         ctk.CTkLabel(self, text=f"Enter media URL for slide {slide_index + 1}:").pack(pady=10)
 
-        self.url_entry = ctk.CTkEntry(self, width=400)
+        self.url_entry = ctk.CTkEntry(self, width=500)
         self.url_entry.pack(pady=10)
         self.url_entry.insert(0, media_entry.get())
+
+        # YouTube info label
+        self.youtube_info = ctk.CTkLabel(
+            self,
+            text="💡 YouTube videos will be downloaded locally for offline viewing",
+            text_color="#FFB86C",
+            font=("Arial", 10)
+        )
+        self.youtube_info.pack(pady=5)
 
         button_frame = ctk.CTkFrame(self)
         button_frame.pack(pady=10)
 
-        ctk.CTkButton(button_frame, text="Play URL",
+        ctk.CTkButton(button_frame, text="Play URL (Download)",
                      command=self.use_play_url).pack(side="left", padx=5)
-        ctk.CTkButton(button_frame, text="Static URL",
+        ctk.CTkButton(button_frame, text="Static URL (Link Only)",
                      command=self.use_static_url).pack(side="left", padx=5)
         ctk.CTkButton(button_frame, text="Cancel",
                      command=self.cancel).pack(side="left", padx=5)
@@ -3375,7 +3383,19 @@ class MediaURLDialog(ctk.CTkToplevel):
         url = self.url_entry.get().strip()
         if url:
             self.media_entry.delete(0, 'end')
-            self.media_entry.insert(0, f"\\play \\url {url}")
+            # Detect YouTube URLs
+            if 'youtube.com' in url or 'youtu.be' in url:
+                # Use \play \url format - will trigger download
+                self.media_entry.insert(0, f"\\play \\url {url}")
+                # Show info message
+                messagebox.showinfo(
+                    "YouTube Video",
+                    "The video will be downloaded locally.\n\n"
+                    "This may take a moment depending on video size.\n"
+                    "Once downloaded, it will work offline."
+                )
+            else:
+                self.media_entry.insert(0, f"\\play \\url {url}")
         self.destroy()
 
     def use_static_url(self):
@@ -3383,6 +3403,13 @@ class MediaURLDialog(ctk.CTkToplevel):
         if url:
             self.media_entry.delete(0, 'end')
             self.media_entry.insert(0, f"\\url {url}")
+            if 'youtube.com' in url or 'youtu.be' in url:
+                messagebox.showinfo(
+                    "Static URL Mode",
+                    "Using static URL mode.\n\n"
+                    "The video will open in browser when clicked.\n"
+                    "Internet connection required for playback."
+                )
         self.destroy()
 
     def cancel(self):
@@ -7421,6 +7448,44 @@ class MenuBar(ctk.CTkFrame):
 
         ctk.CTkButton(dialog, text="Close", command=dialog.destroy).pack(pady=10)
 
+def sanitize_filename(filename):
+    """Sanitize filename for safe file system use"""
+    # Remove invalid characters
+    filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+    # Replace spaces with underscores
+    filename = filename.replace(' ', '_')
+    # Limit length
+    if len(filename) > 100:
+        filename = filename[:100]
+    return filename
+
+def show_attribution_message(terminal, url, local_path):
+    """Show courtesy message with source attribution"""
+    if terminal:
+        terminal.write("\n" + "="*60 + "\n", "cyan")
+        terminal.write("📹 YOUTUBE VIDEO DOWNLOADED\n", "green")
+        terminal.write("="*60 + "\n", "cyan")
+        terminal.write(f"Original URL: {url}\n", "white")
+        terminal.write(f"Saved to: {local_path}\n", "white")
+        terminal.write("\n📝 Source Attribution:\n", "yellow")
+        terminal.write(f"   Please credit the original content creator\n", "white")
+        terminal.write(f"   This video is saved locally for offline presentation\n", "white")
+        terminal.write("="*60 + "\n\n", "cyan")
+
+def generate_video_preview(video_path):
+    """Generate a preview image from a video file"""
+    try:
+        import cv2
+        preview_path = video_path.rsplit('.', 1)[0] + '_preview.png'
+        cap = cv2.VideoCapture(video_path)
+        ret, frame = cap.read()
+        if ret:
+            cv2.imwrite(preview_path, frame)
+        cap.release()
+        return preview_path if ret else None
+    except:
+        return None
+
 
 class BeamerSlideEditor(ctk.CTk):
     def __init__(self):
@@ -7433,7 +7498,7 @@ class BeamerSlideEditor(ctk.CTk):
       / /\\ \\
      /_/  \\_\\ LABS
     """
-        self.__version__ = "5.7.4"
+        self.__version__ = "5.8.1"
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
@@ -7650,6 +7715,18 @@ class BeamerSlideEditor(ctk.CTk):
         # Create menu bar
         self.menu_bar = MenuBar(self, self)
 
+        self.check_yt_dlp_availability()
+
+    def check_yt_dlp_availability(self):
+        """Check if yt-dlp is installed for YouTube downloads"""
+        try:
+            import yt_dlp
+            self.yt_dlp_available = True
+            self.write("✓ YouTube downloader (yt-dlp) available\n", "green")
+        except ImportError:
+            self.yt_dlp_available = False
+            self.write("⚠ yt-dlp not installed. YouTube videos will use URL links.\n", "yellow")
+            self.write("  To enable offline YouTube downloads, run: pip install yt-dlp\n", "cyan")
     def create_line_context_menu(self):
         """Create context menu for line operations in editors"""
         self.line_context_menu = tk.Menu(self, tearoff=0)
@@ -12946,77 +13023,18 @@ Created by {self.__author__}
 
     def capture_screen(self):
         """
-        Screen capture by pasting from clipboard.
-        User takes screenshot, then clicks OK to paste.
-        Does NOT clear or modify clipboard contents.
+        Simple screen capture by pasting from clipboard.
+        User takes screenshot using system tools, then clicks the button to paste.
         """
         try:
-            from PIL import Image
+            from PIL import ImageGrab
             import time
-            import platform
-            import subprocess
-
-            system = platform.system()
 
             # Create media_files directory
             os.makedirs('media_files', exist_ok=True)
 
             # Generate timestamp for filename
             timestamp = time.strftime("%Y%m%d-%H%M%S")
-
-            # Helper function to get clipboard image on Linux - NON-BLOCKING
-            def get_clipboard_image_linux():
-                """Get image from clipboard on Linux without blocking"""
-                try:
-                    # Try wl-paste (Wayland) with short timeout
-                    if shutil.which('wl-paste'):
-                        # First check if there's an image in clipboard
-                        check_cmd = ['wl-paste', '--list-types']
-                        check_result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=2)
-                        if 'image/png' in check_result.stdout or 'image' in check_result.stdout:
-                            result = subprocess.run(['wl-paste', '--type', 'image/png'],
-                                                   capture_output=True, timeout=3)
-                            if result.returncode == 0 and result.stdout:
-                                from PIL import Image
-                                import io
-                                return Image.open(io.BytesIO(result.stdout))
-
-                    # Try xclip (X11)
-                    if shutil.which('xclip'):
-                        # Check if there's an image in clipboard
-                        check_cmd = ['xclip', '-selection', 'clipboard', '-o', '-t', 'image/png']
-                        result = subprocess.run(check_cmd, capture_output=True, timeout=2)
-                        if result.returncode == 0 and result.stdout:
-                            from PIL import Image
-                            import io
-                            return Image.open(io.BytesIO(result.stdout))
-
-                    return None
-
-                except subprocess.TimeoutExpired:
-                    # Timeout is fine - just means no image or command hung
-                    return None
-                except Exception as e:
-                    self.write(f"  Clipboard check error: {e}\n", "yellow")
-                    return None
-
-            # Helper function to get clipboard image on macOS
-            def get_clipboard_image_macos():
-                """Get image from clipboard on macOS"""
-                try:
-                    from PIL import ImageGrab
-                    return ImageGrab.grabclipboard()
-                except:
-                    return None
-
-            # Helper function to get clipboard image on Windows
-            def get_clipboard_image_windows():
-                """Get image from clipboard on Windows"""
-                try:
-                    from PIL import ImageGrab
-                    return ImageGrab.grabclipboard()
-                except:
-                    return None
 
             # Check which mode we're in from the toolbar
             mode = self.capture_mode.get()
@@ -13027,253 +13045,146 @@ Created by {self.__author__}
                 self.write(f"\n  Instructions:\n", "yellow")
                 self.write(f"    For each frame:\n", "white")
                 self.write(f"      1. Take a screenshot using your system's tool\n", "white")
-                self.write(f"      2. The screenshot is now in your clipboard\n", "white")
-                self.write(f"      3. Click 'Yes' to paste it\n", "white")
-                self.write(f"      4. The image will be captured WITHOUT clearing the clipboard\n\n", "white")
+                self.write(f"      2. Click OK in the dialog to paste it\n", "white")
+                self.write(f"      3. The clipboard will NOT be cleared\n\n", "white")
 
                 frames = []
                 frame_count = self.frame_count.get()
 
-                # Create progress dialog for animation
-                progress = tk.Toplevel(self)
-                progress.title("Capturing Animation Frames")
-                progress.geometry("400x250")
-                progress.transient(self)
+                for i in range(frame_count):
+                    # Simple messagebox for instruction - stays on top
+                    response = messagebox.askyesno(
+                        f"Capture Frame {i+1}/{frame_count}",
+                        f"Frame {i+1} of {frame_count}\n\n"
+                        f"1. Take a screenshot using your system's tool\n"
+                        f"   • Windows: Win+Shift+S or PrtScn\n"
+                        f"   • macOS: Cmd+Shift+4 or Cmd+Shift+3\n"
+                        f"   • Linux: PrtScn\n\n"
+                        f"2. Click Yes to paste it into this slide",
+                        parent=self
+                    )
 
-                # Center progress dialog
-                progress.update_idletasks()
-                x = (progress.winfo_screenwidth() - 400) // 2
-                y = (progress.winfo_screenheight() - 250) // 2
-                progress.geometry(f"+{x}+{y}")
+                    if not response:
+                        self.write(f"  Frame {i+1} skipped\n", "yellow")
+                        continue
 
-                # Instructions in progress dialog
-                instr_label = tk.Label(progress, text="", font=("Arial", 10), wraplength=350)
-                instr_label.pack(pady=10)
+                    self.write(f"  Pasting frame {i+1}/{frame_count}...\n", "cyan")
 
-                progress_label = tk.Label(progress, text="", font=("Arial", 12, "bold"))
-                progress_label.pack(pady=10)
+                    # Get image from clipboard
+                    screenshot = ImageGrab.grabclipboard()
 
-                pbar = ttk.Progressbar(progress, length=350, mode='determinate')
-                pbar.pack(pady=10)
+                    if screenshot is None:
+                        self.write(f"  ❌ No image in clipboard for frame {i+1}\n", "red")
+                        self.write(f"  💡 Make sure you took a screenshot before clicking Yes\n", "yellow")
 
-                cancel_flag = {'cancelled': False}
-
-                def cancel_capture():
-                    cancel_flag['cancelled'] = True
-                    progress.destroy()
-
-                cancel_btn = tk.Button(progress, text="Cancel", command=cancel_capture)
-                cancel_btn.pack(pady=10)
-
-                try:
-                    for i in range(frame_count):
-                        if cancel_flag['cancelled']:
-                            self.write(f"\n❌ Animation capture cancelled at frame {i+1}\n", "yellow")
-                            break
-
-                        progress_label.config(text=f"Frame {i+1}/{frame_count}")
-                        pbar['value'] = (i + 1) / frame_count * 100
-                        instr_label.config(text=f"Take screenshot for frame {i+1}\nThen click Yes to paste")
-                        progress.update()
-
-                        # Show dialog for each frame
-                        response = messagebox.askyesno(
-                            f"Capture Frame {i+1}/{frame_count}",
-                            f"Frame {i+1} of {frame_count}\n\n"
-                            f"1. Take a screenshot using your system's tool\n"
-                            f"   - Windows: Win+Shift+S (region) or PrtScn\n"
-                            f"   - macOS: Cmd+Shift+4 (region) or Cmd+Shift+3\n"
-                            f"   - Linux: PrtScn or use your desktop's screenshot tool\n\n"
-                            f"2. The screenshot is now in your clipboard\n\n"
-                            f"Click Yes to paste this frame (clipboard will NOT be cleared)"
+                        retry = messagebox.askyesno(
+                            "No Image Found",
+                            f"No image found in clipboard for frame {i+1}!\n\n"
+                            f"Please take a screenshot FIRST, then click Yes.\n\n"
+                            f"Retry frame {i+1}?",
+                            parent=self
                         )
-
-                        if not response:
-                            self.write(f"❌ Frame {i+1} skipped by user\n", "yellow")
+                        if retry:
+                            i -= 1
+                            continue
+                        else:
                             continue
 
-                        self.write(f"  Pasting frame {i+1}/{frame_count}...\n", "cyan")
+                    # Save frame
+                    frame_path = os.path.join('media_files', f'temp_frame_{timestamp}_{i:03d}.png')
+                    screenshot.save(frame_path, 'PNG')
+                    frames.append(frame_path)
+                    self.write(f"  ✓ Frame {i+1} captured\n", "green")
 
-                        # Get image from clipboard based on OS (NON-BLOCKING)
-                        if system == "Linux":
-                            screenshot = get_clipboard_image_linux()
-                        elif system == "Darwin":
-                            screenshot = get_clipboard_image_macos()
-                        else:
-                            screenshot = get_clipboard_image_windows()
+                    if i < frame_count - 1:
+                        time.sleep(0.3)
 
-                        if screenshot is None:
-                            self.write(f"  ❌ No image in clipboard for frame {i+1}\n", "red")
-                            self.write(f"  💡 Make sure you took a screenshot and it's in the clipboard\n", "yellow")
+                if len(frames) >= 2:
+                    filename = f"screen_animation_{timestamp}.gif"
+                    filepath = os.path.join('media_files', filename)
 
-                            retry = messagebox.askyesno("No Image Found",
-                                f"No image found in clipboard for frame {i+1}!\n\n"
-                                f"Please take a screenshot and make sure it's in the clipboard.\n\n"
-                                f"Retry frame {i+1}?")
+                    images = [Image.open(f) for f in frames]
+                    delay_ms = int(self.frame_delay.get() * 1000)
+                    images[0].save(filepath, save_all=True, append_images=images[1:],
+                                  duration=delay_ms, loop=0, format='GIF')
 
-                            if retry:
-                                i -= 1  # Retry this frame
-                                continue
-                            else:
-                                continue
+                    for f in frames:
+                        try:
+                            os.unlink(f)
+                        except:
+                            pass
 
-                        # Save frame
-                        frame_path = os.path.join('media_files', f'temp_frame_{timestamp}_{i:03d}.png')
-                        screenshot.save(frame_path, 'PNG')
-                        frames.append(frame_path)
-                        self.write(f"  ✓ Frame {i+1} captured and saved\n", "green")
+                    size_kb = os.path.getsize(filepath) / 1024
+                    self.write(f"\n✅ Animation saved: {filename} ({len(frames)} frames, {size_kb:.1f} KB)\n", "green")
+                    self.write(f"   Location: media_files/{filename}\n", "green")
 
-                        if i < frame_count - 1:
-                            time.sleep(self.frame_delay.get())
+                    self.media_entry.delete(0, 'end')
+                    self.media_entry.insert(0, f"\\file media_files/{filename}")
+                    self.save_current_slide()
 
-                    progress.destroy()
+                    if self.current_slide_index >= 0:
+                        self.load_slide(self.current_slide_index)
+                        self.update_slide_list()
 
-                    if len(frames) >= 2:
-                        # Create GIF from frames
-                        filename = f"screen_animation_{timestamp}.gif"
-                        filepath = os.path.join('media_files', filename)
+                    # NO success message box - just terminal output
 
-                        images = []
-                        for f in frames:
-                            img = Image.open(f)
-                            images.append(img)
-
-                        delay_ms = int(self.frame_delay.get() * 1000)
-                        images[0].save(filepath, save_all=True, append_images=images[1:],
-                                      duration=delay_ms, loop=0, format='GIF')
-
-                        # Clean up temp frames
-                        for f in frames:
-                            try:
-                                os.unlink(f)
-                            except:
-                                pass
-
-                        size_kb = os.path.getsize(filepath) / 1024
-                        self.write(f"\n✅ Animation saved: {filename} ({len(frames)} frames, {size_kb:.1f} KB)\n", "green")
-                        self.write(f"   Full path: {os.path.abspath(filepath)}\n", "green")
-
-                        # Update media entry
-                        self.media_entry.delete(0, 'end')
-                        self.media_entry.insert(0, f"\\file media_files/{filename}")
-                        self.save_current_slide()
-
-                        # Refresh slide display
-                        if self.current_slide_index >= 0:
-                            self.load_slide(self.current_slide_index)
-                            self.update_slide_list()
-
-                        messagebox.showinfo("Success",
-                            f"Animation created successfully!\n\n"
-                            f"Saved as: {filename}\n"
-                            f"Frames: {len(frames)}\n"
-                            f"Size: {size_kb:.1f} KB")
-                    elif len(frames) == 1:
-                        self.write(f"⚠ Only 1 frame captured. Need at least 2 frames for animation.\n", "yellow")
-                        messagebox.showwarning("Not Enough Frames",
-                            "Only 1 frame was captured.\n\n"
-                            "Animation requires at least 2 frames.\n"
-                            "The single frame has been saved as a screenshot instead.")
-
-                        # Save as single screenshot instead
-                        filename = f"screen_capture_{timestamp}.png"
-                        filepath = os.path.join('media_files', filename)
-                        img = Image.open(frames[0])
-                        img.save(filepath, 'PNG')
-                        os.unlink(frames[0])
-
-                        self.media_entry.delete(0, 'end')
-                        self.media_entry.insert(0, f"\\file media_files/{filename}")
-                        self.save_current_slide()
-
-                    else:
-                        self.write(f"❌ Failed to capture any frames\n", "red")
-
-                except Exception as e:
-                    progress.destroy()
-                    raise e
+                elif len(frames) == 1:
+                    self.write(f"⚠ Only 1 frame captured. Need at least 2 frames for animation.\n", "yellow")
+                else:
+                    self.write(f"❌ Failed to capture any frames\n", "red")
 
             else:  # Single mode
-                self.write(f"\n📸 Single Screenshot Mode (Paste from Clipboard)\n", "cyan")
-                self.write(f"  Instructions:\n", "yellow")
-                self.write(f"    1. Take a screenshot using your system's tool:\n", "white")
-                self.write(f"       - Windows: Win+Shift+S (region) or PrtScn\n", "white")
-                self.write(f"       - macOS: Cmd+Shift+4 (region) or Cmd+Shift+3\n", "white")
-                self.write(f"       - Linux: PrtScn or use your desktop's screenshot tool\n", "white")
-                self.write(f"    2. The screenshot is now in your clipboard\n", "white")
-                self.write(f"    3. Click OK to paste it (clipboard will NOT be cleared)\n\n", "white")
-
-                # Ask user if they've taken the screenshot
+                # Simple instruction dialog
                 response = messagebox.askyesno(
-                    "Paste from Clipboard",
-                    "Have you taken a screenshot?\n\n"
-                    "Make sure it's in your clipboard.\n\n"
-                    "Click Yes to paste the screenshot into this slide.\n\n"
-                    "Note: The clipboard will NOT be cleared."
+                    "Screen Capture",
+                    "Take a screenshot using your system's tool:\n\n"
+                    "  • Windows: Win+Shift+S (region) or PrtScn\n"
+                    "  • macOS: Cmd+Shift+4 (region) or Cmd+Shift+3\n"
+                    "  • Linux: PrtScn\n\n"
+                    "Click Yes after taking the screenshot to paste it.",
+                    parent=self
                 )
 
                 if not response:
                     self.write("❌ Capture cancelled by user\n", "yellow")
                     return
 
-                # Get image from clipboard based on OS (NON-BLOCKING)
-                self.write("  Pasting from clipboard...\n", "cyan")
+                self.write(f"\n📸 Capturing screenshot...\n", "cyan")
 
-                if system == "Linux":
-                    screenshot = get_clipboard_image_linux()
-                elif system == "Darwin":
-                    screenshot = get_clipboard_image_macos()
-                else:
-                    screenshot = get_clipboard_image_windows()
+                # Get image from clipboard
+                screenshot = ImageGrab.grabclipboard()
 
                 if screenshot is None:
                     self.write("❌ No image found in clipboard\n", "red")
-                    messagebox.showerror("Error",
-                        "No image found in clipboard!\n\n"
-                        "Please take a screenshot first.\n\n"
-                        "Make sure the screenshot is copied to your clipboard.\n\n"
-                        "On Linux, ensure wl-clipboard or xclip is installed:\n"
-                        "  sudo apt install wl-clipboard   # For Wayland\n"
-                        "  sudo apt install xclip          # For X11")
+                    self.write("  Please take a screenshot and try again\n", "yellow")
                     return
 
-                # Save the image
                 filename = f"screen_capture_{timestamp}.png"
                 filepath = os.path.join('media_files', filename)
                 screenshot.save(filepath, 'PNG')
 
-                # Verify file was saved
                 if os.path.exists(filepath):
                     size_kb = os.path.getsize(filepath) / 1024
-                    self.write(f"✅ Screenshot pasted and saved: {filename} ({size_kb:.1f} KB)\n", "green")
-                    self.write(f"   Full path: {os.path.abspath(filepath)}\n", "green")
-                    self.write(f"   Note: Clipboard content was preserved\n", "cyan")
+                    self.write(f"✅ Screenshot saved: {filename} ({size_kb:.1f} KB)\n", "green")
+                    self.write(f"   Location: media_files/{filename}\n", "green")
 
-                    # Update media entry
                     self.media_entry.delete(0, 'end')
                     self.media_entry.insert(0, f"\\file media_files/{filename}")
                     self.save_current_slide()
 
-                    # Refresh slide display
                     if self.current_slide_index >= 0:
                         self.load_slide(self.current_slide_index)
                         self.update_slide_list()
 
-                    messagebox.showinfo("Success",
-                        f"Screenshot pasted successfully!\n\n"
-                        f"Saved as: {filename}\n"
-                        f"Size: {size_kb:.1f} KB\n\n"
-                        f"The image has been linked to your slide.\n\n"
-                        f"Your clipboard content was preserved.")
+                    # NO success message box - just terminal output
                 else:
                     self.write(f"❌ Failed to save screenshot\n", "red")
-                    messagebox.showerror("Error", "Failed to save screenshot to file.")
 
         except Exception as e:
             self.write(f"❌ Capture failed: {str(e)}\n", "red")
             import traceback
             traceback.print_exc()
-            messagebox.showerror("Error", f"Capture failed:\n{str(e)}")
+            messagebox.showerror("Error", f"Capture failed:\n{str(e)}", parent=self)
 
     def debug_file_location(self):
         """Debug method to show where files are being saved"""
@@ -14503,8 +14414,6 @@ Created by {self.__author__}
         else:
             self.notes_editor.configure(state="normal")
 
-
-
     def create_tooltip(self, widget, text):
         """Create tooltip for widget"""
         def show_tooltip(event):
@@ -14935,8 +14844,6 @@ Created by {self.__author__}
 
         return ProgressDialog(self, title, message)
 
-
-
     def open_presentation(self, file_path):
         """Open the generated presentation with appropriate application"""
         try:
@@ -14970,7 +14877,6 @@ Created by {self.__author__}
                 text=text,
                 command=lambda t=insert_text: self.insert_text(t)
             ).pack(fill="x", padx=2, pady=2)
-
 
     def toggle_highlighting(self) -> None:
         """Toggle syntax highlighting"""
@@ -15117,21 +15023,315 @@ Created by {self.__author__}
 
             # ========== HELPER FUNCTIONS FOR MEDIA CONVERSION ==========
 
+            def download_youtube_video_local(youtube_url, quality='best'):
+                """Download YouTube video locally using multiple methods as fallbacks"""
+                from urllib.parse import urlparse, parse_qs
+
+                # Extract video ID
+                parsed = urlparse(youtube_url)
+                video_id = None
+                if 'youtube.com' in youtube_url:
+                    video_id = parse_qs(parsed.query).get('v', [None])[0]
+                elif 'youtu.be' in youtube_url:
+                    video_id = parsed.path.lstrip('/')
+
+                if not video_id:
+                    self.write(f"      ✗ Could not extract video ID from URL\n", "red")
+                    return None
+
+                # Check if already downloaded
+                import glob
+                existing_videos = glob.glob(f"media_files/*{video_id}*.mp4")
+                if existing_videos:
+                    self.write(f"      ✓ Using existing video: {os.path.basename(existing_videos[0])}\n", "green")
+                    return existing_videos[0]
+
+                # Create media_files directory
+                os.makedirs('media_files', exist_ok=True)
+
+                # Quality format mapping for yt-dlp
+                quality_formats = {
+                    '1080p': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
+                    '720p': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
+                    '480p': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best',
+                    '360p': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best',
+                    'audio': 'bestaudio[ext=m4a]/bestaudio/best',
+                    'best': 'best[ext=mp4]/best',
+                }
+
+                # ========== METHOD 1: Try pytube first ==========
+                self.write(f"      📥 Method 1/2: Trying pytube...\n", "cyan")
+                try:
+                    from pytube import YouTube
+
+                    yt = YouTube(youtube_url)
+                    video_title = yt.title
+                    safe_title = re.sub(r'[<>:"/\\|?*]', '', video_title)
+                    safe_title = safe_title.replace(' ', '_')
+                    safe_title = safe_title[:100]
+
+                    # Add quality suffix if not best
+                    if quality != 'best':
+                        output_path = os.path.join('media_files', f"{safe_title}_{quality}.mp4")
+                    else:
+                        output_path = os.path.join('media_files', f"{safe_title}.mp4")
+
+                    self.write(f"      Title: {video_title[:50]}...\n", "white")
+
+                    # Get stream based on quality preference
+                    if quality == '1080p':
+                        stream = yt.streams.filter(res='1080p', file_extension='mp4').first()
+                        if not stream:
+                            stream = yt.streams.get_highest_resolution()
+                    elif quality == '720p':
+                        stream = yt.streams.filter(res='720p', file_extension='mp4').first()
+                        if not stream:
+                            stream = yt.streams.get_highest_resolution()
+                    elif quality == '480p':
+                        stream = yt.streams.filter(res='480p', file_extension='mp4').first()
+                        if not stream:
+                            stream = yt.streams.get_highest_resolution()
+                    elif quality == '360p':
+                        stream = yt.streams.filter(res='360p', file_extension='mp4').first()
+                        if not stream:
+                            stream = yt.streams.get_highest_resolution()
+                    elif quality == 'audio':
+                        stream = yt.streams.get_audio_only()
+                        output_path = output_path.replace('.mp4', '.mp3')
+                    else:
+                        stream = yt.streams.get_highest_resolution()
+
+                    if stream:
+                        resolution = getattr(stream, 'resolution', 'audio only')
+                        self.write(f"      📥 Downloading: {resolution}...\n", "cyan")
+                        stream.download(output_path='media_files', filename=os.path.basename(output_path))
+
+                        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                            file_size = os.path.getsize(output_path) / (1024 * 1024)
+                            self.write(f"      ✓ Downloaded via pytube: {os.path.basename(output_path)} ({file_size:.1f} MB)\n", "green")
+
+                            # Generate preview for video files
+                            if quality != 'audio':
+                                preview_path = generate_video_preview_local(output_path)
+                                if preview_path:
+                                    self.write(f"      ✓ Preview generated: {os.path.basename(preview_path)}\n", "green")
+
+                            # Save attribution
+                            attribution_path = output_path.rsplit('.', 1)[0] + '_source.txt'
+                            with open(attribution_path, 'w', encoding='utf-8') as f:
+                                f.write(f"Source URL: {youtube_url}\n")
+                                f.write(f"Video ID: {video_id}\n")
+                                f.write(f"Title: {video_title}\n")
+                                f.write(f"Quality: {quality}\n")
+                                f.write(f"Downloaded via: pytube\n")
+                                f.write(f"Downloaded: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                                f.write("Please credit the original content creator.\n")
+
+                            return output_path
+                        else:
+                            self.write(f"      ⚠ pytube download produced empty file\n", "yellow")
+                    else:
+                        self.write(f"      ⚠ No stream available for quality {quality} in pytube\n", "yellow")
+
+                except ImportError:
+                    self.write(f"      ⚠ pytube not installed. Install with: pip install pytube\n", "yellow")
+                except Exception as e:
+                    self.write(f"      ⚠ pytube failed: {str(e)[:80]}\n", "yellow")
+
+                # ========== METHOD 2: Fallback to yt-dlp ==========
+                self.write(f"      📥 Method 2/2: Trying yt-dlp...\n", "cyan")
+                try:
+                    import yt_dlp
+
+                    # Create safe filename
+                    safe_title = f"youtube_{video_id}"
+                    if quality != 'best':
+                        output_path = os.path.join('media_files', f"{safe_title}_{quality}.mp4")
+                    else:
+                        output_path = os.path.join('media_files', f"{safe_title}.mp4")
+
+                    # Handle audio quality
+                    if quality == 'audio':
+                        output_path = output_path.replace('.mp4', '.mp3')
+                        format_spec = 'bestaudio/best'
+                    else:
+                        format_spec = quality_formats.get(quality, quality_formats['best'])
+
+                    ydl_opts = {
+                        'format': format_spec,
+                        'outtmpl': output_path,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'ignoreerrors': True,
+                        'geo_bypass': True,
+                        'geo_bypass_country': 'US',
+                        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    }
+
+                    # For audio, add postprocessor
+                    if quality == 'audio':
+                        ydl_opts['postprocessors'] = [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3',
+                            'preferredquality': '192',
+                        }]
+
+                    self.write(f"      📥 Downloading with yt-dlp...\n", "cyan")
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([youtube_url])
+
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        # Try to get video title for better filename
+                        try:
+                            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                                info = ydl.extract_info(youtube_url, download=False)
+                                video_title = info.get('title', 'youtube_video')
+                                safe_title = re.sub(r'[<>:"/\\|?*]', '', video_title)
+                                safe_title = safe_title.replace(' ', '_')
+                                safe_title = safe_title[:100]
+                                if quality != 'best':
+                                    better_path = os.path.join('media_files', f"{safe_title}_{quality}.mp4")
+                                else:
+                                    better_path = os.path.join('media_files', f"{safe_title}.mp4")
+                                if quality == 'audio':
+                                    better_path = better_path.replace('.mp4', '.mp3')
+                                if os.path.exists(output_path) and output_path != better_path:
+                                    os.rename(output_path, better_path)
+                                    output_path = better_path
+                                self.write(f"      Title: {video_title[:50]}...\n", "white")
+                        except:
+                            pass
+
+                        file_size = os.path.getsize(output_path) / (1024 * 1024)
+                        self.write(f"      ✓ Downloaded via yt-dlp: {os.path.basename(output_path)} ({file_size:.1f} MB)\n", "green")
+
+                        # Generate preview for video files
+                        if quality != 'audio':
+                            preview_path = generate_video_preview_local(output_path)
+                            if preview_path:
+                                self.write(f"      ✓ Preview generated: {os.path.basename(preview_path)}\n", "green")
+
+                        # Save attribution
+                        attribution_path = output_path.rsplit('.', 1)[0] + '_source.txt'
+                        with open(attribution_path, 'w', encoding='utf-8') as f:
+                            f.write(f"Source URL: {youtube_url}\n")
+                            f.write(f"Video ID: {video_id}\n")
+                            f.write(f"Quality: {quality}\n")
+                            f.write(f"Downloaded via: yt-dlp\n")
+                            f.write(f"Downloaded: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                            f.write("Please credit the original content creator.\n")
+
+                        return output_path
+                    else:
+                        self.write(f"      ✗ yt-dlp failed - no output file created\n", "red")
+
+                except ImportError:
+                    self.write(f"      ⚠ yt-dlp not installed. Install with: pip install yt-dlp\n", "yellow")
+                except Exception as e:
+                    self.write(f"      ✗ yt-dlp failed: {str(e)[:80]}\n", "red")
+
+                # ========== BOTH METHODS FAILED ==========
+                self.write(f"\n      ⚠ Could not download video automatically.\n", "yellow")
+                self.write(f"      💡 For offline use, try one of these:\n", "cyan")
+                self.write(f"         1. Install pytube:  pip install pytube\n", "white")
+                self.write(f"         2. Install yt-dlp:  pip install yt-dlp\n", "white")
+                self.write(f"         3. Manual download: yt-dlp -f best[ext=mp4] {youtube_url}\n", "white")
+                self.write(f"         4. Save the video to: media_files/ (any name works)\n", "white")
+                self.write(f"      ⚠ Using online link for now (requires internet during presentation)\n", "yellow")
+
+                return None
+
+            def generate_video_preview_local(video_path):
+                """Generate preview image from video file"""
+                try:
+                    import cv2
+                    preview_path = video_path.rsplit('.', 1)[0] + '_preview.png'
+                    if not os.path.exists(preview_path):
+                        cap = cv2.VideoCapture(video_path)
+                        ret, frame = cap.read()
+                        if ret:
+                            cv2.imwrite(preview_path, frame)
+                            self.write(f"      ✓ Preview generated: {os.path.basename(preview_path)}\n", "green")
+                        cap.release()
+                    return preview_path if os.path.exists(preview_path) else None
+                except ImportError:
+                    self.write(f"      ⚠ OpenCV not installed. Cannot generate preview.\n", "yellow")
+                    self.write(f"      Install with: pip install opencv-python\n", "cyan")
+                    return None
+                except Exception as e:
+                    self.write(f"      ⚠ Preview generation failed: {str(e)[:50]}\n", "yellow")
+                    return None
+
+            def download_youtube_thumbnail(youtube_url):
+                """Download YouTube thumbnail locally"""
+                from urllib.parse import urlparse, parse_qs
+
+                # Extract video ID
+                parsed = urlparse(youtube_url)
+                video_id = None
+                if 'youtube.com' in youtube_url:
+                    video_id = parse_qs(parsed.query).get('v', [None])[0]
+                elif 'youtu.be' in youtube_url:
+                    video_id = parsed.path.lstrip('/')
+
+                if not video_id:
+                    return None
+
+                # Create thumbnails directory
+                os.makedirs('media_files', exist_ok=True)
+                thumbnail_path = os.path.join('media_files', f"youtube_thumb_{video_id}.jpg")
+
+                # Check if already downloaded
+                if os.path.exists(thumbnail_path):
+                    return thumbnail_path
+
+                # Try to download thumbnail
+                import urllib.request
+                thumbnail_urls = [
+                    f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+                    f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+                    f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
+                ]
+
+                for url in thumbnail_urls:
+                    try:
+                        urllib.request.urlretrieve(url, thumbnail_path)
+                        if os.path.exists(thumbnail_path) and os.path.getsize(thumbnail_path) > 1000:
+                            self.write(f"      ✓ Downloaded thumbnail: {os.path.basename(thumbnail_path)}\n", "green")
+                            return thumbnail_path
+                    except:
+                        continue
+
+                return None
+
             def convert_file_to_includegraphics(file_path):
-                """Convert file path to includegraphics command"""
+                """Convert file path to includegraphics command with YouTube support"""
                 file_path = file_path.strip()
-                # Remove quotes
+                # Remove quotes and braces
                 if file_path.startswith('"') and file_path.endswith('"'):
                     file_path = file_path[1:-1]
                 if file_path.startswith("'") and file_path.endswith("'"):
                     file_path = file_path[1:-1]
-                # Remove braces
                 file_path = file_path.rstrip('}').lstrip('{')
 
                 # Remove any trailing garbage
                 if '\\' in file_path:
                     file_path = file_path.split('\\')[0].strip()
 
+                # ========== CHECK FOR YOUTUBE URL ==========
+                if 'youtube.com' in file_path or 'youtu.be' in file_path:
+                    self.write(f"    [YouTube in file directive] {file_path[:80]}...\n", "cyan")
+                    local_video = download_youtube_video_local(file_path)
+                    if local_video:
+                        preview_path = generate_video_preview_local(local_video)
+                        if preview_path:
+                            return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{preview_path}}}}}{{{local_video}}}"
+                        else:
+                            return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{▶ Play Video}}}}}}{{{local_video}}}"
+                    else:
+                        return f"\\href{{{file_path}}}{{\\textcolor{{blue}}{{\\underline{{Watch on YouTube (Internet Required)}}}}}}"
+
+                # ========== HANDLE LOCAL FILES ==========
                 actual_path = None
                 if os.path.exists(file_path):
                     actual_path = file_path
@@ -15141,76 +15341,20 @@ Created by {self.__author__}
                     actual_path = f"media_files/{os.path.basename(file_path)}"
 
                 if actual_path:
-                    # Log that we found the file
-                    self.write(f"    [DEBUG] Found image: {actual_path}\n", "cyan")
+                    self.write(f"    [DEBUG] Found file: {actual_path}\n", "cyan")
 
                     video_extensions = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv', '.wmv')
                     if actual_path.lower().endswith(video_extensions):
-                        # Video file - generate preview
-                        preview_base = os.path.splitext(actual_path)[0]
-                        preview_path = f"{preview_base}_preview.png"
-                        if not os.path.exists(preview_path):
-                            try:
-                                import cv2
-                                cap = cv2.VideoCapture(actual_path)
-                                ret, frame = cap.read()
-                                if ret:
-                                    cv2.imwrite(preview_path, frame)
-                                cap.release()
-                            except:
-                                preview_path = actual_path
-                        return f"\\includegraphics[width=0.5\\textwidth,keepaspectratio]{{{preview_path}}}"
-                    else:
-                        # For images inside columns, use column-appropriate width
-                        return f"\\includegraphics[width=\\textwidth,keepaspectratio]{{{actual_path}}}"
-                else:
-                    self.write(f"    [WARNING] Image not found: {file_path}\n", "yellow")
-                    return f"\\textcolor{{gray}}{{[File not found: {os.path.basename(file_path)}]}}"
-
-            def convert_play_to_movie(line):
-                """Convert \play directive to LaTeX movie command"""
-                stripped = line.strip()
-
-                if '\\file' in stripped:
-                    file_match = re.search(r'\\file\s+(.+)$', stripped)
-                    if file_match:
-                        file_path = file_match.group(1).strip()
-                        file_path = file_path.strip('{}')
-                        if file_path.startswith('"') and file_path.endswith('"'):
-                            file_path = file_path[1:-1]
-
-                        actual_path = None
-                        if os.path.exists(file_path):
-                            actual_path = file_path
-                        elif os.path.exists(f"media_files/{file_path}"):
-                            actual_path = f"media_files/{file_path}"
-                        elif os.path.exists(f"media_files/{os.path.basename(file_path)}"):
-                            actual_path = f"media_files/{os.path.basename(file_path)}"
-
-                        if actual_path:
-                            preview_base = os.path.splitext(actual_path)[0]
-                            preview_path = f"{preview_base}_preview.png"
-                            if not os.path.exists(preview_path):
-                                try:
-                                    import cv2
-                                    cap = cv2.VideoCapture(actual_path)
-                                    ret, frame = cap.read()
-                                    if ret:
-                                        cv2.imwrite(preview_path, frame)
-                                    cap.release()
-                                except:
-                                    preview_path = actual_path
+                        preview_path = generate_video_preview_local(actual_path)
+                        if preview_path:
                             return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{preview_path}}}}}{{{actual_path}}}"
                         else:
-                            return f"\\textcolor{{gray}}{{[Video not found: {os.path.basename(file_path)}]}}"
-
-                elif 'http' in stripped or 'https' in stripped:
-                    url_match = re.search(r'(https?://[^\s]+)', stripped)
-                    if url_match:
-                        url = url_match.group(1)
-                        return f"\\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}"
-
-                return line
+                            return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{▶ Play Video}}}}}}{{{actual_path}}}"
+                    else:
+                        return f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{actual_path}}}"
+                else:
+                    self.write(f"    [WARNING] File not found: {file_path}\n", "yellow")
+                    return f"\\textcolor{{gray}}{{[File not found: {os.path.basename(file_path)}]}}"
 
             def convert_mosaic_to_latex(mosaic_line):
                 """Convert \mosaic directive to LaTeX tabular"""
@@ -15255,9 +15399,144 @@ Created by {self.__author__}
                 latex += "\\end{center}"
                 return latex
 
+            def convert_play_to_movie(line):
+                """Convert \play directive to LaTeX movie command with YouTube download support"""
+                stripped = line.strip()
+
+                # Check for quality specification
+                quality = 'best'
+                quality_match = re.search(r'\\play\[(1080p|720p|480p|360p|audio)\]', stripped)
+                if quality_match:
+                    quality = quality_match.group(1)
+                    stripped = re.sub(r'\\play\[[^\]]+\]\s*', '\\play ', stripped)
+                    self.write(f"    Quality requested: {quality}\n", "cyan")
+
+                # Check for \url directive (YouTube videos)
+                if '\\url' in stripped:
+                    url_match = re.search(r'\\url\s+(https?://[^\s\n]+)', stripped)
+                    if url_match:
+                        url = url_match.group(1)
+                        if 'youtube.com' in url or 'youtu.be' in url:
+                            self.write(f"    [YouTube Video Detected]\n", "cyan")
+                            self.write(f"    URL: {url}\n", "white")
+                            if quality != 'best':
+                                self.write(f"    Quality: {quality}\n", "cyan")
+
+                            # Try to download YouTube video locally
+                            local_video = download_youtube_video_local(url, quality)
+
+                            # Download thumbnail locally
+                            thumbnail_path = download_youtube_thumbnail(url)
+
+                            result = []
+                            result.append("\\begin{center}")
+
+                            # Add LOCAL thumbnail image
+                            if thumbnail_path and os.path.exists(thumbnail_path):
+                                result.append(f"    \\includegraphics[width=0.5\\textwidth,keepaspectratio]{{{thumbnail_path}}}\\\\")
+                                result.append("    \\vspace{0.3em}")
+                                self.write(f"    ✓ Using local thumbnail: {os.path.basename(thumbnail_path)}\n", "green")
+                            else:
+                                self.write(f"    ⚠ Could not download thumbnail\n", "yellow")
+
+                            if local_video:
+                                # Local video play button - NO UNICODE CHARACTERS
+                                result.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video (Local)}}}}}}{{{local_video}}}\\\\")
+                                result.append("    \\vspace{0.5em}")
+                                result.append(f"    {{\\tiny \\textcolor{{gray}}{{\\href{{{url}}}{{Source: YouTube}} - Downloaded locally}}}}")
+                                self.write(f"    ✓ Using local video with thumbnail and citation\n", "green")
+                            else:
+                                # Online link fallback - NO UNICODE CHARACTERS
+                                result.append(f"    \\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Watch on YouTube}}}}}}\\\\")
+                                result.append("    \\vspace{0.5em}")
+                                result.append(f"    {{\\tiny \\textcolor{{gray}}{{\\href{{{url}}}{{Source: YouTube}} - Internet connection required}}}}")
+                                self.write(f"    ⚠ Using online link with thumbnail and citation\n", "yellow")
+                                self.write(f"    💡 The video will work as long as you have internet access\n", "cyan")
+
+                            result.append("\\end{center}")
+                            return "\n".join(result)
+                        else:
+                            # Non-YouTube URL
+                            return f"\\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Open Link}}}}}}"
+
+                # Check for \file directive (local files)
+                elif '\\file' in stripped:
+                    file_match = re.search(r'\\file\s+(.+)$', stripped)
+                    if file_match:
+                        file_path = file_match.group(1).strip()
+                        file_path = file_path.strip('{}')
+                        if file_path.startswith('"') and file_path.endswith('"'):
+                            file_path = file_path[1:-1]
+
+                        actual_path = None
+                        if os.path.exists(file_path):
+                            actual_path = file_path
+                        elif os.path.exists(f"media_files/{file_path}"):
+                            actual_path = f"media_files/{file_path}"
+                        elif os.path.exists(f"media_files/{os.path.basename(file_path)}"):
+                            actual_path = f"media_files/{os.path.basename(file_path)}"
+
+                        if actual_path:
+                            preview_path = generate_video_preview_local(actual_path)
+                            result = []
+                            result.append("\\begin{center}")
+
+                            if preview_path and os.path.exists(preview_path):
+                                result.append(f"    \\includegraphics[width=0.5\\textwidth,keepaspectratio]{{{preview_path}}}\\\\")
+                                result.append("    \\vspace{0.3em}")
+
+                            result.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}{{{actual_path}}}")
+                            result.append("\\end{center}")
+                            return "\n".join(result)
+                        else:
+                            return f"\\textcolor{{gray}}{{[Video not found: {os.path.basename(file_path)}]}}"
+
+                # Check for direct URL (without \url)
+                elif 'http' in stripped or 'https' in stripped:
+                    url_match = re.search(r'(https?://[^\s\n]+)', stripped)
+                    if url_match:
+                        url = url_match.group(1)
+                        if 'youtube.com' in url or 'youtu.be' in url:
+                            self.write(f"    [Direct YouTube URL Detected]\n", "cyan")
+                            if quality != 'best':
+                                self.write(f"    Quality: {quality}\n", "cyan")
+
+                            local_video = download_youtube_video_local(url, quality)
+                            thumbnail_path = download_youtube_thumbnail(url)
+
+                            result = []
+                            result.append("\\begin{center}")
+
+                            # Add LOCAL thumbnail
+                            if thumbnail_path and os.path.exists(thumbnail_path):
+                                result.append(f"    \\includegraphics[width=0.5\\textwidth,keepaspectratio]{{{thumbnail_path}}}\\\\")
+                                result.append("    \\vspace{0.3em}")
+
+                            if local_video:
+                                # NO UNICODE CHARACTERS
+                                result.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video (Local)}}}}}}{{{local_video}}}\\\\")
+                                result.append("    \\vspace{0.5em}")
+                                result.append(f"    {{\\tiny \\textcolor{{gray}}{{\\href{{{url}}}{{Source: YouTube}} - Downloaded locally}}}}")
+                            else:
+                                # NO UNICODE CHARACTERS
+                                result.append(f"    \\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Watch on YouTube}}}}}}\\\\")
+                                result.append("    \\vspace{0.5em}")
+                                result.append(f"    {{\\tiny \\textcolor{{gray}}{{\\href{{{url}}}{{Source: YouTube}} - Internet required}}}}")
+
+                            result.append("\\end{center}")
+                            return "\n".join(result)
+                        else:
+                            return f"\\href{{{url}}}{{\\textcolor{{blue}}{{\\underline{{Open Link}}}}}}"
+
+                return line
+
             def process_line_for_media(line, inside_column=False):
                 """Process a single line, converting any media or layout directives"""
                 stripped = line.strip()
+
+                # Skip empty lines
+                if not stripped:
+                    return line
 
                 # FIRST: Check for layout directives
                 if stripped.startswith('\\mosaic'):
@@ -15271,7 +15550,7 @@ Created by {self.__author__}
                      stripped.startswith('\\corner'):
                     return line
 
-                # THEN: Check for media directives
+                # THEN: Check for media directives (including YouTube)
                 if '\\play' in stripped:
                     return convert_play_to_movie(line)
                 elif '\\file' in stripped and '\\play' not in stripped:
@@ -15292,10 +15571,28 @@ Created by {self.__author__}
                             return f"\\textcolor{{gray}}{{[File not found: {os.path.basename(file_path)}]}}"
                     return line
 
+                # Handle direct URLs (without \file or \play)
+                elif stripped.startswith(('http://', 'https://')):
+                    if 'youtube.com' in stripped or 'youtu.be' in stripped:
+                        self.write(f"    [Direct URL in content] {stripped[:80]}...\n", "cyan")
+                        local_video = download_youtube_video_local(stripped)
+                        if local_video:
+                            preview_path = generate_video_preview_local(local_video)
+                            if preview_path:
+                                return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{preview_path}}}}}{{{local_video}}}"
+                            else:
+                                return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{▶ Play Video}}}}}}{{{local_video}}}"
+                        else:
+                            return f"\\href{{{stripped}}}{{\\textcolor{{blue}}{{\\underline{{Watch on YouTube (Internet Required)}}}}}}"
+                    else:
+                        return f"\\href{{{stripped}}}{{\\textcolor{{blue}}{{\\underline{{Open Link}}}}}}"
+
                 return line
 
             # Process each slide
             for idx, slide in enumerate(self.slides):
+                self.write(f"\n  Processing slide {idx + 1}...\n", "cyan")
+
                 is_fully_masked = slide.get('_fully_masked', False)
                 if is_fully_masked:
                     total_skipped_slides += 1
@@ -16167,6 +16464,58 @@ Created by {self.__author__}
             self.write(f"  • Masked content appears as % comments in the .tex file\n", "cyan")
             self.write(f"  • Unmask to include content in final PDF\n", "cyan")
 
+    def check_and_install_yt_dlp(self):
+        """Check if yt-dlp is installed, offer to install if missing"""
+        try:
+            import yt_dlp
+            self.yt_dlp_available = True
+            return True
+        except ImportError:
+            self.yt_dlp_available = False
+
+            # Show dialog to install yt-dlp
+            response = messagebox.askyesno(
+                "Missing Dependency",
+                "yt-dlp is required to download YouTube videos locally.\n\n"
+                "Without it, YouTube videos will only work as online links.\n\n"
+                "Do you want to install yt-dlp now?\n\n"
+                "(Internet connection required for installation)",
+                parent=self
+            )
+
+            if response:
+                self.write("\n📦 Installing yt-dlp...\n", "cyan")
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "--user", "yt-dlp"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+
+                    if result.returncode == 0:
+                        self.write("✓ yt-dlp installed successfully!\n", "green")
+                        # Try importing again
+                        try:
+                            import yt_dlp
+                            self.yt_dlp_available = True
+                            return True
+                        except ImportError:
+                            self.write("⚠ Could not import yt-dlp after installation. Please restart the IDE.\n", "yellow")
+                            return False
+                    else:
+                        self.write(f"✗ Installation failed: {result.stderr}\n", "red")
+                        self.write("\nPlease install manually: pip install yt-dlp\n", "yellow")
+                        return False
+                except Exception as e:
+                    self.write(f"✗ Installation error: {str(e)}\n", "red")
+                    return False
+            else:
+                self.write("\n⚠ yt-dlp not installed. YouTube videos will use online links.\n", "yellow")
+                self.write("  Install manually: pip install yt-dlp\n", "cyan")
+                return False
+
     def generate_pdf(self) -> None:
         """Generate PDF with smart error handling, auto-correction, and error editor"""
         if not self.current_file:
@@ -16188,6 +16537,68 @@ Created by {self.__author__}
             self.write("="*60 + "\n", "cyan")
             self.write("PDF GENERATION WITH SMART ERROR HANDLING\n", "cyan")
             self.write("="*60 + "\n", "cyan")
+
+            # Step 0: Check for YouTube videos that need downloading before conversion
+            self.write("\nStep 0: Checking for YouTube videos...\n", "white")
+            youtube_urls = self.find_youtube_urls_in_slides()
+
+            if youtube_urls:
+                self.write(f"\n📹 Found {len(youtube_urls)} YouTube video(s) in the presentation:\n", "cyan")
+                for url in youtube_urls:
+                    self.write(f"   • {url}\n", "white")
+
+                # Check if yt-dlp is available
+                self.check_and_install_yt_dlp()
+                try:
+                    import yt_dlp
+                    yt_dlp_available = True
+                except ImportError:
+                    yt_dlp_available = False
+
+                if not yt_dlp_available:
+                    self.write("\n⚠ WARNING: yt-dlp is not installed!\n", "red")
+                    self.write("   YouTube videos will NOT be downloaded locally.\n", "red")
+                    self.write("   They will only work as online links.\n\n", "yellow")
+                    self.write("   To enable offline playback, install yt-dlp:\n", "cyan")
+                    self.write("   pip install yt-dlp\n\n", "cyan")
+
+                    if not messagebox.askyesno("Missing Dependency",
+                        "yt-dlp is not installed. YouTube videos will only work with internet connection.\n\n"
+                        "Do you want to continue anyway?",
+                        parent=self):
+                        return
+                else:
+                    self.write("\n✓ yt-dlp is available. Videos will be downloaded locally.\n", "green")
+
+                    # Ask user if they want to download videos now
+                    if messagebox.askyesno("Download YouTube Videos",
+                        f"Found {len(youtube_urls)} YouTube video(s).\n\n"
+                        "Do you want to download them locally for offline playback?\n\n"
+                        "This may take some time depending on video sizes.",
+                        parent=self):
+
+                        self.write("\n📥 Downloading YouTube videos locally...\n", "cyan")
+                        downloaded_count = 0
+
+                        for i, url in enumerate(youtube_urls, 1):
+                            self.write(f"\n  [{i}/{len(youtube_urls)}] Processing: {url}\n", "white")
+
+                            # Download the video
+                            video_path, error = self.download_youtube_video_for_slide(url)
+
+                            if video_path and os.path.exists(video_path):
+                                downloaded_count += 1
+                                self.write(f"  ✓ Downloaded: {os.path.basename(video_path)}\n", "green")
+                            else:
+                                self.write(f"  ✗ Failed: {error}\n", "red")
+
+                        self.write(f"\n📊 Download summary: {downloaded_count}/{len(youtube_urls)} videos downloaded\n",
+                                   "green" if downloaded_count == len(youtube_urls) else "yellow")
+
+                        # Update the TXT file with local paths
+                        if downloaded_count > 0:
+                            self.update_txt_file_with_local_paths(youtube_urls)
+                            self.write("✓ Updated presentation with local video paths\n", "green")
 
             # Step 1: Convert text to TeX
             self.write("\nStep 1: Converting text to TeX...\n", "white")
@@ -16310,6 +16721,14 @@ Created by {self.__author__}
                     self.write("  • Predefined airis4D color palette\n", "cyan")
                     self.write("  • Automatic black/white text contrast\n", "cyan")
                     self.write("  • TikZ color definitions\n", "cyan")
+
+                    # Final attribution message for YouTube videos
+                    if youtube_urls:
+                        self.write("\n📹 YouTube Video Attribution:\n", "yellow")
+                        self.write("  The following videos were used in this presentation:\n", "white")
+                        for url in youtube_urls:
+                            self.write(f"  • {url}\n", "white")
+                        self.write("\n  Please credit the original content creators.\n", "yellow")
 
                     if messagebox.askyesno("Success",
                                          f"PDF generated successfully!\n\n"
@@ -18675,7 +19094,6 @@ Created by {self.__author__}
         self.title_entry.focus_set()
         self.title_entry.select_range(0, 'end')
 
-
     def move_slide(self, direction: int) -> None:
         """Move current slide up or down"""
         if not self.slides or self.current_slide_index < 0:
@@ -18689,8 +19107,6 @@ Created by {self.__author__}
             self.current_slide_index = new_index
             self.update_slide_list()
             self.load_slide(self.current_slide_index)
-
-
 
     def on_slide_select(self, event) -> None:
         """Handle slide selection from list"""
@@ -21237,9 +21653,6 @@ Created by {self.__author__}
 
         return latex
 
-
-
-
     def _render_table_grid(self, cell_data: list, rows: int, cols: int, content_mode: str) -> str:
         """
         Render the table grid with proper cell formatting.
@@ -21340,7 +21753,6 @@ Created by {self.__author__}
         title = title.replace('$', '\\$')
 
         return title.strip() or "Untitled"
-
 
     def _generate_mosaic_from_list(self, images: list, rows: int, cols: int, content: list, frame_title: str) -> str:
         """Generate mosaic from a list of images with specified grid dimensions"""
@@ -21901,8 +22313,6 @@ Created by {self.__author__}
         latex += "\\end{frame}\n"
         return latex
 
-
-
     def parse_latex_log(self, log_file: str) -> tuple:
         """
         Parse LaTeX log file to find exact error line and message.
@@ -22328,7 +22738,179 @@ Created by {self.__author__}
 
         return filepath
 
-# Add these classes right after the imports and before the BeamerSlideEditor class
+    def find_youtube_urls_in_slides(self) -> list:
+        """Find all YouTube URLs in the current slides"""
+        youtube_urls = []
+        youtube_pattern = re.compile(r'(?:\\play\s+)?(?:\\url\s+)?(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s\n]+)')
+
+        for slide in self.slides:
+            # Check media field
+            media = slide.get('media', '')
+            if media:
+                matches = youtube_pattern.findall(media)
+                youtube_urls.extend(matches)
+
+            # Check content
+            for content_line in slide.get('content', []):
+                if isinstance(content_line, str):
+                    matches = youtube_pattern.findall(content_line)
+                    youtube_urls.extend(matches)
+
+            # Check notes
+            for note_line in slide.get('notes', []):
+                if isinstance(note_line, str):
+                    matches = youtube_pattern.findall(note_line)
+                    youtube_urls.extend(matches)
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_urls = []
+        for url in youtube_urls:
+            if url not in seen:
+                seen.add(url)
+                unique_urls.append(url)
+
+        return unique_urls
+
+    def download_youtube_video_for_slide(self, url: str) -> tuple:
+        """Download a YouTube video for use in a slide"""
+        try:
+            import yt_dlp
+
+            os.makedirs('media_files', exist_ok=True)
+
+            # Get video info for filename
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                try:
+                    info = ydl.extract_info(url, download=False)
+                    video_title = info.get('title', 'youtube_video')
+                    safe_title = self.sanitize_video_filename(video_title)
+                    output_path = os.path.join('media_files', f"{safe_title}.mp4")
+                except Exception as e:
+                    self.write(f"  ⚠ Could not get video info: {str(e)}\n", "yellow")
+                    timestamp = int(time.time())
+                    output_path = os.path.join('media_files', f"youtube_video_{timestamp}.mp4")
+
+            # Download the video
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': output_path,
+                'quiet': False,
+                'no_warnings': False,
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            if os.path.exists(output_path):
+                # Generate preview thumbnail
+                preview_path = self.generate_video_preview(output_path)
+
+                # Save source attribution
+                self.save_video_attribution(url, output_path)
+
+                return output_path, None
+            else:
+                return None, "Download failed - file not created"
+
+        except ImportError:
+            return None, "yt-dlp not installed. Run: pip install yt-dlp"
+        except Exception as e:
+            return None, f"Download error: {str(e)}"
+
+    def sanitize_video_filename(self, filename: str) -> str:
+        """Sanitize filename for video files"""
+        # Remove invalid characters
+        filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+        # Replace spaces with underscores
+        filename = filename.replace(' ', '_')
+        # Remove multiple underscores
+        filename = re.sub(r'_+', '_', filename)
+        # Limit length
+        if len(filename) > 100:
+            filename = filename[:100]
+        return filename
+
+    def generate_video_preview(self, video_path: str) -> str:
+        """Generate a preview thumbnail from a video file"""
+        try:
+            import cv2
+            preview_path = video_path.rsplit('.', 1)[0] + '_preview.png'
+            cap = cv2.VideoCapture(video_path)
+            ret, frame = cap.read()
+            if ret:
+                cv2.imwrite(preview_path, frame)
+            cap.release()
+            return preview_path if ret else None
+        except Exception as e:
+            self.write(f"  ⚠ Could not generate preview: {str(e)}\n", "yellow")
+            return None
+
+    def save_video_attribution(self, url: str, video_path: str) -> None:
+        """Save attribution information for a downloaded video"""
+        attribution_path = video_path.rsplit('.', 1)[0] + '_attribution.txt'
+        with open(attribution_path, 'w', encoding='utf-8') as f:
+            f.write(f"Source URL: {url}\n")
+            f.write(f"Downloaded: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Local Path: {video_path}\n")
+            f.write("\nPlease credit the original content creator when using this video.\n")
+
+    def update_txt_file_with_local_paths(self, youtube_urls: list) -> None:
+        """Update the TXT file to use local video paths instead of URLs"""
+        if not self.current_file or not os.path.exists(self.current_file):
+            return
+
+        try:
+            with open(self.current_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            updated_content = content
+            for url in youtube_urls:
+                # Find the local video file
+                video_files = glob.glob(f"media_files/*.mp4")
+                for video_file in video_files:
+                    attribution_file = video_file.rsplit('.', 1)[0] + '_attribution.txt'
+                    if os.path.exists(attribution_file):
+                        with open(attribution_file, 'r') as af:
+                            if url in af.read():
+                                # Replace URL with local path
+                                local_path = video_file
+                                # Update the directive in the content
+                                updated_content = updated_content.replace(
+                                    f"\\play \\url {url}",
+                                    f"\\play \\file {local_path}"
+                                )
+                                updated_content = updated_content.replace(
+                                    f"\\play {url}",
+                                    f"\\play \\file {local_path}"
+                                )
+                                self.write(f"  ✓ Updated {url} -> {local_path}\n", "green")
+                                break
+
+            # Write back the updated content
+            if updated_content != content:
+                with open(self.current_file, 'w', encoding='utf-8') as f:
+                    f.write(updated_content)
+
+                # Reload the file to reflect changes
+                self.load_file(self.current_file)
+
+        except Exception as e:
+            self.write(f"  ⚠ Could not update TXT file: {str(e)}\n", "yellow")
+
+    def sanitize_filename(self, filename):
+        """Sanitize filename for safe file system use"""
+        # Remove invalid characters
+        filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+        # Replace spaces with underscores
+        filename = filename.replace(' ', '_')
+        # Remove multiple underscores
+        filename = re.sub(r'_+', '_', filename)
+        # Limit length
+        if len(filename) > 100:
+            filename = filename[:100]
+        return filename
+
 
 class ScreenCaptureMethod:
     """Detect and manage screen capture methods for different environments"""

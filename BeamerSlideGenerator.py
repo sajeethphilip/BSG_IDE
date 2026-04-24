@@ -1395,35 +1395,27 @@ def process_latex_content(content_line: str) -> str:
 
 #----------------------------------------------------------------------
 def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
-    """Generate LaTeX code with support for all media layouts."""
+    """
+    Generate LaTeX code with support for all media layouts.
+    PRESERVES all user specifications including column widths, math, TikZ, and LaTeX environments.
+    NO HARDCODED COLUMN WIDTHS - respects user input completely.
+    """
 
     def clean_frame_title(title_text):
-        """Clean frame title to prevent compilation errors - FIXED VERSION"""
+        """Clean frame title to prevent compilation errors"""
         if not title_text:
             return "Untitled"
 
-        # CRITICAL FIX: Remove all braces from titles
-        # They cause LaTeX compilation errors in frame titles
         title_text = str(title_text)
-
-        # First remove any existing escaped braces
         title_text = title_text.replace('\\{', '').replace('\\}', '')
-
-        # Then remove all braces
         title_text = title_text.replace('{', '').replace('}', '')
-
-        # Escape only the most problematic characters (but NOT braces anymore)
         title_text = title_text.replace('&', '\\&')
         title_text = title_text.replace('%', '\\%')
         title_text = title_text.replace('#', '\\#')
-
-        # Remove any extra whitespace
         title_text = title_text.strip()
 
-        # If title is empty after cleaning, use a default
         if not title_text:
             return "Untitled"
-
         return title_text
 
     # Process title
@@ -1433,30 +1425,82 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         base_name_escaped = clean_frame_title(base_name if base_name else 'Untitled')
         frame_title = "Media: " + base_name_escaped
 
-    # Use proper frame title formatting
     frame_title_code = frame_title
+
+    # ========== CHECK FOR EXISTING COLUMNS IN CONTENT ==========
+    has_existing_columns = False
+    existing_columns_content = None
+
+    if content:
+        content_str = '\n'.join(str(c) for c in content)
+        if '\\begin{columns}' in content_str and '\\end{columns}' in content_str:
+            has_existing_columns = True
+            import re
+            col_match = re.search(r'(\\begin\{columns\}.*?\\end\{columns\})', content_str, re.DOTALL)
+            if col_match:
+                existing_columns_content = col_match.group(1)
+
+    # ========== IF CONTENT HAS EXISTING COLUMNS, USE THEM DIRECTLY ==========
+    if has_existing_columns and existing_columns_content:
+        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+
+        content_str = '\n'.join(str(c) for c in content)
+        before_columns = content_str.split('\\begin{columns}')[0].strip()
+        if before_columns:
+            latex_code += before_columns + "\n"
+
+        latex_code += existing_columns_content + "\n"
+
+        after_columns = content_str.split('\\end{columns}')[-1].strip() if '\\end{columns}' in content_str else ""
+        if after_columns:
+            latex_code += after_columns + "\n"
+
+        latex_code += "\\end{frame}\n"
+        return latex_code
+
+    # ========== EXTRACT CUSTOM COLUMN WIDTHS FROM CONTENT ==========
+    custom_left_width = None
+    custom_right_width = None
+
+    if content:
+        content_str = '\n'.join(str(c) for c in content)
+        import re
+        col_match = re.findall(r'\\column\{([^}]+)\}', content_str)
+        if len(col_match) >= 1:
+            custom_left_width = col_match[0]
+        if len(col_match) >= 2:
+            custom_right_width = col_match[1]
+
+    # ========== CHECK IF CONTENT HAS CUSTOM IMAGE WIDTH ==========
+    custom_image_width = None
+    if content:
+        content_str = '\n'.join(str(c) for c in content)
+        import re
+        # Look for \includegraphics[width=...] or similar
+        width_match = re.search(r'\\includegraphics\[width=([^\]]+)\]', content_str)
+        if width_match:
+            custom_image_width = width_match.group(1)
+        else:
+            # Look for width parameter in the filename or params
+            width_match = re.search(r'width[=\s]*([0-9.]+\\?\\?textwidth)', content_str, re.IGNORECASE)
+            if width_match:
+                custom_image_width = width_match.group(1)
 
     # Check if content contains TikZ
     has_tikz = False
-    has_bullet_points = False
-
     if content:
         for item in content:
-            if isinstance(item, str):
-                if '\\begin{tikzpicture}' in item:
-                    has_tikz = True
-                elif item.strip().startswith('-'):
-                    has_bullet_points = True
+            if isinstance(item, str) and '\\begin{tikzpicture}' in item:
+                has_tikz = True
+                break
 
-    # Handle no media case with TikZ
+    # ========== HANDLE NO MEDIA CASE WITH TIKZ ==========
     if has_tikz and (not filename or filename == "\\None"):
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
-        latex_code += "    \\vspace{0.5em}\n"
+        latex_code += f"\\frametitle{{{frame_title_code}}}\n"
 
-        # Add TikZ content directly
         in_itemize = False
-        itemize_started = False
-
         for item in content:
             if isinstance(item, str):
                 item_str = item.strip()
@@ -1464,60 +1508,62 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
                     continue
 
                 if '\\begin{tikzpicture}' in item_str:
-                    # If we're in an itemize environment, end it first
                     if in_itemize:
                         latex_code += "    \\end{itemize}\n"
                         in_itemize = False
                     latex_code += f"    {item_str}\n"
                 elif item_str.startswith('-'):
-                    # Start itemize environment if not already started
                     if not in_itemize:
                         latex_code += "    \\begin{itemize}\n"
                         in_itemize = True
-                        itemize_started = True
                     clean_item = item_str[1:].strip()
                     processed_item = process_latex_content(clean_item)
                     latex_code += f"        \\item {processed_item}\n"
                 elif in_itemize:
-                    # If we're in itemize and this isn't a bullet point, end itemize
                     latex_code += "    \\end{itemize}\n"
                     in_itemize = False
-                    # Add the non-bullet content
                     processed_item = process_latex_content(item_str)
                     latex_code += f"    {processed_item}\n"
                 else:
-                    # Regular content outside of itemize
                     processed_item = process_latex_content(item_str)
                     latex_code += f"    {processed_item}\n"
 
-        # Close itemize if it's still open
         if in_itemize:
             latex_code += "    \\end{itemize}\n"
-
         latex_code += "\\end{frame}\n"
         return latex_code
 
-    # Handle no media case first (no TikZ)
+    # ========== HANDLE NO MEDIA CASE ==========
     if not filename or filename == "\\None":
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
-        latex_code += "    \\vspace{0.5em}\n"
+        latex_code += f"\\frametitle{{{frame_title_code}}}\n"
         content_items = generate_content_items(content)
         if content_items:
             latex_code += "    " + content_items + "\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
-    # Generate layout based on directive
+    # ========== GENERATE LAYOUT BASED ON DIRECTIVE ==========
     latex_code = ""
 
-    # FIXED: Ensure proper column closure for all layouts
+    # SPLIT LAYOUT - Preserve user column widths
     if layout == 'split':
+        left_width = custom_left_width if custom_left_width else "0.48\\textwidth"
+        right_width = custom_right_width if custom_right_width else "0.48\\textwidth"
+
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code += f"\\frametitle{{{frame_title_code}}}\n"
         latex_code += "    \\begin{columns}[T]\n"
-        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+        latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
+
+        # Use custom image width if specified
+        if custom_image_width:
+            latex_code += f"            \\includegraphics[width={custom_image_width},keepaspectratio]{{{filename}}}\n"
+        else:
+            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+
         latex_code += "        \\end{column}\n"
-        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
+        latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
         content_items = generate_content_items(content)
         if content_items:
             latex_code += "        " + content_items + "\n"
@@ -1526,60 +1572,122 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "\\end{frame}\n"
         return latex_code
 
+    # PIP LAYOUT - Preserve user column widths
     elif layout == 'pip':
+        left_width = custom_left_width if custom_left_width else "0.68\\textwidth"
+        right_width = custom_right_width if custom_right_width else "0.28\\textwidth"
+
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code += f"\\frametitle{{{frame_title_code}}}\n"
         latex_code += "    \\begin{columns}[T]\n"
-        latex_code += "        \\begin{column}{0.7\\textwidth}\n"
+        latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
         content_items = generate_content_items(content)
         if content_items:
             latex_code += "        " + content_items + "\n"
         latex_code += "        \\end{column}\n"
-        latex_code += "        \\begin{column}{0.28\\textwidth}\n"
+        latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
         latex_code += "            \\vspace{1em}\n"
-        latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+
+        if custom_image_width:
+            latex_code += f"            \\includegraphics[width={custom_image_width},keepaspectratio]{{{filename}}}\n"
+        else:
+            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+
         latex_code += "        \\end{column}\n"
         latex_code += "    \\end{columns}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
-    # Default side-by-side layout (most common)
+    # ========== DEFAULT SIDE-BY-SIDE LAYOUT ==========
+    # Determine if we should use two columns or single column
+    use_two_columns = False
+
+    # Check if content has multiple items or bullet points that would benefit from two columns
+    if content:
+        non_empty_items = [c for c in content if c and str(c).strip()]
+        if len(non_empty_items) > 1 or has_tikz:
+            use_two_columns = True
+
+    # Check if user specified a custom image width
+    image_width = custom_image_width if custom_image_width else "0.7\\textwidth"
+    if not use_two_columns and not custom_image_width:
+        # Single column - use larger image
+        image_width = "0.7\\textwidth"
+
     if playable and first_frame_path:
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
-        latex_code += "    \\begin{columns}[T]\n"
-        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{first_frame_path}}}\n"
-        latex_code += "            \\begin{center}\n"
-        latex_code += "                \\vspace{0.3em}\n"
-        latex_code += "                \\footnotesize Click to play\\\\\n"
-        latex_code += f"                \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{filename}}}\n"
-        latex_code += "            \\end{center}\n"
-        latex_code += "        \\end{column}\n"
-        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        content_items = generate_content_items(content)
-        if content_items:
-            latex_code += "        " + content_items + "\n"
+        latex_code += f"\\frametitle{{{frame_title_code}}}\n"
 
-        if source_url:
-            latex_code += "        " + format_url_footnote(source_url) + "\n"
+        if use_two_columns:
+            # Two columns - respect user column widths if specified
+            left_width = custom_left_width if custom_left_width else "0.48\\textwidth"
+            right_width = custom_right_width if custom_right_width else "0.48\\textwidth"
 
-        latex_code += "        \\end{column}\n"
-        latex_code += "    \\end{columns}\n"
+            latex_code += "    \\begin{columns}[T]\n"
+            latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
+            latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{first_frame_path}}}\n"
+            latex_code += "            \\begin{center}\n"
+            latex_code += "                \\vspace{0.3em}\n"
+            latex_code += "                \\footnotesize Click to play\\\\\n"
+            latex_code += f"                \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{filename}}}\n"
+            latex_code += "            \\end{center}\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
+            content_items = generate_content_items(content)
+            if content_items:
+                latex_code += "        " + content_items + "\n"
+            if source_url:
+                latex_code += "        " + format_url_footnote(source_url) + "\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += "    \\end{columns}\n"
+        else:
+            # Single column layout - content below image
+            latex_code += "    \\begin{center}\n"
+            latex_code += f"        \\includegraphics[width={image_width},keepaspectratio]{{{first_frame_path}}}\n"
+            latex_code += "        \\begin{center}\n"
+            latex_code += "            \\vspace{0.3em}\n"
+            latex_code += "            \\footnotesize Click to play\\\\\n"
+            latex_code += f"            \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{filename}}}\n"
+            latex_code += "        \\end{center}\n"
+            latex_code += "    \\end{center}\n"
+            content_items = generate_content_items(content)
+            if content_items:
+                latex_code += "    " + content_items + "\n"
+            if source_url:
+                latex_code += "    " + format_url_footnote(source_url) + "\n"
+
+        latex_code += "\\end{frame}\n"
     else:
         latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
-        latex_code += "    \\begin{columns}[T]\n"
-        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{filename}}}\n"
-        latex_code += "        \\end{column}\n"
-        latex_code += "        \\begin{column}{0.48\\textwidth}\n"
-        content_items = generate_content_items(content)
-        if content_items:
-            latex_code += "        " + content_items + "\n"
+        latex_code += f"\\frametitle{{{frame_title_code}}}\n"
 
-        if source_url:
-            latex_code += "        " + format_url_footnote(source_url) + "\n"
+        if use_two_columns:
+            # Two columns - respect user column widths if specified
+            left_width = custom_left_width if custom_left_width else "0.48\\textwidth"
+            right_width = custom_right_width if custom_right_width else "0.48\\textwidth"
 
-        latex_code += "        \\end{column}\n"
-        latex_code += "    \\end{columns}\n"
+            latex_code += "    \\begin{columns}[T]\n"
+            latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
+            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
+            content_items = generate_content_items(content)
+            if content_items:
+                latex_code += "        " + content_items + "\n"
+            if source_url:
+                latex_code += "        " + format_url_footnote(source_url) + "\n"
+            latex_code += "        \\end{column}\n"
+            latex_code += "    \\end{columns}\n"
+        else:
+            # Single column layout - content below image
+            latex_code += "    \\begin{center}\n"
+            latex_code += f"        \\includegraphics[width={image_width},keepaspectratio]{{{filename}}}\n"
+            latex_code += "    \\end{center}\n"
+            content_items = generate_content_items(content)
+            if content_items:
+                latex_code += "    " + content_items + "\n"
+            if source_url:
+                latex_code += "    " + format_url_footnote(source_url) + "\n"
 
     latex_code += "\\end{frame}\n"
     return latex_code
@@ -1700,9 +1808,8 @@ def process_frame(outfile, title, content, notes, media):
 
     outfile.write(latex_code + '\n')
 
-# Also need to update the generate_content_items function to pass through TikZ content
 def generate_content_items(content, color=None):
-    """Generate formatted content items with optional color, handling TikZ separately."""
+    """Generate formatted content items with optional color, handling TikZ and math separately."""
     if not content:
         return ""
 
@@ -1710,6 +1817,7 @@ def generate_content_items(content, color=None):
     items = []
     pause_set = False
     in_itemize = False
+    in_math = False  # NEW: Track math mode
     opened_environments = []
 
     # Check if any item has \pause
@@ -1725,8 +1833,27 @@ def generate_content_items(content, color=None):
         if not item_str:
             continue
 
+        # ====== NEW: Check for math expressions FIRST ======
+        # Detect standalone math expressions ($...$, $$...$$, \[...\], '[...]')
+        is_math_expression = False
+        if item_str.startswith('$') and item_str.endswith('$'):
+            is_math_expression = True
+        elif item_str.startswith('$$') and item_str.endswith('$$'):
+            is_math_expression = True
+        elif item_str.startswith('\\[') and item_str.endswith('\\]'):
+            is_math_expression = True
+        elif re.match(r'[\'"]\[.*?[\'"]\]', item_str, re.DOTALL):
+            is_math_expression = True
+
+        if is_math_expression:
+            # Close any open itemize before adding math
+            if in_itemize:
+                items.append('\\end{itemize}')
+                in_itemize = False
+            items.append(item_str)
+            continue
+
         # ====== SECTION 1: Pass-through LaTeX commands and environments ======
-        # These should be passed through unchanged
 
         # Handle environment begin/end markers
         if item_str.startswith('\\begin{'):
@@ -1750,12 +1877,40 @@ def generate_content_items(content, color=None):
                 in_itemize = False
             continue
 
+        # ====== NEW: Handle TikZ content specially ======
+        if '\\begin{tikzpicture}' in item_str or '\\end{tikzpicture}' in item_str:
+            # Close any open itemize
+            if in_itemize:
+                items.append('\\end{itemize}')
+                in_itemize = False
+            items.append(item_str)
+            continue
+
+        # ====== NEW: Handle column commands ======
+        if item_str.startswith('\\column'):
+            if in_itemize:
+                items.append('\\end{itemize}')
+                in_itemize = False
+            items.append(item_str)
+            continue
+
+        # ====== NEW: Handle begin/end columns ======
+        if '\\begin{columns}' in item_str or '\\end{columns}' in item_str:
+            if in_itemize:
+                items.append('\\end{itemize}')
+                in_itemize = False
+            items.append(item_str)
+            continue
+
         # A) Graphics and media commands
         graphics_commands = [
             '\\includegraphics', '\\movie', '\\animategraphics',
             '\\sound', '\\hyperlinksound'
         ]
         if any(cmd in item_str for cmd in graphics_commands):
+            if in_itemize:
+                items.append('\\end{itemize}')
+                in_itemize = False
             items.append(item_str)
             continue
 
@@ -1773,7 +1928,7 @@ def generate_content_items(content, color=None):
             items.append(item_str)
             continue
 
-        # C) Math and symbol commands
+        # C) Math and symbol commands (preserve these)
         math_commands = [
             '\\(', '\\)', '\\[', '\\]', '\\begin{equation', '\\end{equation',
             '\\begin{align', '\\end{align', '\\begin{gather', '\\end{gather',
@@ -1819,7 +1974,7 @@ def generate_content_items(content, color=None):
 
         # G) Float environments
         float_envs = [
-            '\\begin{figure', '\\end{figure', '\\begin{table', '\\end{table}',
+            '\\begin{figure', '\\end{figure}', '\\begin{table', '\\end{table}',
             '\\begin{wrapfigure', '\\end{wrapfigure}', '\\begin{wraptable',
             '\\end{wraptable}', '\\centering', '\\caption{', '\\captionof{',
             '\\listoffigures', '\\listoftables'
@@ -1866,6 +2021,9 @@ def generate_content_items(content, color=None):
             '\\toprule', '\\midrule', '\\bottomrule', '\\addlinespace'
         ]
         if any(item_str.startswith(cmd) for cmd in table_envs):
+            if in_itemize:
+                items.append('\\end{itemize}')
+                in_itemize = False
             items.append(item_str)
             continue
 
@@ -1894,31 +2052,20 @@ def generate_content_items(content, color=None):
             items.append(item_str)
             continue
 
-        # Process regular text content
-        if item_str.startswith('-'):
-            item_str = item_str[1:].strip()
+        # Process regular text content (bullet points)
+        if item_str.startswith('-') or item_str.startswith('•'):
+            bullet_content = re.sub(r'^[-•]\s*', '', item_str)
+            processed_item = process_latex_content(bullet_content)
+            processed_item = sanitize_latex_content(processed_item)
 
-        # Process special effects if any
-        processed_item = process_latex_content(item_str)
+            if color:
+                processed_item = f"{{\\color{{{color}}}{processed_item}}}"
 
-        # Fix: Sanitize the processed item to prevent compilation errors
-        processed_item = sanitize_latex_content(processed_item)
-
-        if color:
-            processed_item = f"{{\\color{{{color}}}{processed_item}}}"
-
-        # Add item with proper environment handling
-        if item_str and item_str.strip():
             # Ensure we're in an itemize environment
             if not in_itemize:
                 items.append('\\begin{itemize}')
                 opened_environments.append('\\begin{itemize}')
                 in_itemize = True
-
-            # Add text wrapping for long items to prevent overfull boxes
-            if len(processed_item) > 80 and not any(cmd in processed_item for cmd in ['\\begin{', '\\end{', '\\includegraphics']):
-                # Wrap long text to prevent overfull boxes
-                processed_item = f"\\parbox[t]{{0.9\\linewidth}}{{{processed_item}}}"
 
             # Add pause overlay if needed
             if pause_set:
@@ -1926,9 +2073,24 @@ def generate_content_items(content, color=None):
                 cnt += 1
             else:
                 items.append(f'\\item {processed_item}')
+            continue
+
+        # Regular non-bullet text
+        if item_str and item_str.strip():
+            # Close any open itemize first
+            if in_itemize:
+                items.append('\\end{itemize}')
+                in_itemize = False
+
+            processed_item = process_latex_content(item_str)
+            processed_item = sanitize_latex_content(processed_item)
+
+            if color:
+                processed_item = f"{{\\color{{{color}}}{processed_item}}}"
+
+            items.append(processed_item)
 
     # CRITICAL FIX: Close any opened itemize environments
-    # This prevents the "File ended while scanning use of \frame" error
     while in_itemize:
         items.append('\\end{itemize}')
         in_itemize = False
@@ -1977,9 +2139,7 @@ def verify_media_file(filepath):
 def process_media(url, content=None, title=None, playable=False, slide_index=None, callback=None):
     """Process media with graceful handling of missing files and URLs"""
 
-
     try:
-
         directive_type, media_source, is_playable, original_directive = parse_media_directive(url)
         playable = playable or is_playable
 
@@ -1987,148 +2147,428 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
         if content is None:
             content = []
 
-        # Create a list to store footnotes
-        footnotes = []
-
-
-        # First collect any existing footnotes from content
+        # Process footnotes and anbg commands
         processed_content = []
-        for item in content:
-            if '\\anbg' in item:
-                    # Extract image name from \anbg command
-                    match = re.search(r'\\anbg\{(.*?)\}', item)
-                    if match:
-                        image_name = match.group(1)
-                        if image_name:
-                            # Add background command before frame
-                           processed_content.append(f"\\anbg{{{image_name}}}")
-                        else:
-                            # Clear background if empty
-                            processed_content.append("\\anbg{}")
-                    # Remove \anbg line from content
-                    content.pop(i)
-            elif '\\footnote{' in item:
-                # Extract footnote text
+        footnotes = []
+        i = 0
+        while i < len(content):
+            item = content[i]
+            if isinstance(item, str) and '\\anbg' in item:
+                match = re.search(r'\\anbg\{(.*?)\}', item)
+                if match:
+                    image_name = match.group(1)
+                    if image_name:
+                        processed_content.append(f"\\anbg{{{image_name}}}")
+                    else:
+                        processed_content.append("\\anbg{}")
+                i += 1
+                continue
+            elif isinstance(item, str) and '\\footnote{' in item:
                 footnote_start = item.index('\\footnote{') + len('\\footnote{')
                 footnote_end = item.rindex('}')
                 footnote_text = item[footnote_start:footnote_end]
                 footnotes.append(footnote_text)
-
-                # Remove footnote from content item
                 cleaned_item = item[:item.index('\\footnote{')] + item[item.rindex('}')+1:]
                 processed_content.append(cleaned_item)
+                i += 1
             else:
                 processed_content.append(item)
+                i += 1
 
-
-        # Now add all footnotes to the last content item or create a phantom item
-        if processed_content:
+        # Add footnotes to last item
+        if processed_content and footnotes:
             last_item = processed_content[-1]
-            for i, footnote in enumerate(footnotes):
-                if i == 0:
-                    last_item = f"{last_item}\\footnote{{{footnote}}}"
-                else:
-                    # Add subsequent footnotes with proper spacing
-                    last_item = f"{last_item}\\footnote{{{footnote}}}"
+            for j, footnote in enumerate(footnotes):
+                last_item = f"{last_item}\\footnote{{{footnote}}}"
             processed_content[-1] = last_item
         elif footnotes:
-            # If no content but we have footnotes, create a phantom item
             combined_footnotes = ''.join([f"\\footnote{{{f}}}" for f in footnotes])
             processed_content.append(f"\\phantom{{.}}{combined_footnotes}")
 
-
         # Handle explicit \None directive
         if url.strip() == "\\None":
-            return generate_latex_code(None, "\\None", None, content, title, False), "\\None"
+            return generate_latex_code(None, "\\None", None, processed_content, title, False), "\\None"
 
-        # Handle URLs in \play directive
-        if directive_type == 'url' and playable:
-            if media_source.startswith(('http://', 'https://')):
-                if 'youtube.com' in media_source or 'youtu.be' in media_source:
-                    # Download YouTube video
-                    result = download_youtube_video(media_source)
-                    if result:
-                        base_name, filename, filepath = result
-                        first_frame_path = generate_preview_frame(filepath)
-                        return generate_latex_code(
-                            base_name,
-                            f"media_files/{filename}",
-                            first_frame_path,
-                            content,
-                            title,
-                            True,
-                            media_source
-                        ), f"\\play \\file media_files/{filename}"
+        # Helper function to download video from URL
+        def download_video_from_url(video_url, output_folder='media_files'):
+            """Download video from URL to local file"""
+            try:
+                import requests
+                import time
+
+                os.makedirs(output_folder, exist_ok=True)
+
+                # Generate safe filename
+                timestamp = int(time.time())
+                # Try to get filename from URL
+                url_filename = os.path.basename(video_url.split('?')[0])
+                if url_filename and '.' in url_filename and len(url_filename) < 50:
+                    # Remove any query parameters
+                    url_filename = url_filename.split('?')[0]
+                    if url_filename.lower().endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')):
+                        filename = url_filename
+                    else:
+                        filename = f"video_{timestamp}.mp4"
                 else:
-                    # Download other media URLs
-                    base_name, filename, first_frame_path = download_media(media_source)
-                    if base_name and filename:
+                    filename = f"video_{timestamp}.mp4"
+
+                output_path = os.path.join(output_folder, filename)
+
+                # Download with progress
+                response = requests.get(video_url, stream=True, timeout=30)
+                response.raise_for_status()
+
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+
+                with open(output_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            if terminal_io:
+                                terminal_io.write(f"  Downloading: {percent:.1f}%\r", "cyan")
+                            else:
+                                print(f"  Downloading: {percent:.1f}%\r", end='')
+
+                if terminal_io:
+                    terminal_io.write(f"\n  ✓ Downloaded: {filename}\n", "green")
+                else:
+                    print(f"\n  ✓ Downloaded: {filename}")
+                return output_path
+
+            except Exception as e:
+                if terminal_io:
+                    terminal_io.write(f"  ✗ Download error: {str(e)}\n", "red")
+                else:
+                    print(f"  ✗ Download error: {e}")
+                return None
+
+        # Helper function to add source attribution
+        def add_source_attribution(media_source, local_path):
+            """Add source attribution message and metadata"""
+            if terminal_io:
+                terminal_io.write(f"\n📝 Source Attribution:\n", "yellow")
+                terminal_io.write(f"   Original URL: {media_source}\n", "white")
+                terminal_io.write(f"   Saved to: {local_path}\n", "white")
+                terminal_io.write(f"   This video is saved locally for offline presentation\n", "white")
+                terminal_io.write(f"   Please credit the original source when presenting\n\n", "yellow")
+
+            # Save metadata file
+            metadata_path = local_path.rsplit('.', 1)[0] + '_source.txt'
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                f.write(f"Source URL: {media_source}\n")
+                f.write(f"Downloaded: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Local Path: {local_path}\n")
+                f.write("Please credit the original content creator when using this media.\n")
+
+        # ========== HANDLE PLAYABLE MEDIA ==========
+        if playable:
+            # Case 1: Playable local file
+            if directive_type == 'file' and media_source:
+                media_path = media_source
+                if not os.path.exists(media_path):
+                    test_paths = [
+                        media_path,
+                        os.path.join('media_files', os.path.basename(media_path)),
+                        os.path.join('media_files', media_path),
+                    ]
+                    for test_path in test_paths:
+                        if os.path.exists(test_path):
+                            media_path = test_path
+                            break
+
+                if os.path.exists(media_path):
+                    first_frame_path = generate_preview_frame(media_path)
+                    return generate_latex_code(
+                        os.path.splitext(os.path.basename(media_path))[0],
+                        media_path,
+                        first_frame_path,
+                        processed_content,
+                        title,
+                        True
+                    ), original_directive
+
+            # Case 2: Playable URL (YouTube or other)
+            elif directive_type == 'url' and media_source:
+                if media_source.startswith(('http://', 'https://')):
+                    downloaded_file = None
+
+                    # Handle YouTube videos with yt-dlp - DOWNLOAD LOCALLY
+                    if 'youtube.com' in media_source or 'youtu.be' in media_source:
+                        try:
+                            import yt_dlp
+                            os.makedirs('media_files', exist_ok=True)
+
+                            # Generate safe filename from video title
+                            timestamp = int(time.time())
+                            video_title = "youtube_video"
+
+                            # First get video info to get title
+                            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                                try:
+                                    info = ydl.extract_info(media_source, download=False)
+                                    video_title = info.get('title', 'youtube_video')
+                                    safe_title = sanitize_filename(video_title)
+                                    output_template = f"media_files/{safe_title}.mp4"
+                                except Exception as e:
+                                    if terminal_io:
+                                        terminal_io.write(f"  ⚠ Could not get video title: {str(e)}\n", "yellow")
+                                    output_template = f"media_files/youtube_video_{timestamp}.mp4"
+
+                            ydl_opts = {
+                                'format': 'best[ext=mp4]/best',
+                                'outtmpl': output_template,
+                                'quiet': False,
+                                'no_warnings': False,
+                            }
+
+                            if terminal_io:
+                                terminal_io.write(f"\n  📥 Downloading YouTube video locally...\n", "cyan")
+                                terminal_io.write(f"  📹 Title: {video_title}\n", "white")
+                                terminal_io.write(f"  ⏳ This may take a few moments...\n", "yellow")
+                            else:
+                                print(f"\n  📥 Downloading YouTube video locally...")
+
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([media_source])
+
+                            # Check for downloaded file
+                            if os.path.exists(output_template):
+                                downloaded_file = output_template
+                                if terminal_io:
+                                    terminal_io.write(f"\n  ✓ Video downloaded successfully!\n", "green")
+                                    terminal_io.write(f"  📁 Saved to: {downloaded_file}\n", "green")
+                                    terminal_io.write(f"  💡 This video is now available offline\n", "cyan")
+                                else:
+                                    print(f"\n  ✓ Video downloaded successfully!")
+                                    print(f"  📁 Saved to: {downloaded_file}")
+                            else:
+                                # Try to find any mp4 file with similar name
+                                import glob
+                                search_pattern = f"media_files/*{safe_title}*.mp4" if 'safe_title' in dir() else f"media_files/*youtube_video_{timestamp}*.mp4"
+                                possible_files = glob.glob(search_pattern)
+                                if possible_files:
+                                    downloaded_file = possible_files[0]
+                                    if terminal_io:
+                                        terminal_io.write(f"\n  ✓ Video downloaded: {os.path.basename(downloaded_file)}\n", "green")
+                                else:
+                                    raise Exception("Downloaded file not found")
+
+                            if downloaded_file and os.path.exists(downloaded_file):
+                                # Add source attribution
+                                add_source_attribution(media_source, downloaded_file)
+
+                                first_frame_path = generate_preview_frame(downloaded_file)
+                                base_name = os.path.splitext(os.path.basename(downloaded_file))[0]
+
+                                return generate_latex_code(
+                                    base_name,
+                                    downloaded_file,
+                                    first_frame_path,
+                                    processed_content,
+                                    title,
+                                    True,
+                                    media_source
+                                ), f"\\play \\file {downloaded_file}"
+                            else:
+                                raise Exception("Could not locate downloaded file")
+
+                        except ImportError:
+                            error_msg = ("  ✗ yt-dlp not installed. Please run: pip install yt-dlp\n"
+                                        "  ℹ Without yt-dlp, YouTube videos will use online links only.\n"
+                                        "  💡 For offline playback, install yt-dlp: pip install yt-dlp")
+                            if terminal_io:
+                                terminal_io.write(error_msg + "\n", "red")
+                            else:
+                                print(error_msg)
+                            # Fall back to URL link
+                            return handle_missing_media(url, processed_content, title, playable)
+
+                        except Exception as e:
+                            error_msg = f"  ✗ YouTube download failed: {str(e)}"
+                            if terminal_io:
+                                terminal_io.write(error_msg + "\n", "red")
+                                terminal_io.write("  ℹ Check your internet connection and try again\n", "yellow")
+                            else:
+                                print(error_msg)
+                            return handle_missing_media(url, processed_content, title, playable)
+
+                    # Handle other URLs with direct download
+                    else:
+                        if terminal_io:
+                            terminal_io.write(f"\n  📥 Downloading video from URL...\n", "cyan")
+                        downloaded_file = download_video_from_url(media_source)
+
+                    if downloaded_file and os.path.exists(downloaded_file):
+                        # Add source attribution for non-YouTube URLs too
+                        add_source_attribution(media_source, downloaded_file)
+
+                        first_frame_path = generate_preview_frame(downloaded_file)
+                        base_name = os.path.splitext(os.path.basename(downloaded_file))[0]
+
+                        if terminal_io:
+                            terminal_io.write(f"  ✓ Media downloaded successfully!\n", "green")
+                            terminal_io.write(f"  📁 Saved to: {downloaded_file}\n", "green")
+
                         return generate_latex_code(
                             base_name,
-                            f"media_files/{filename}",
+                            downloaded_file,
                             first_frame_path,
-                            content,
+                            processed_content,
                             title,
                             True,
                             media_source
-                        ), f"\\play \\file media_files/{filename}"
+                        ), f"\\play \\file {downloaded_file}"
+                    else:
+                        if terminal_io:
+                            terminal_io.write(f"  ✗ Failed to download video from URL\n", "red")
+                            terminal_io.write(f"  ℹ Falling back to URL link\n", "yellow")
+                        return handle_missing_media(url, processed_content, title, playable)
 
-        # Handle regular URLs
-        elif directive_type == 'url' :
+        # ========== HANDLE NON-PLAYABLE (STATIC) MEDIA ==========
+        # Case 3: Regular URL (non-playable, e.g., image URL)
+        if directive_type == 'url' and media_source:
             if media_source.startswith(('http://', 'https://')):
+                if terminal_io:
+                    terminal_io.write(f"\n  📥 Downloading image from URL...\n", "cyan")
                 base_name, filename, first_frame_path = download_media(media_source)
                 if base_name and filename:
+                    if terminal_io:
+                        terminal_io.write(f"  ✓ Image downloaded: {filename}\n", "green")
+                        terminal_io.write(f"  📁 Saved to: media_files/{filename}\n", "green")
                     return generate_latex_code(
                         base_name,
                         f"media_files/{filename}",
                         first_frame_path,
-                        content,
+                        processed_content,
                         title,
                         False,
                         media_source
                     ), f"\\file media_files/{filename}"
+                else:
+                    if terminal_io:
+                        terminal_io.write(f"  ✗ Failed to download image\n", "red")
+                    return handle_missing_media(url, processed_content, title, playable)
 
-        # Handle local files
-        elif directive_type == 'file':
+        # Case 4: Local file (non-playable)
+        if directive_type == 'file' and media_source:
             media_path = media_source
-            if not os.path.exists(media_path):
-                media_path = os.path.join('media_files', os.path.basename(media_path))
+            found = False
 
-            if os.path.exists(media_path):
-                first_frame_path = None
-                if playable:
-                    first_frame_path = generate_preview_frame(media_path)
+            # Try multiple paths
+            test_paths = [
+                media_path,
+                os.path.join('media_files', os.path.basename(media_path)),
+                os.path.join('media_files', media_path),
+                media_path.replace('\\', '/'),
+                os.path.join('media_files', media_path.replace('media_files/', ''))
+            ]
+
+            # Also try with common extensions if no extension
+            if '.' not in media_path:
+                extensions = ['.png', '.jpg', '.jpeg', '.pdf', '.mp4', '.gif']
+                for ext in extensions:
+                    for test_path in test_paths[:]:
+                        test_paths.append(test_path + ext)
+
+            for test_path in test_paths:
+                if os.path.exists(test_path):
+                    media_path = test_path
+                    found = True
+                    break
+
+            if found:
+                if terminal_io:
+                    terminal_io.write(f"  ✓ Found local file: {os.path.basename(media_path)}\n", "green")
                 return generate_latex_code(
                     os.path.splitext(os.path.basename(media_path))[0],
                     media_path,
-                    first_frame_path,
-                    content,
+                    media_path,  # For images, the file itself is the preview
+                    processed_content,
                     title,
-                    playable
+                    False
                 ), original_directive
+            else:
+                if terminal_io:
+                    terminal_io.write(f"  ⚠ Local file not found: {media_source}\n", "yellow")
+                    terminal_io.write(f"  ℹ Creating slide without media\n", "cyan")
+                return handle_missing_media(url, processed_content, title, playable)
 
-        # Handle layout directives (watermark, fullframe, etc.)
-        elif directive_type in ['watermark', 'fullframe', 'pip', 'split', 'highlight',
-                              'background', 'topbottom', 'overlay', 'corner', 'mosaic']:
+        # ========== HANDLE LAYOUT DIRECTIVES ==========
+        layout_directives = ['watermark', 'fullframe', 'pip', 'split', 'highlight',
+                            'background', 'topbottom', 'overlay', 'corner', 'mosaic']
+
+        if directive_type in layout_directives:
             return generate_latex_code(
                 base_name=None,
-                filename=media_source,
+                filename=media_source if media_source else "\\None",
                 first_frame_path=None,
-                content=content,
+                content=processed_content,
                 title=title,
-                playable=playable,
+                playable=False,
+                source_url=None,
                 layout=directive_type
             ), original_directive
 
-        # If we get here, the media wasn't handled
+        # ========== FALLBACK ==========
         if callback and slide_index is not None:
             callback(slide_index)
-        return handle_missing_media(url, content, title, playable)
+        return handle_missing_media(url, processed_content, title, playable)
 
     except Exception as e:
-        print(f"Error processing media: {str(e)}")
+        error_msg = f"Error processing media: {str(e)}"
+        if terminal_io:
+            terminal_io.write(f"{error_msg}\n", "red")
+        else:
+            print(error_msg)
+        import traceback
+        traceback.print_exc()
         return handle_missing_media(url, content, title, playable)
 
+def download_video_from_url(url, output_folder='media_files'):
+    """Download video from any URL to local file"""
+    try:
+        import requests
+
+        os.makedirs(output_folder, exist_ok=True)
+
+        # Generate safe filename
+        timestamp = int(time.time())
+        filename = f"video_{timestamp}.mp4"
+
+        # Try to get filename from URL if possible
+        url_filename = os.path.basename(url.split('?')[0])
+        if url_filename and '.' in url_filename and len(url_filename) < 50:
+            filename = url_filename
+
+        output_path = os.path.join(output_folder, filename)
+
+        # Download with progress
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total_size > 0:
+                    percent = (downloaded / total_size) * 100
+                    if hasattr(self, 'write'):
+                        self.write(f"  Downloading: {percent:.1f}%\r", "cyan")
+
+        if hasattr(self, 'write'):
+            self.write(f"\n", "cyan")
+
+        return output_path
+
+    except Exception as e:
+        print(f"Error downloading video: {e}")
+        return None
 
 import urllib.parse
 
@@ -2494,70 +2934,99 @@ def parse_media_directive(directive_string):
         if parts and parts[0] in directives:
             return directives[parts[0]], ' '.join(parts[1:]), False, original_directive
 
-        # Initialize variables for other directives
-        directive_type = 'url'  # default type
-        media_source = directive_string  # default to full string
+        # Initialize variables
+        directive_type = 'url'
+        media_source = ''
 
-        # Process standard directives
-        for i, part in enumerate(parts):
-            if part.startswith('\\'):
-                if part == '\\play':
-                    playable = True
-                    if i < len(parts) - 1:
-                        remaining_parts = parts[i + 1:]
-                        if remaining_parts[0] == '\\file':
-                            directive_type = 'file'
-                            media_source = ' '.join(remaining_parts[1:])
-                        elif remaining_parts[0] == '\\url':
-                            directive_type = 'url'
-                            media_source = ' '.join(remaining_parts[1:])
-                        else:
-                            media_source = ' '.join(remaining_parts)
-                    break
-                elif part == '\\file':
-                    directive_type = 'file'
-                    if i < len(parts) - 1:
-                        media_source = ' '.join(parts[i + 1:])
-                    break
-                elif part == '\\None':
-                    return 'none', None, False, original_directive
-                elif part == '\\url':
-                    directive_type = 'url'
-                    if i < len(parts) - 1:
-                        media_source = ' '.join(parts[i + 1:])
-                    break
+        # Process sequentially through parts
+        i = 0
+        while i < len(parts):
+            part = parts[i]
+
+            if part == '\\play':
+                playable = True
+                i += 1
+                # Look at the next part after \play
+                if i < len(parts):
+                    next_part = parts[i]
+                    if next_part == '\\file':
+                        directive_type = 'file'
+                        i += 1
+                        # Collect all remaining parts as the file path
+                        if i < len(parts):
+                            media_source = ' '.join(parts[i:])
+                        break
+                    elif next_part == '\\url':
+                        directive_type = 'url'
+                        i += 1
+                        if i < len(parts):
+                            media_source = ' '.join(parts[i:])
+                        break
+                    else:
+                        # Just a URL or path after \play (no \file or \url)
+                        directive_type = 'url'
+                        media_source = ' '.join(parts[i:])
+                        break
+                break
+
+            elif part == '\\file':
+                directive_type = 'file'
+                i += 1
+                if i < len(parts):
+                    media_source = ' '.join(parts[i:])
+                break
+
+            elif part == '\\url':
+                directive_type = 'url'
+                i += 1
+                if i < len(parts):
+                    media_source = ' '.join(parts[i:])
+                break
+
+            elif part == '\\None':
+                return 'none', None, False, original_directive
+
+            elif part.startswith('\\') and part in directives:
+                # Layout directive without \play prefix
+                return directives[part], ' '.join(parts[i+1:]), False, original_directive
+
+            else:
+                # No directive found - treat as plain URL or path
+                if not media_source:
+                    media_source = part
+                else:
+                    media_source += ' ' + part
+                i += 1
 
         # Clean up media source
-        if media_source and media_source.startswith('\\'):
-            # Remove any leading \ and command name
-            parts = media_source.split(maxsplit=1)
-            if len(parts) > 1:
-                media_source = parts[1]
+        if media_source:
+            # Remove quotes if present
+            media_source = media_source.strip().strip('"').strip("'")
 
-        # Handle special URLs
-        if directive_type == 'url' and media_source.startswith(('http://', 'https://')):
-            # Special handling for known video platforms
-            if any(domain in media_source.lower() for domain in ['youtube.com', 'youtu.be', 'vimeo.com']):
+            # Remove any leading backslashes or commands
+            if media_source.startswith('\\'):
+                parts = media_source.split(maxsplit=1)
+                if len(parts) > 1:
+                    media_source = parts[1]
+
+        # CRITICAL FIX: Detect YouTube URLs and mark as playable AND url
+        if directive_type == 'url' and media_source:
+            media_source_lower = media_source.lower()
+            # Always treat YouTube URLs as playable
+            if any(domain in media_source_lower for domain in ['youtube.com', 'youtu.be']):
                 playable = True
+                print(f"  ℹ Detected YouTube URL: {media_source}")
+                print(f"  📥 Will download video locally for offline use")
 
         # Handle local file paths
-        if directive_type == 'file':
-            # Check if it's a video file
-            if media_source.lower().endswith(('.mp4', '.avi', '.mov', '.webm', '.mkv')):
+        if directive_type == 'file' and media_source:
+            # Check if it's a video file by extension
+            video_extensions = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv', '.wmv')
+            if media_source.lower().endswith(video_extensions):
                 playable = True
+
             # Ensure proper path format
             media_source = media_source.replace('\\', '/')
-            if not media_source.startswith('media_files/') and not media_source.startswith('./'):
-                media_source = f"media_files/{media_source}"
-
-        # Special handling for mosaic directive
-        if directive_type == 'mosaic':
-            # Ensure all image paths are properly formatted
-            images = [img.strip() for img in media_source.split(',')]
-            media_source = ','.join(
-                f"media_files/{img}" if not img.startswith(('media_files/', './')) else img
-                for img in images
-            )
 
         return directive_type, media_source, playable, original_directive
 
@@ -2624,43 +3093,84 @@ def format_url_note(url):
 
 #------------------------------------------------------
 def sanitize_latex_content(content_line):
-    """Sanitize LaTeX content to prevent compilation errors"""
+    """Sanitize LaTeX content to prevent compilation errors while preserving math."""
     if not content_line:
         return ""
 
-    # First, fix common issues
+    # If this is a math expression, preserve it completely without modification
+    # Check for various math patterns
+    is_math = False
+
+    # Inline math
+    if content_line.startswith('$') and content_line.endswith('$'):
+        is_math = True
+    # Display math
+    elif content_line.startswith('$$') and content_line.endswith('$$'):
+        is_math = True
+    elif content_line.startswith('\\[') and content_line.endswith('\\]'):
+        is_math = True
+    # Quote-bracket math
+    elif re.match(r'[\'"]\[.*?[\'"]\]', content_line, re.DOTALL):
+        is_math = True
+    # Math environments
+    elif '\\begin{align' in content_line or '\\begin{equation}' in content_line:
+        is_math = True
+
+    # If it's math, return as-is (preserve everything)
+    if is_math:
+        return content_line
+
+    # For non-math content, only fix brace issues
     content_line = content_line.strip()
 
-    # Fix unbalanced braces - this is CRITICAL
-    open_braces = content_line.count('{')
-    close_braces = content_line.count('}')
+    # Fix unbalanced braces (but preserve math mode)
+    # Don't modify braces inside math mode
+    in_math = False
+    open_braces = 0
+    close_braces = 0
+
+    i = 0
+    while i < len(content_line):
+        char = content_line[i]
+
+        # Track math mode
+        if char == '$' and (i == 0 or content_line[i-1] != '\\'):
+            in_math = not in_math
+            i += 1
+            continue
+        elif char == '\\' and i + 1 < len(content_line) and content_line[i+1] == '[':
+            in_math = True
+            i += 2
+            continue
+        elif char == '\\' and i + 1 < len(content_line) and content_line[i+1] == ']':
+            in_math = False
+            i += 2
+            continue
+
+        if not in_math:
+            if char == '{':
+                open_braces += 1
+            elif char == '}':
+                close_braces += 1
+        i += 1
 
     if open_braces != close_braces:
-        # Count only non-escaped braces
-        import re
-        open_braces = len(re.findall(r'(?<!\\)\{', content_line))
-        close_braces = len(re.findall(r'(?<!\\)\}', content_line))
-
         if open_braces > close_braces:
-            # Add missing closing braces
             content_line += '}' * (open_braces - close_braces)
         elif close_braces > open_braces:
-            # Add missing opening braces
             content_line = '{' * (close_braces - open_braces) + content_line
 
-    # Fix excessive brace nesting
-    content_line = content_line.replace('{{{', '{').replace('}}}', '}')
-    content_line = content_line.replace('{{', '{').replace('}}', '}')
-
-    # Escape problematic characters if not already escaped
-    import re
-    # Only escape if not already escaped and not in math mode
+    # Fix excessive brace nesting (but not in math)
     if '$' not in content_line:
-        # Escape special LaTeX characters
-        special_chars = ['#', '$', '%', '&', '_', '{', '}']
+        content_line = content_line.replace('{{{', '{').replace('}}}', '}')
+        content_line = content_line.replace('{{', '{').replace('}}', '}')
+
+    # Only escape special characters outside math mode
+    if '$' not in content_line and '\\[' not in content_line:
+        special_chars = ['#', '%', '&', '_']
         for char in special_chars:
-            pattern = r'(?<!\\)' + re.escape(char)
-            content_line = re.sub(pattern, '\\' + char, content_line)
+            if char in content_line and f'\\{char}' not in content_line:
+                content_line = content_line.replace(char, f'\\{char}')
 
     return content_line
 
