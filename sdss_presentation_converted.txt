@@ -1,0 +1,1690 @@
+
+\documentclass[aspectratio=169]{beamer}
+
+% Essential packages (core)
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{xstring}
+\usepackage{animate}
+\usepackage{multimedia}
+\usepackage{xifthen}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{grffile}
+\geometry{paperwidth=128mm,paperheight=96mm}
+
+% Load TikZ libraries FIRST
+\usetikzlibrary{positioning}
+\usetikzlibrary{shapes.symbols}
+\usetikzlibrary{shapes.callouts}
+\usetikzlibrary{shapes.multipart}
+\usetikzlibrary{calc}
+\usetikzlibrary{overlay-beamer-styles}
+\usetikzlibrary{shapes.geometric}
+\usetikzlibrary{arrows.meta}
+\usetikzlibrary{backgrounds}
+\usetikzlibrary{fit}
+
+% Define the style for covered text
+\setbeamercovered{dynamic}
+\setbeamerfont{item projected}{size=\small}
+\setbeamercolor{alerted text}{fg=white}
+
+% Extended packages with fallbacks
+\IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
+\IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
+\IfFileExists{pifont.sty}{\usepackage{pifont}}{}
+\IfFileExists{soul.sty}{\usepackage{soul}}{}
+
+% Package configurations
+\pgfplotsset{compat=1.18}
+
+% SIMPLIFIED text effects - use standard LaTeX instead of problematic TikZ
+\newcommand{\shadowtext}[2][2pt]{%
+    \textcolor{white}{\textbf{#2}}%
+}
+
+\newcommand{\glowtext}[2][myblue]{%
+    \textcolor{#1}{\textbf{#2}}%
+}
+
+% Conditional definitions based on package availability
+% CRITICAL: Use ##1 instead of #1 inside \IfFileExists
+\IfFileExists{tcolorbox.sty}{%
+    \newtcolorbox{alertbox}[1][red]{%
+        colback=##1!5!white,
+        colframe=##1!75!black,
+        fonttitle=\bfseries,
+        boxrule=0.5pt,
+        rounded corners
+    }
+
+    \newtcolorbox{infobox}[1][blue]{%
+        enhanced,
+        colback=##1!5!white,
+        colframe=##1!75!black,
+        arc=4mm,
+        boxrule=0.5pt,
+        fonttitle=\bfseries,
+        attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
+        boxed title style={size=small,colback=##1!75!black}
+    }
+}{}
+
+% Define colors
+\definecolor{myred}{RGB}{255,50,50}
+\definecolor{myblue}{RGB}{0,130,255}
+\definecolor{mygreen}{RGB}{0,200,100}
+\definecolor{myyellow}{RGB}{255,210,0}
+\definecolor{myorange}{RGB}{255,130,0}
+\definecolor{mypurple}{RGB}{147,112,219}
+\definecolor{mypink}{RGB}{255,105,180}
+\definecolor{myteal}{RGB}{0,128,128}
+\definecolor{mygray}{RGB}{128,128,128}
+\definecolor{mybrown}{RGB}{139,69,19}
+\definecolor{mycyan}{RGB}{0,255,255}
+
+% Basic highlighting commands
+\newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
+\newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
+\newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
+\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textbf{#1}}}
+\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textbf{#1}}}
+
+% ========== LAYOUT COMMANDS - Check if already defined ==========
+% Split layout: image on left, text on right
+\ifcsname split\endcsname\else
+\newcommand{\split}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.45\textwidth}
+            \begin{center}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{center}
+        \end{column}
+        \begin{column}{0.5\textwidth}
+            #2
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% PIP layout: text on left, small image on right
+\ifcsname pip\endcsname\else
+\newcommand{\pip}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.68\textwidth}
+            #2
+        \end{column}
+        \begin{column}{0.28\textwidth}
+            \vspace{1em}
+            \includegraphics[width=\textwidth,keepaspectratio]{#1}
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% Fullframe layout: image takes entire frame
+\ifcsname ff\endcsname\else
+\newcommand{\ff}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+    \begin{center}
+        \vfill
+        \textcolor{white}{\textbf{Full Frame Image}}
+        \vfill
+    \end{center}
+}
+\fi
+
+% Watermark layout: image as background watermark
+\ifcsname wm\endcsname\else
+\newcommand{\wm}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[opacity=0.15] at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+}
+\fi
+
+% Highlight layout: image with highlighted content overlay
+\ifcsname hl\endcsname\else
+\newcommand{\hl}[2]{%
+    \begin{columns}[T]
+        \begin{column}{0.6\textwidth}
+            \includegraphics[width=\textwidth,keepaspectratio]{#1}
+        \end{column}
+        \begin{column}{0.36\textwidth}
+            \colorbox{yellow!20}{%
+                \begin{minipage}{\textwidth}
+                    #2
+                \end{minipage}%
+            }
+        \end{column}
+    \end{columns}
+}
+\fi
+
+% Background layout: image as background with content overlay
+\ifcsname bg\endcsname\else
+\newcommand{\bg}[1]{%
+    \setbeamertemplate{background}{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[opacity=0.3] at (current page.center) {%
+                \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+}
+\fi
+
+% Top-bottom layout: image at top, content at bottom
+\ifcsname tb\endcsname\else
+\newcommand{\tb}[2]{%
+    \begin{center}
+        \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+    \end{center}
+    \vspace{0.5em}
+    #2
+}
+\fi
+
+% Overlay layout: image with overlaid text blocks
+\ifcsname ol\endcsname\else
+\newcommand{\ol}[1]{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node at (current page.center) {%
+            \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+        };
+    \end{tikzpicture}%
+}
+\fi
+
+% Corner layout: image in corner
+\ifcsname corner\endcsname\else
+\newcommand{\corner}[2]{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node[anchor=south east] at (current page.south east) {%
+            \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+        };
+    \end{tikzpicture}%
+    #2
+}
+\fi
+
+% Mosaic layout: grid of images
+\ifcsname mosaic\endcsname\else
+\newcommand{\mosaic}[2]{%
+    \begingroup
+    \def\mosaic@params{#1}%
+    \def\mosaic@images{#2}%
+    \pgfmathsetmacro{\mosaic@rows}{{\mosaic@params}[0]}%
+    \pgfmathsetmacro{\mosaic@cols}{{\mosaic@params}[2]}%
+    \begin{center}
+    \begin{tabular}{*{\mosaic@cols}{c}}
+    \hline
+    \mosaic@process
+    \hline
+    \end{tabular}
+    \end{center}
+    \endgroup
+}
+
+\def\mosaic@process{%
+    \mosaic@process@helper\mosaic@images,\@empty
+}
+
+\def\mosaic@process@helper#1,#2\@empty{%
+    \ifx\@empty#2\@empty
+        \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
+    \else
+        \includegraphics[width=0.3\textwidth,keepaspectratio]{#1} &
+        \def\mosaic@remaining{#2}%
+        \mosaic@process@next
+    \fi
+}
+
+\def\mosaic@process@next{%
+    \mosaic@process@helper\mosaic@remaining,\@empty
+}
+\fi
+
+% Basic theme setup
+\usetheme{Madrid}
+\usecolortheme{owl}
+
+% Color settings
+\setbeamercolor{normal text}{fg=white}
+\setbeamercolor{structure}{fg=myyellow}
+\setbeamercolor{alerted text}{fg=myorange}
+\setbeamercolor{example text}{fg=mygreen}
+\setbeamercolor{background canvas}{bg=black}
+\setbeamercolor{frametitle}{fg=white,bg=black}
+
+% Notes support
+\usepackage{pgfpages}
+\setbeameroption{show notes on second screen=right}
+\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
+
+% Animated background support
+\newcommand{\anbg}[2][0.2]{%
+    \ifx\@empty#2\@empty
+        % Clear background if empty argument
+        \setbeamertemplate{background}{}
+    \else
+        % Set animated background
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=#1] at (current page.center) {%
+                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
+                };
+            \end{tikzpicture}%
+        }
+    \fi
+}
+
+
+% Progress bar setup
+\makeatletter
+\def\progressbar@progressbar{}
+\newcount\progressbar@tmpcounta
+\newcount\progressbar@tmpcountb
+\newdimen\progressbar@pbht
+\newdimen\progressbar@pbwd
+\newdimen\progressbar@tmpdim
+
+\progressbar@pbwd=\paperwidth
+\progressbar@pbht=2pt
+
+\def\progressbar@progressbar{%
+   \begin{tikzpicture}[very thin]
+       \ifnum\insertframenumber>0
+           \pgfmathparse{\insertframenumber/\inserttotalframenumber}
+           \edef\progress@ratio{\pgfmathresult}
+           \shade[top color=myblue!50,bottom color=myblue]
+               (0pt, 0pt) rectangle (\progress@ratio\progressbar@pbwd, \progressbar@pbht);
+       \fi
+   \end{tikzpicture}%
+}
+
+% Modified frame title template
+\setbeamertemplate{frametitle}{
+   \nointerlineskip
+   \vskip1ex
+   \begin{beamercolorbox}[wd=\paperwidth,ht=4ex,dp=2ex]{frametitle}
+       \begin{minipage}[t]{\dimexpr\paperwidth-4em}
+           \centering
+           \vspace{2pt}
+           \insertframetitle
+           \vspace{2pt}
+       \end{minipage}
+   \end{beamercolorbox}
+   \vskip.5ex
+   \progressbar@progressbar
+}
+\makeatother
+\makeatletter\def\insertshortinstitute{airis4D}\makeatother
+
+% Footline template
+\setbeamertemplate{footline}{%
+ \leavevmode%
+ \hbox{%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+     \usebeamerfont{title in head/foot}\insertshorttitle%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
+     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
+     \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
+   \end{beamercolorbox}}%
+ \vskip0pt%
+}
+
+% Additional settings
+\setbeamersize{text margin left=5pt,text margin right=5pt}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=true]
+% Title setup
+\title{The Sloan Digital Sky Survey}
+\subtitle{SDSS}
+\author{Ninan Sajeeth Philip}
+\institute{\textcolor{mygreen}{Artificial Intelligence Research and Intelligent Systems (airis4D)}}
+\date{\today}
+
+    % Additional packages for special characters and units
+    \usepackage{textcomp}      % For \textmu, \textendash, etc.
+    \usepackage{siunitx}       % For proper units (Ω·cm², etc.)
+    \usepackage{amsmath}       % Enhanced math support
+    \usepackage{amssymb}       % Additional math symbols
+
+    % Configure siunitx for proper formatting
+    \sisetup{
+        per-mode = symbol,
+        output-decimal-marker = {.},
+        group-separator = {,}
+    }
+    \logo{\includegraphics[height=1cm]{/home/nsp/Documents/airis4D/logo.png}}
+
+\begin{document}
+\maketitle
+
+% Title page
+\begin{frame}[plain]
+   \begin{tikzpicture}[overlay,remember picture]
+       % Background gradient
+       \fill[top color=black!90,bottom color=black!70,middle color=myblue!30]
+       (current page.south west) rectangle (current page.north east);
+       % Title with simple text
+       \node[align=center] at (current page.center) {
+           {\Huge\textcolor{myblue}{\textbf{The Sloan Digital Sky Survey}}}
+           \\[1em]{\large\textcolor{myyellow}{SDSS}}
+           \\[2em]
+           {\large\textcolor{mygreen}{Ninan Sajeeth Philip}}
+           \\[0.5em]
+           \textcolor{white}{\small Artificial Intelligence Research and Intelligent Systems (airis4D)}
+           \\[1em]
+           \textcolor{white}{\small \today}
+       };
+   \end{tikzpicture}
+\end{frame}
+
+\title Absorption Lines
+\begin{Content}
+\file media_files/screen_capture_20260407-194736.png
+\textbf{Cause:}
+Cool gas between us and a light source absorbs specific wavelengths.
+\textbf{Examples:}
+\begin{itemize}
+\item Interstellar medium
+\item Galactic halos
+\item  Quasar absorption systems
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title What is a Sky Survey?
+\begin{Content}
+\file media_files/screen_capture_20260412-114137.png
+\begin{block}{Traditional Astronomy}
+Point telescope at \alert{one} star/galaxy → observe → repeat.
+\end{block}
+\begin{block}{Sky Survey Approach}
+Systematically image \alert{entire large regions} of the sky uniformly.
+\end{block}
+\centering
+\vspace{0.2cm}
+\textbf{Analogy:} Individual photos vs. Google Earth
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Goal: A 3D Map of the Universe
+\begin{Content}
+\file media_files/screen_capture_20260412-115908.png
+\centering
+\begin{itemize}
+\item 2D: Position on sky (RA, Dec)
+\item 3D: Add distance via redshift
+\item Result: Cosmic web of galaxies stretching billions of light-years
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Location 1: Apache Point Observatory (New Mexico, USA)
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{enumerate}
+\item Elevation: 2,788 m (9,150 ft)
+\item Dark skies, 200+ clear nights/year
+\item Home of the 2.5m SDSS telescope
+\item Also hosts ARC 3.5m and NMSU 1m
+\end{enumerate}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260408-212220.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+Sample note
+\end{Notes}
+
+
+\title Location 2: Las Campanas Observatory (Chile)
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+{Location 2: Las Campanas Observatory (Chile)}
+\begin{itemize}
+\item Atacama Desert – one of driest places on Earth
+\item DuPont 2.5m and Clay 6.5m telescopes
+\item SDSS-V uses this site for southern sky
+\item Complementary to APO (northern hemisphere)
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260408-224408.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Sloan Telescope: A 2.5m Workhorse
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+{The Sloan Telescope: A 2.5m Workhorse}
+\textbf{Why 2.5 meters?}
+\begin{itemize}
+\item Wide field of view (3 degrees – 6x the Moon!)
+\item Not too large (keeps costs manageable)
+\item Optimized for \alert{survey speed}, not just light gathering
+\end{itemize}
+\alert{Design:} Ritchey-Chrétien with corrective optics
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260408-224746.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The SDSS Camera (Now Retired to the Smithsonian)
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.6\textwidth}
+{The Camera (Now Retired to the Smithsonian)}
+\begin{itemize}
+\item 120 million pixels (30 CCDs)
+\item Each CCD: 2,048 × 2,048 pixels
+\item Weight: 300 kg (660 lbs)
+\item Took first light in 1998
+\item \alert{Retired 2009} – now at National Air and Space Museum
+\end{itemize}
+\column{0.4\textwidth}
+\file media_files/screen_capture_20260408-225407.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Scale of the Data in SDSS Survey
+\begin{Content}
+\file media_files/screen_capture_20260409-002324.png
+\centering
+{Scale of the Data}
+\begin{itemize}
+\item 14,000+ square degrees covered (one-third of the entire celestial sphere)
+\item Equivalent to \alert{10,000 full moons}
+\item Over 500 million objects cataloged
+\item $>$ 100 TB of raw and processed data
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Public Access: The Open Data Philosophy
+\begin{Content}
+\None
+\begin{block}{SDSS Policy}
+All data are \alert{immediately public} – no proprietary period.
+\begin{itemize}
+\item 1990s: Radical idea – most telescopes had 1-2 year proprietary periods
+\item Today: Standard practice (LSST, Euclid follow this model)
+\item Result: 10,000+ papers from researchers worldwide, including students and amateurs
+\end{itemize}
+\centering
+\vspace{0.3cm}
+\url{www.sdss.org}
+\end{block}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Beyond the Human Eye
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\alert{Human vision}: 400–700 nm (violet to red)
+\vspace{0.3cm}
+SDSS sees: \textbf{300–1100 nm}
+\begin{itemize}
+\item Ultraviolet (UV)
+\item Optical
+\item Near-infrared (NIR)
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260409-005422.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The SDSS 5 Filters: u, g, r, i, z
+\begin{Content}
+\None
+\file media_files/screen_capture_20260409-005933.png
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Filter} & \textbf{Name} & \textbf{$\lambda$ (nm)} \\ \hline
+u & Ultraviolet & 355 \\ \hline
+g & Green/blue & 477 \\ \hline
+r & Red & 623 \\ \hline
+i & Near-IR & 762 \\ \hline
+z & Near-IR & 913 \\ \hline
+\end{tabular}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title SDSS Colour Images
+\begin{Content}
+\file media_files/screen_capture_20260409-011133.png
+\textbf{Creating Color Images}
+-Take separate exposures through g, r, i filters
+-Assign:
+\begin{itemize}
+\item \textcolor{blue}{Blue channel → g filter}
+\item \textcolor{green}{Green channel → r filter}
+\item \textcolor{red}{Red channel → i filter}
+\item Combine into single RGB image
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The SDSS Spectrograph
+\begin{Content}
+\file media_files/screen_capture_20260412-121242.png
+SDSS spectroscopy uses 180 $\mu$
+m diameter core, UV-enhanced, Polymicro FHP all-silica optical fibers with a hard polyimide buffer, usually 2m in length.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Concept of Redshift (z)
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+{Stars vs. Galaxies: How to Tell Them Apart}
+\textbf{Stars:}
+\begin{itemize}
+\item Point sources (even at high magnification)
+\item Diffraction spikes (bright stars)
+\item Sharp, single pixel-like profile
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260409-012220.png
+\end{columns}
+\vspace{0.5cm}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Galaxies:}
+\begin{itemize}
+\item Extended "fuzzy" blobs
+\item Smooth light distribution
+\item May show spiral arms or elliptical shape
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260409-012616.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Star Colors: Temperature Indicators
+\begin{Content}
+\file media_files/screen_capture_20260409-013803.png
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{\tiny{Color}} & \textbf{\tiny{Temp}} & \textbf{\tiny{Example}} \\ \hline
+\tiny{Blue} & \tiny{Hot (30,000 K)} & \tiny{Rigel }\\ \hline
+\tiny{White/yellow} & \tiny{Warm (5,500 K)} & \tiny{Sun} \\ \hline
+\tiny{Red} & \tiny{Cool (3,000 K)} & \tiny{Betelgeuse} \\ \hline
+\end{tabular}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Binary Stars
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.33\textwidth}
+{Galaxy Diversity}
+\textbf{Spirals}
+\file media_files/screen_capture_20260409-093041.png
+Young stars, blue color
+\column{0.33\textwidth}
+\textbf{Ellipticals}
+\file media_files/screen_capture_20260409-093359.png
+Old stars, red color
+\column{0.33\textwidth}
+\textbf{Irregulars}
+\file media_files/screen_capture_20260409-093543.png
+Chaotic, star-forming
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Mapping the Cosmic Web
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item Quasar = Quasi-stellar radio source
+\item Extremely bright centers of distant galaxies
+\item Powered by supermassive black holes (millions to billions solar masses)
+\item Outshines entire host galaxy
+\item Look like stars, but with \alert{huge redshifts}
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260409-092230.png
+\tiny{ ESA-Webb NIRCam image of Quasar SDSS J0100+2802 and other distant galaxies of various types.}
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Citizen Science -  Galaxy Zoo
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Citizen science discovery (2007):}
+\begin{itemize}
+\item Hanny van Arkel (Dutch school teacher)
+\item Classifying galaxies on Galaxy Zoo
+\item Found a "green blob" near galaxy IC 2497
+\item Turned out to be a \alert{light echo} from a quasar that faded
+\end{itemize}
+\textbf{Lesson:} Anyone can discover something new!
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260409-095833.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title "Stoplights" in SDSS
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+{Asteroids \& Satellites: "Stoplights" in SDSS}
+Moving objects appear as \textbf{trails} with color separations:
+\begin{itemize}
+\item Red, green, blue streaks (from g/r/i filters taken minutes apart)
+\item Asteroids (main belt, near-Earth)
+\item Satellites (artificial)
+\end{itemize}
+Asteroids are primarily found in a vast, donut-shaped ring located between the orbits of Mars and Jupiter, known as the Main Asteroid Belt.
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260409-102855.png
+\file media_files/screen_capture_20260409-100421.png
+\tiny{https://www.forbes.com/sites/brucedorminey/2024/04/11/mass-of-early-main-asteroid-belt-was-shockingly-small-says-new-paper/}
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Imaging Artifacts
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Common imaging artifacts:}
+\begin{itemize}
+\item Diffraction spikes: Cross-shaped patterns around bright stars (from telescope spider vanes)
+\item Saturation: Overexposed cores of bright stars bleed charge
+\item Cosmic rays: Random bright pixels from high-energy particles
+\item CCD defects: Dead columns, hot pixels
+\end{itemize}
+\column{0.5\textwidth}
+\mosaic{2,2}{screen_capture_20260409-104916.png, media_files/screen_capture_20260409-105045.png, media_files/screen_capture_20260409-105146.png, media_files/screen_capture_20260409-105224.png}
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Spectroscopy
+\begin{Content}
+\file media_files/screen_capture_20260409-104424.png
+\centering
+\begin{block}{Key idea}
+Spread light into its component wavelengths – like a rainbow or barcode.
+\end{block}
+\begin{itemize}
+\item Every element has unique spectral lines
+\item Tells us: composition, temperature, velocity, distance
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title SDSS Optical Fibers
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{How it works:}
+\begin{enumerate}
+\item Light enters through optical fiber
+\item Collimator makes beams parallel
+\item Diffraction grating spreads by wavelength
+\item CCD records spectrum
+\end{enumerate}
+\column{0.5\textwidth}
+\file media_files/manga_v3.jpg
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Chemical Fingerprints in Astronomy
+\begin{Content}
+\file media_files/content_ElementSignatures.jpg
+\centering
+{Chemical Fingerprints}
+\textbf{Key elements in astronomy:}
+\begin{itemize}
+\item \textcolor{red}{Hydrogen (H$\alpha$):} 656.3 nm – most abundant
+\item Helium: 587.6 nm – in hot stars
+\item Oxygen [O III]: 500.7 nm – in nebulae
+\item Calcium (Ca H\&K): 393, 397 nm – in cool stars
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Concept of Redshift (z)
+\begin{Content}
+\None
+\begin{columns}
+\column{0.5\textwidth}
+\mosaic{2,2}{media_files/doppler.png,media_files/HRshift.png,media_files/Redshift.svg.png, media_files/screen_capture_20260405-212737.png}
+\column{0.5\textwidth}
+\textbf{Redshift formula}
+$z = \frac{\lambda_{\text{observed}} - \lambda_{\text{rest}}}{\lambda_{\text{rest}}}$
+\begin{itemize}
+\item Universe expands → stretches light to longer wavelengths
+\item \alert{Higher z = farther away = earlier universe}
+\item SDSS measures z for millions of objects
+\end{itemize}
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Determining Distance from Redshift
+\begin{Content}
+\None
+\textbf{Expansion Formula}
+\begin{columns}
+\column{0.2\textwidth}
+\[
+\begin{array}{l}
+v = H_0 \times d\\
+z \approx \frac{v}{c} \quad \text{(for small z)}
+\end{array}
+ \]
+% \column{0.2\textwidth}
+% \file media_files/Redshift.svg.png
+\column{0.5\textwidth}
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Redshift (z)} & \textbf{Distance} & \textbf{Lookback time} \\ \hline
+0.01 & 140 Mly & 140 million years \\ \hline
+0.1 & 1.3 Bly & 1.2 billion years \\ \hline
+1.0 & 7.7 Bly & 7.7 billion years \\ \hline
+5.0 & 12.5 Bly & 12.6 billion years \\ \hline
+\end{tabular}
+\end{columns}
+% \begin{tabular}{|c|c|c|}
+% \hline
+% \textbf{Redshift (z)} & \textbf{Distance} & \textbf{Lookback time} \\ \hline
+% 0.01 & 140 Mly & 140 million years \\ \hline
+% 0.1 & 1.3 Bly & 1.2 billion years \\ \hline
+% 1.0 & 7.7 Bly & 7.7 billion years \\ \hline
+% 5.0 & 12.5 Bly & 12.6 billion years \\ \hline
+% \end{tabular}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Absorption Lines
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Cause:}
+Cool gas between us and a light source absorbs specific wavelengths.
+\textbf{Examples:}
+\begin{itemize}
+\item Interstellar medium
+\item Galactic halos
+\item Quasar absorption systems
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/OSC_Astro_17_04_Pressure.jpg
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Emission Lines
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Cause:}
+Hot, ionized gas emits light at specific wavelengths.
+\textbf{Examples:}
+\begin{itemize}
+\item Star-forming regions (H II regions)
+\item Planetary nebulae
+\item Active galactic nuclei
+\end{itemize}
+\column{0.5\textwidth}
+\mosaic{2,1}{media_files/Emission_spectrum-Fe.png, media_files/Emission_spectrum-H.svg.png}
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Quasar Spectra
+\begin{Content}
+\file media_files/screen_capture_20260424-004009.png
+\centering
+{Quasar Spectra}
+\textbf{Features:}
+\begin{itemize}
+\item \alert{Broad emission lines} (10,000 km/s width) from gas near black hole
+\item Lyman $\alpha$ forest (many absorption lines from intervening galaxies)
+\item High redshift (SDSS quasars up to z $\approx$ 7)
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Binary Stars
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Spectroscopic binaries:}
+\begin{itemize}
+\item Two stars orbiting each other
+\item Spectral lines shift back and forth (Doppler effect)
+\item Measure orbital period, masses
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260424-190640.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Mapping the Cosmic Web
+\begin{Content}
+\file media_files/screen_capture_20260405-212737.png
+\centering
+{Mapping the Cosmic Web}
+\begin{itemize}
+\item Each dot $\approx$ one galaxy
+\item Redshift gives distance
+\item Result: Filaments, voids, clusters
+\item SDSS mapped over \alert{2 million galaxies}
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Challenge: 1,000 Spectra at Once
+\begin{Content}
+\file media_files/screen_capture_20260424-215723.png
+\begin{block}{The problem}
+{The Challenge: 1,000 Spectra at Once}
+Traditional spectrographs take \alert{one spectrum at a time}. At 1 hour per object, 1 million galaxies would take 100+ years!
+\end{block}
+\begin{block}{SDSS solution}
+\alert{Multi-object fiber spectroscopy} – 1,000 objects simultaneously.
+\end{block}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Solution: Aluminum "Plug Plates"
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item Each plate: 0.8 m diameter (3x the Moon's apparent size)
+\item Custom-drilled for each field
+\item Holds 300 to1,000 optical fibers
+\item Each fiber positions on a specific galaxy/star
+\end{itemize}
+\column{0.5\textwidth}
+\mosaic{2,1}{media_files/screen_capture_20260424-220253.png, media_files/screen_capture_20260424-220502.png}
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Anatomy of a Plate
+\begin{Content}
+\file media_files/screen_capture_20260424-221305.png
+\begin{itemize}
+\item \textcolor{red}{Red circles:} Science fibers (galaxies, quasars)
+\item \textcolor{blue}{Blue circles:} Sky fibers (measure background)
+\item \textcolor{green}{Green circles:} Guide fibers (telescope pointing)
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Plate Lab - University of Washington
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item Where plates are designed and drilled
+\item Automated drilling machine with \alert{micron precision}
+\item Each hole position calculated from target coordinates
+\item 3-4 plates produced per day during peak SDSS-I/II
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260424-222657.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Drilling Precision
+\begin{Content}
+\play \url https://www.youtube.com/watch?v=iYyO7pGaJNw
+\begin{block}{Requirements}
+{Drilling Precision}
+- Fiber must land exactly on a galaxy (sub-arcsecond accuracy)
+- Holes positioned to \alert{$< $50 microns} (thickness of a human hair)
+\end{block}
+\centering
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Manual Labor: Fiber Plugging
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Technicians' work:}
+\begin{itemize}
+\item Each fiber is hand-plugged into the plate
+\item Takes 2-4 hours per plate
+\item Fibers color-coded by length
+\item Over \alert{3,000 plates} made in SDSS history
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260425-003549.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Fiber Bundles
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item Each fiber: 200 microns core diameter
+\item Bundled into cables
+\item Light travels from plate to spectrographs (located on telescope)
+\item 2 spectrographs: blue and red channels
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260425-003844.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Cartridges: Swapping Plates
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item Plates mounted in \alert{cartridges}
+\item Cartridge lifted by crane onto telescope
+\item Night operations: observe multiple fields by changing cartridges
+\item Each cartridge has its own fiber bundle
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260425-004851.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Calibration Holes
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Purpose:}
+\begin{itemize}
+\item Keep telescope perfectly pointed
+\item Guide fibers connected to camera
+\item Telescope adjusts in real-time
+\item Accuracy: $<$ 0.1 arcseconds
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260425-010251.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Plate Retirement: From Science to Art
+\begin{Content}
+\None
+\begin{itemize}
+\item Used plates become historical artifacts
+\item Some displayed in museums (Smithsonian, Exploratorium)
+\item Others repurposed as \alert{art} – laser-cut patterns, sculptures
+\item Symbol of an era of manual-precision astronomy
+\end{itemize}
+\centering
+\file media_files/screen_capture_20260425-010612.png
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Introduction to SkyServer
+\begin{Content}
+\None
+\begin{block}{What is SkyServer?}
+Web-based portal to SDSS data – \alert{no software installation required}
+\centering
+\Large \url{skyserver.sdss.org}
+\end{block}
+\vspace{0.3cm}
+\textbf{Features:}
+\begin{itemize}
+\item Navigate (interactive sky map)
+\item Object Explorer (details of any object)
+\item SQL Search (programmatic queries)
+\item CasJobs (batch processing)
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Introduction to SkyServer
+\begin{Content}
+\None
+\file media_files/screen_capture_20260425-011307.png
+\end{Content}
+
+\begin{Notes}
+% No notes for this slide
+\end{Notes}
+
+
+\title Introduction to SkyServer
+\begin{Content}
+\None
+\file media_files/screen_capture_20260425-011726.png
+\end{Content}
+
+\begin{Notes}
+% No notes for this slide
+\end{Notes}
+
+
+\title Introduction to SkyServer
+\begin{Content}
+\None
+\file media_files/screen_capture_20260425-012106.png
+\end{Content}
+
+\begin{Notes}
+% No notes for this slide
+\end{Notes}
+
+
+\title The Navigate Tool
+\begin{Content}
+\None
+\centering
+\file media_files/screen_capture_20260425-010926.png
+Your virtual telescope – zoom, pan, explore any part of the SDSS footprint.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title RA and Dec: Sky Coordinates
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\textbf{Right Ascension (RA):}
+\begin{itemize}
+\item Celestial "longitude"
+\item Units: hours, minutes, seconds (0–24h)
+\end{itemize}
+\textbf{Declination (Dec):}
+\begin{itemize}
+\item Celestial "latitude"
+\item Units: degrees, arcminutes ( -90° to +90°)
+\end{itemize}
+\column{0.5\textwidth}
+\file media_files/screen_capture_20260425-010926.png
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Finding Objects by Name
+\begin{Content}
+\None
+\textbf{Searchable names:}
+\begin{itemize}
+\item Messier objects (M31, M57)
+\item NGC/IC numbers
+\item SDSS ObjIDs
+\item Common star names (Sirius, Betelgeuse)
+\end{itemize}
+\alert{Caveat:} Some bright stars (e.g., Polaris) are saturated or avoided – not all targets are in SDSS footprint.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Object Explorer
+\begin{Content}
+\None
+\file media_files/screen_capture_20260425-012351.png
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Zooming \& Panning
+\begin{Content}
+\None
+\file media_files/screen_capture_20260425-012617.png
+\begin{itemize}
+\item Zoom: Use scroll wheel or zoom slider
+\item Pan: Click and drag
+\item Center: Click on any object to center
+\item Layers: Toggle image, contours, labels
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Using the Scavenger Hunt List
+\begin{Content}
+\None
+\textbf{Sample targets for practice:}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Object} & \textbf{RA (J2000)} & \textbf{Dec (J2000)}\\
+\hline
+Edge-on spiral & 197.123 & 27.456\\
+\hline
+Merger & 187.654 & 62.345\\
+\hline
+Quasar & 210.987 & 13.210\\
+\hline
+Globular cluster & 253.456 & -24.567\\
+\hline
+\end{tabular}\\
+\textbf{Task:} Find each object, classify it, record its magnitude.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Taking Notes
+\begin{Content}
+\file media_files/screen_capture_20260425-013130.png
+\begin{block}{"Add to Notes" feature}
+{Taking Notes}
+\begin{itemize}
+\item Save objects you find interesting
+\item Add personal comments
+\item Export notes for reports
+\end{itemize}
+\end{block}
+\textbf{Use case:} Build a personal catalog of favorite galaxies for a class project.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Visual Checklists
+\begin{Content}
+\file media_files/screen_capture_20260425-022621.png
+\textbf{What to look for:}
+{Visual Checklists}
+\begin{itemize}
+\item \textcolor{green}{Galaxy mergers} – tidal tails, disturbed shapes
+\item \textcolor{green}{Gravitational lenses} – Einstein rings, arcs
+\item \textcolor{green}{Galaxy clusters} – many galaxies in one field
+\item \textcolor{green}{Planetary nebulae} – small, round, blue-green
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Common Pitfalls
+\begin{Content}
+\None
+\begin{alertblock}{Mistakes to avoid}
+\begin{itemize}
+\item \alert{Misidentifying saturated stars as galaxies} – check the profile
+\item \alert{Forgetting redshift} – a faint galaxy might be far, not small
+\item \alert{Confusing cosmic rays with real objects} – use multiple filters
+\end{itemize}
+\end{alertblock}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title SDSS-IV to SDSS-V: What's Changing?
+\begin{Content}
+\None
+\textbf{SDSS-IV (2014-2020):}
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item Plug plates (manual fibers)
+\item MaNGA, eBOSS, APOGEE-2
+\end{itemize}
+\column{0.5\textwidth}
+\textbf{SDSS-V (2020-2025+):}
+\begin{itemize}
+\item \alert{Robotic fiber positioners}
+\item 500 robots, each moves independently
+\item Reconfigures in minutes (not hours)
+\end{itemize}
+\end{columns}
+\centering
+\file example-image
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title The Milky Way Mapper
+\begin{Content}
+\None
+\textbf{Goal:} Understand our home galaxy's history
+\begin{itemize}
+\item Target: 6 million stars across the Milky Way
+\item Spectroscopy: APOGEE (near-IR) and optical
+\item Science: Merger events, spiral arm structure, stellar ages
+\end{itemize}
+\centering
+\file example-image
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Black Hole Mapper
+\begin{Content}
+\None
+\textbf{Goal:} Track supermassive black hole growth
+\begin{itemize}
+\item Target: 1 million active galactic nuclei
+\item Multi-epoch spectroscopy to measure black hole masses
+\item Science: How do black holes and galaxies co-evolve?
+\end{itemize}
+\centering
+\file example-image
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Local Volume Mapper
+\begin{Content}
+\None
+\textbf{Goal:} Map interstellar gas in nearby galaxies
+\begin{itemize}
+\item \alert{Integral field spectroscopy} – every pixel gets a spectrum
+\item Target: Milky Way and 100+ nearby galaxies
+\item Science: Star formation feedback, gas flows
+\end{itemize}
+\centering
+\file example-image
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Voyagers: K-12 Educational Activities
+\begin{Content}
+\None
+\url{voyagers.sdss.org}
+Dedicated platform for teachers and students
+\textbf{Available activities:}
+\begin{itemize}
+\item "Color of the Stars" – blackbody radiation
+\item "Hubble's Law" – measuring expansion
+\item "Galaxy Classification" – citizen science style
+\item "Finding Quasars" – using spectra
+\end{itemize}
+All include teacher guides, student worksheets, and answer keys.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Galaxy Zoo
+\begin{Content}
+\None
+\begin{columns}[T]
+\column{0.5\textwidth}
+\begin{itemize}
+\item \alert{Citizen science} launched in 2007
+\item Over 1 million classifications from 150,000 volunteers
+\item Discovered: Hanny's Voorwerp, Green Peas, ring galaxies
+\item Now part of Zooniverse platform
+\end{itemize}
+\column{0.5\textwidth}
+\file example-image
+\end{columns}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title SQL Search: Intro to Queries
+\begin{Content}
+\None
+\begin{block}{Example query – find 100 bright galaxies}
+SELECT TOP 100\\
+objID, ra, dec,\\
+g, r, i\\
+FROM Galaxy\\
+WHERE g < 18\\
+AND type = 3\\
+ORDER BY g\\
+\end{block}
+\textbf{Learn SQL:} SkyServer provides tutorial and practice queries.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Cross-Matching with Other Surveys
+\begin{Content}
+\None
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Survey} & \textbf{Wavelength} & \textbf{Use with SDSS} \\ \hline
+GAIA & Optical (astrometry) & Proper motions, distances \\ \hline
+WISE & Infrared & Dust-obscured galaxies \\ \hline
+ROSAT & X-ray & AGN, clusters \\ \hline
+GALEX & UV & Star formation \\ \hline
+ALMA & Radio (mm) & Cold gas \\ \hline
+\end{tabular}
+\vspace{0.3cm}
+\centering
+SDSS coordinates enable matching with \alert{any} survey.
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Community Support
+\begin{Content}
+\None
+\textbf{Where to get help:}
+\begin{itemize}
+\item SDSS Helpdesk: \url{help.sdss.org}
+\item User forums: Ask questions, share projects
+\item SDSS Blog: News and tutorials
+\item Summer schools: Annual SDSS data science workshop
+\end{itemize}
+\centering
+\file example-image
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Conclusion: Your Journey Begins
+\begin{Content}
+\None
+\centering
+\Large \textcolor{blue}{You now have the tools to explore the universe.}\\
+\vspace{0.5cm}
+\textbf{Next steps:}
+\begin{enumerate}
+\item Go to \url{skyserver.sdss.org}
+\item Pick a coordinate – any coordinate
+\item Find something no one has looked at before
+\item Ask a question – and use SDSS data to answer it
+\end{enumerate}
+\vspace{0.5cm}
+\centering
+\alert{The universe is waiting.}
+\end{Content}
+
+\begin{Notes}
+No notes for this slide
+\end{Notes}
+
+
+\title Thank You \& Q\&A
+\begin{Content}
+\None
+% \Huge Questions? \\
+% \centering
+% {Thank You \& Q\&A}
+% \vspace{1cm}
+% \normalsize
+\textbf{Resources:}
+\begin{itemize}
+\item \url{www.sdss.org}
+\item \url{skyserver.sdss.org}
+\item \url{voyagers.sdss.org}
+\item \url{github.com/sdss}
+\end{itemize}
+\end{Content}
+
+\begin{Notes}
+% % No notes for this slide
+\end{Notes}
+\end{document}
