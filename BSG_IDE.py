@@ -4719,10 +4719,16 @@ class ColorPickerDialog(ctk.CTkToplevel):
 
 #------------------------------------------------------------------------------------------
 class PreambleEditor(ctk.CTkToplevel):
-    def __init__(self, parent, current_preamble=None):
+    """Preamble editor with custom preamble support - ALL FEATURES PRESERVED AND ENHANCED"""
+
+    def __init__(self, parent, current_preamble=None, is_custom=False):
         super().__init__(parent)
         self.title("Preamble Editor")
         self.geometry("800x600")
+
+        # Store whether this is a custom preamble
+        self.is_custom = is_custom
+        self.preamble = None
 
         # Store the default preamble
         self.default_preamble = get_beamer_preamble(
@@ -4732,13 +4738,19 @@ class PreambleEditor(ctk.CTkToplevel):
         # Create UI
         self.create_editor()
         self.create_toolbar()
+        self.create_status_bar()
 
         # Load current preamble if provided, else load default
         if current_preamble:
             self.editor.delete('1.0', 'end')
             self.editor.insert('1.0', current_preamble)
+            self.is_custom = True if current_preamble != self.default_preamble else False
         else:
             self.reset_to_default()
+
+        # Update status
+        self.modified = False
+        self.update_status()
 
     def create_editor(self):
         """Create the preamble text editor"""
@@ -4757,12 +4769,15 @@ class PreambleEditor(ctk.CTkToplevel):
         # Add syntax highlighting
         self.syntax_highlighter = BeamerSyntaxHighlighter(self.editor)
 
+        # Bind key events for status update
+        self.editor.bind('<KeyRelease>', self.on_text_change)
+
     def create_toolbar(self):
         """Create toolbar with editor controls"""
         toolbar = ctk.CTkFrame(self)
         toolbar.pack(fill="x", padx=10, pady=5)
 
-        # Create buttons
+        # Create buttons - ALL ORIGINAL BUTTONS PRESERVED
         buttons = [
             ("Reset to Default", self.reset_to_default),
             ("Save Custom", self.save_custom),
@@ -4779,16 +4794,70 @@ class PreambleEditor(ctk.CTkToplevel):
                 width=100
             ).pack(side="left", padx=5)
 
+    def create_status_bar(self):
+        """Create status bar at bottom - NEW FEATURE"""
+        self.status_frame = ctk.CTkFrame(self)
+        self.status_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.status_label = ctk.CTkLabel(
+            self.status_frame,
+            text="",
+            font=("Arial", 10),
+            anchor="w"
+        )
+        self.status_label.pack(side="left", padx=5, fill="x", expand=True)
+
+        # Modified indicator
+        self.modified_label = ctk.CTkLabel(
+            self.status_frame,
+            text="",
+            font=("Arial", 10),
+            text_color="#FFB86C"
+        )
+        self.modified_label.pack(side="right", padx=5)
+
+        self.modified = False
+        self.update_status()
+
+    def update_status(self):
+        """Update status bar - NEW FEATURE"""
+        status = "Custom Preamble" if self.is_custom else "Generated Preamble"
+        color = "#4ECDC4" if self.is_custom else "#FFB86C"
+        modified_text = " [Modified]" if self.modified else ""
+
+        self.status_label.configure(
+            text=f"Status: {status}{modified_text} - Edit and click Apply to save",
+            text_color=color
+        )
+
+        if self.modified:
+            self.modified_label.configure(text="✏️ Modified")
+        else:
+            self.modified_label.configure(text="")
+
+    def on_text_change(self, event=None):
+        """Handle text changes - NEW FEATURE"""
+        if not self.modified:
+            self.modified = True
+            self.update_status()
+
     def reset_to_default(self):
-        """Reset preamble to default"""
-        if messagebox.askyesno("Reset Preamble",
-                             "Are you sure you want to reset to default preamble?"):
-            self.editor.delete('1.0', 'end')
-            self.editor.insert('1.0', self.default_preamble)
-            self.syntax_highlighter.highlight()
+        """Reset preamble to default - ENHANCED with unsaved changes warning"""
+        if self.modified:
+            if not messagebox.askyesno("Reset Preamble",
+                                       "You have unsaved changes. Are you sure you want to reset to default?"):
+                return
+
+        self.editor.delete('1.0', 'end')
+        self.editor.insert('1.0', self.default_preamble)
+        self.syntax_highlighter.highlight()
+        self.modified = False
+        self.is_custom = False
+        self.update_status()
+        self.write("Reset to default preamble\n", "cyan")
 
     def save_custom(self):
-        """Save current preamble as custom template"""
+        """Save current preamble as custom template - PRESERVED"""
         file_path = filedialog.asksaveasfilename(
             defaultextension=".tex",
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
@@ -4797,14 +4866,21 @@ class PreambleEditor(ctk.CTkToplevel):
 
         if file_path:
             try:
+                content = self.editor.get('1.0', 'end-1c')
                 with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(self.editor.get('1.0', 'end-1c'))
+                    f.write(content)
                 messagebox.showinfo("Success", "Custom preamble saved successfully!")
+                self.write(f"✓ Custom preamble saved to: {file_path}\n", "green")
             except Exception as e:
                 messagebox.showerror("Error", f"Error saving preamble: {str(e)}")
 
     def load_custom(self):
-        """Load custom preamble template"""
+        """Load custom preamble template - ENHANCED with unsaved changes warning"""
+        if self.modified:
+            if not messagebox.askyesno("Load Custom",
+                                       "You have unsaved changes. Are you sure you want to load a different preamble?"):
+                return
+
         file_path = filedialog.askopenfilename(
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
             title="Load Custom Preamble"
@@ -4817,25 +4893,64 @@ class PreambleEditor(ctk.CTkToplevel):
                     self.editor.delete('1.0', 'end')
                     self.editor.insert('1.0', content)
                     self.syntax_highlighter.highlight()
+                    self.modified = True
+                    self.is_custom = True
+                    self.update_status()
+                    self.write(f"✓ Loaded custom preamble from: {file_path}\n", "green")
             except Exception as e:
                 messagebox.showerror("Error", f"Error loading preamble: {str(e)}")
 
     def apply_changes(self):
-        """Apply preamble changes and close editor"""
+        """Apply preamble changes and close editor - ENHANCED with empty check"""
         self.preamble = self.editor.get('1.0', 'end-1c')
+
+        # Check if the preamble is valid
+        if not self.preamble.strip():
+            if not messagebox.askyesno("Empty Preamble",
+                                       "The preamble is empty. This may cause compilation errors.\n\n"
+                                       "Do you want to continue anyway?"):
+                return
+
+        # Mark as custom if different from default
+        if self.preamble != self.default_preamble:
+            self.is_custom = True
+        else:
+            self.is_custom = False
+
+        self.write(f"✓ Preamble applied ({'Custom' if self.is_custom else 'Default'})\n", "green")
         self.destroy()
 
     def cancel_changes(self):
-        """Cancel changes and close editor"""
-        self.preamble = None
-        self.destroy()
+        """Cancel changes and close editor - ENHANCED with unsaved changes warning"""
+        if self.modified:
+            if messagebox.askyesno("Cancel Changes",
+                                   "You have unsaved changes. Are you sure you want to cancel?"):
+                self.preamble = None
+                self.destroy()
+        else:
+            self.preamble = None
+            self.destroy()
+
+    def write(self, text, color="white"):
+        """Write to parent's terminal if available - NEW FEATURE"""
+        if hasattr(self.master, 'write'):
+            self.master.write(text, color)
+        else:
+            print(text)
 
     @staticmethod
     def edit_preamble(parent, current_preamble=None):
-        """Static method to handle preamble editing"""
-        editor = PreambleEditor(parent, current_preamble)
+        """Static method to handle preamble editing - PRESERVED"""
+        # Check if current preamble is custom
+        is_custom = False
+        if hasattr(parent, 'custom_preamble') and parent.custom_preamble:
+            if current_preamble and current_preamble == parent.custom_preamble:
+                is_custom = True
+
+        editor = PreambleEditor(parent, current_preamble, is_custom)
         editor.wait_window()
         return editor.preamble if hasattr(editor, 'preamble') else None
+
 #------------------------------------------------------------------------------------------
 class NotesToggleFrame(ctk.CTkFrame):
     """Frame containing notes display options with tooltips"""
@@ -9511,7 +9626,7 @@ class BeamerSlideEditor(ctk.CTk):
             return
 
         try:
-            # Convert TeX to simple text format with error tracking
+            # Use the improved converter
             result = convert_beamer_tex_to_simple_text(tex_file)
 
             if isinstance(result, tuple):
@@ -9545,8 +9660,8 @@ class BeamerSlideEditor(ctk.CTk):
 
             # Ask if user wants to generate PDF
             if messagebox.askyesno("Success",
-                                 "TeX file converted successfully!\n\n"
-                                 "Would you like to generate PDF now?"):
+                                 f"TeX file converted successfully!\n\n"
+                                 f"Would you like to generate PDF now?"):
                 self.generate_pdf()
 
         except Exception as e:
@@ -14997,10 +15112,124 @@ Created by {self.__author__}
     def generate_tex_with_preserved_masking(self):
         """Generate TeX content - remove masked content, preserve original styling and layout directives"""
         try:
-            # Get the original custom preamble
+            # ========== EXTRACT PREAMBLE DEFINITIONS FROM CURRENT FILE ==========
+            extracted_colors = {}
+            extracted_packages = set()
+            missing_packages = set()
+
+            # If we have a current file, read its content to extract definitions
+            if self.current_file and os.path.exists(self.current_file):
+                try:
+                    with open(self.current_file, 'r', encoding='utf-8') as f:
+                        file_content = f.read()
+
+                    # Extract color definitions
+                    import re
+                    definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+                    for name, model, value in re.findall(definecolor_pattern, file_content):
+                        extracted_colors[name.strip()] = (model.strip(), value.strip())
+
+                    # Extract colorlet definitions
+                    colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+                    for name, source in re.findall(colorlet_pattern, file_content):
+                        extracted_colors[name.strip()] = ('colorlet', source.strip())
+
+                    # Extract packages
+                    usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+                    for options, pkg_list in re.findall(usepackage_pattern, file_content):
+                        for pkg in pkg_list.split(','):
+                            extracted_packages.add(pkg.strip())
+
+                    # Detect missing packages from content
+                    missing_packages = self.detect_missing_packages_from_content(file_content)
+
+                except Exception as e:
+                    self.write(f"  ⚠ Could not extract preamble definitions: {str(e)}\n", "yellow")
+
+            # Also scan slides for additional patterns
+            for slide in self.slides:
+                slide_content = '\n'.join(slide.get('content', []))
+                slide_notes = '\n'.join(slide.get('notes', []))
+                combined = slide_content + slide_notes
+                missing_packages.update(self.detect_missing_packages_from_content(combined))
+
+            # Get the original custom preamble (checks for user custom preamble first)
             full_tex_content = self.get_custom_preamble()
 
+            # ========== INJECT EXTRACTED DEFINITIONS ==========
+            preamble_injection = []
+            preamble_injection.append("% ====== PREAMBLE DEFINITIONS (Auto-extracted) ======")
+
+            # Add missing packages
+            if missing_packages:
+                preamble_injection.append("% Required packages")
+                # Filter out packages that are already in the preamble
+                already_present = set()
+                for pkg in ['xcolor', 'graphicx', 'amsmath', 'amssymb', 'tikz', 'hyperref']:
+                    if f'\\usepackage{{{pkg}}}' in full_tex_content:
+                        already_present.add(pkg)
+
+                for pkg in sorted(missing_packages):
+                    if pkg not in already_present and f'\\usepackage{{{pkg}}}' not in full_tex_content:
+                        preamble_injection.append(f"\\usepackage{{{pkg}}}")
+
+            # Add color definitions
+            if extracted_colors:
+                preamble_injection.append("% Color definitions")
+                for name, (model, value) in extracted_colors.items():
+                    # Check if color is already defined
+                    if f'\\definecolor{{{name}}}' not in full_tex_content:
+                        if model == 'colorlet':
+                            preamble_injection.append(f"\\colorlet{{{name}}}{{{value}}}")
+                        else:
+                            preamble_injection.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
+
+            # Add siunitx configuration if needed
+            if 'siunitx' in missing_packages or 'siunitx' in extracted_packages:
+                if '\\sisetup' not in full_tex_content:
+                    preamble_injection.append("% siunitx configuration")
+                    preamble_injection.append("\\sisetup{")
+                    preamble_injection.append("    per-mode = symbol,")
+                    preamble_injection.append("    output-decimal-marker = {.},")
+                    preamble_injection.append("    group-separator = {,}")
+                    preamble_injection.append("}")
+
+            # Add textcomp if needed (for ₹ symbol, \textmu, etc.)
+            if 'textcomp' in missing_packages or 'textcomp' in extracted_packages:
+                if '\\usepackage{textcomp}' not in full_tex_content:
+                    preamble_injection.insert(1, "\\usepackage{textcomp}  % For special characters")
+
+            preamble_injection.append("% ==================================================")
+            preamble_injection.append("")
+
+            injection_block = "\n".join(preamble_injection)
+
             # Find the exact position of \begin{document}
+            doc_pos = full_tex_content.find("\\begin{document}")
+            if doc_pos == -1:
+                self.write("Error: Could not find \\begin{document} in preamble\n", "red")
+                return None
+
+            # Find the best insertion point (after the last \usepackage or \definecolor)
+            import re
+            insert_pos = doc_pos
+            for pattern in [r'\\usepackage\{[^}]*\}', r'\\definecolor\{[^}]*\}', r'\\usetheme\{[^}]*\}']:
+                matches = list(re.finditer(pattern, full_tex_content[:doc_pos]))
+                if matches:
+                    last_match = matches[-1]
+                    if last_match.end() > insert_pos:
+                        insert_pos = last_match.end()
+
+            # If we have injection content, insert it
+            if injection_block.strip() != "% ====== PREAMBLE DEFINITIONS (Auto-extracted) ======":
+                # Check if we already have an injection block
+                if "% ====== PREAMBLE DEFINITIONS" not in full_tex_content:
+                    full_tex_content = (full_tex_content[:insert_pos] +
+                                      "\n" + injection_block +
+                                      full_tex_content[insert_pos:])
+                    self.write("  ✓ Injected extracted preamble definitions\n", "green")
+
+            # Find the exact position of \begin{document} again (might have shifted)
             doc_pos = full_tex_content.find("\\begin{document}")
             if doc_pos == -1:
                 self.write("Error: Could not find \\begin{document} in preamble\n", "red")
@@ -15327,7 +15556,7 @@ Created by {self.__author__}
                         if preview_path:
                             return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{preview_path}}}}}{{{local_video}}}"
                         else:
-                            return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{▶ Play Video}}}}}}{{{local_video}}}"
+                            return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}{{{local_video}}}"
                     else:
                         return f"\\href{{{file_path}}}{{\\textcolor{{blue}}{{\\underline{{Watch on YouTube (Internet Required)}}}}}}"
 
@@ -15349,7 +15578,7 @@ Created by {self.__author__}
                         if preview_path:
                             return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{preview_path}}}}}{{{actual_path}}}"
                         else:
-                            return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{▶ Play Video}}}}}}{{{actual_path}}}"
+                            return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}{{{actual_path}}}"
                     else:
                         return f"\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{actual_path}}}"
                 else:
@@ -15581,7 +15810,7 @@ Created by {self.__author__}
                             if preview_path:
                                 return f"\\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{preview_path}}}}}{{{local_video}}}"
                             else:
-                                return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{▶ Play Video}}}}}}{{{local_video}}}"
+                                return f"\\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}{{{local_video}}}"
                         else:
                             return f"\\href{{{stripped}}}{{\\textcolor{{blue}}{{\\underline{{Watch on YouTube (Internet Required)}}}}}}"
                     else:
@@ -15711,6 +15940,12 @@ Created by {self.__author__}
             self.write(f"  • Visible slides included: {total_visible_slides}\n", "green")
             if total_skipped_slides > 0:
                 self.write(f"  • Masked slides skipped: {total_skipped_slides}\n", "yellow")
+
+            # Show extracted definitions summary
+            if extracted_colors:
+                self.write(f"  • Extracted {len(extracted_colors)} color definitions: {', '.join(extracted_colors.keys())[:50]}\n", "cyan")
+            if missing_packages:
+                self.write(f"  • Added {len(missing_packages)} packages: {', '.join(missing_packages)[:50]}\n", "cyan")
 
             return full_tex
 
@@ -17492,7 +17727,27 @@ Created by {self.__author__}
             return False
 
     def get_custom_preamble(self) -> str:
-        """Generate custom preamble with proper styling and required packages"""
+        """Get custom preamble if set, otherwise generate from presentation info"""
+        # If user has set a custom preamble, use it
+        if hasattr(self, 'custom_preamble') and self.custom_preamble:
+            # Check if the custom preamble has xcolor loaded before color definitions
+            preamble = self.custom_preamble
+
+            # If the preamble contains \definecolor but not \usepackage{xcolor} or \usepackage{color}
+            if '\\definecolor' in preamble:
+                if '\\usepackage{xcolor}' not in preamble and '\\usepackage{color}' not in preamble:
+                    # Find where to insert xcolor (after documentclass and before \begin{document})
+                    doc_pos = preamble.find("\\begin{document}")
+                    if doc_pos != -1:
+                        # Check if we need to add xcolor before color definitions
+                        xcolor_insert = "\n\\usepackage{xcolor}  % Required for color definitions\n"
+                        preamble = preamble[:doc_pos] + xcolor_insert + preamble[doc_pos:]
+                        self.write("  ℹ Added \\usepackage{xcolor} to support color definitions\n", "cyan")
+
+            self.write("  Using custom preamble from user\n", "cyan")
+            return preamble
+
+        # Otherwise generate from presentation info
         try:
             from BeamerSlideGenerator import get_beamer_preamble
 
@@ -18379,6 +18634,35 @@ Created by {self.__author__}
             self.write(f"    ✗ Error: {str(e)}\n", "red")
             return False
 
+    def validate_preamble(self, preamble):
+        """Validate preamble for common issues"""
+        issues = []
+
+        # Check for color definitions without xcolor
+        if '\\definecolor' in preamble and '\\usepackage{xcolor}' not in preamble and '\\usepackage{color}' not in preamble:
+            issues.append("Color definitions found but xcolor package is not loaded")
+            # Fix: add xcolor
+            doc_pos = preamble.find("\\begin{document}")
+            if doc_pos != -1:
+                preamble = preamble[:doc_pos] + "\n\\usepackage{xcolor}\n" + preamble[doc_pos:]
+
+        # Check for missing \begin{document}
+        if '\\begin{document}' not in preamble:
+            issues.append("Missing \\begin{document}")
+            preamble += "\n\\begin{document}\n"
+
+        # Check for missing \end{document}
+        if '\\end{document}' not in preamble:
+            issues.append("Missing \\end{document}")
+            preamble += "\n\\end{document}\n"
+
+        if issues:
+            self.write("⚠ Preamble validation issues found and fixed:\n", "yellow")
+            for issue in issues:
+                self.write(f"  • {issue}\n", "yellow")
+
+        return preamble
+
     def install_miktex_package(self, package: str) -> bool:
         """Install a package using MiKTeX's package manager"""
         try:
@@ -18419,81 +18703,74 @@ Created by {self.__author__}
             return False
 
     def add_color_info_to_output(self, tex_content):
-        """Add color information and XOR rules to TeX output"""
+        """Add color information and XOR rules to TeX output - with proper package ordering"""
 
-        # Color information to add
-        color_info = """
-    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    %% COLOR DEFINITIONS FOR TIKZ FIGURES
-    %% XOR Rule: Automatic text color selection based on background
-    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        # First check if xcolor is already loaded
+        if '\\usepackage{xcolor}' not in tex_content and '\\usepackage{color}' not in tex_content:
+            # Need to add xcolor package
+            # Find a good place to insert it
+            if '\\documentclass' in tex_content:
+                # Insert after documentclass and before any color definitions
+                color_info = """
+    % Color Information for TikZ Figures
+    % Use these color definitions for consistent theming
+    % Text colors are automatically chosen using XOR rule
 
     \\usepackage{xcolor}  % Required for color support
 
-    %% Predefined color palette with optimal text colors
-    \\definecolor{airis4d_blue}{RGB}{41,128,185}    % Dark → Use text=white
-    \\definecolor{airis4d_green}{RGB}{39,174,96}    % Light → Use text=black
-    \\definecolor{airis4d_orange}{RGB}{243,156,18}  % Light → Use text=black
-    \\definecolor{airis4d_red}{RGB}{231,76,60}      % Dark → Use text=white
-    \\definecolor{airis4d_purple}{RGB}{155,89,182}  % Dark → Use text=white
-    \\definecolor{airis4d_teal}{RGB}{26,188,156}    % Dark → Use text=white
-    \\definecolor{airis4d_gray}{RGB}{149,165,166}   % Light → Use text=black
+    % Default color palette
+    \\definecolor{airis4d_blue}{RGB}{41,128,185}
+    \\definecolor{airis4d_green}{RGB}{39,174,96}
+    \\definecolor{airis4d_orange}{RGB}{243,156,18}
+    \\definecolor{airis4d_red}{RGB}{231,76,60}
+    \\definecolor{airis4d_purple}{RGB}{155,89,182}
+    \\definecolor{airis4d_teal}{RGB}{26,188,156}
+    \\definecolor{airis4d_gray}{RGB}{149,165,166}
 
-    %% Additional utility colors
-    \\definecolor{airis4d_lightblue}{RGB}{173,216,230}  % Light → text=black
-    \\definecolor{airis4d_darkblue}{RGB}{0,0,139}       % Dark → text=white
-    \\definecolor{airis4d_lightgreen}{RGB}{144,238,144} % Light → text=black
-    \\definecolor{airis4d_darkgreen}{RGB}{0,100,0}      % Dark → text=white
+    % XOR Rule for text colors:
+    % - Use text=white on dark backgrounds (luminance < 0.179)
+    % - Use text=black on light backgrounds (luminance > 0.179)
 
-    %% XOR TEXT COLOR RULE
-    %%
-    %% For TikZ figures with colored backgrounds:
-    %% 1. Calculate background luminance: L = 0.2126*R + 0.7152*G + 0.0722*B
-    %% 2. If L > 0.179: Use text=black (light backgrounds)
-    %% 3. If L <= 0.179: Use text=white (dark backgrounds)
-    %%
-    %% Example usage in TikZ:
-    %% \\node[fill=airis4d_blue, text=white, minimum width=3cm] {White text on blue};
-    %% \\node[fill=airis4d_orange, text=black, minimum width=3cm] {Black text on orange};
-    %%
-    %% For custom colors, use the get_xor_text_color() function to determine
-    %% the optimal text color for any background.
-
-    %% Color helper macros
-    \\newcommand{\\airisblue}[1]{\\textcolor{airis4d_blue}{#1}}
-    \\newcommand{\\airisgreen}[1]{\\textcolor{airis4d_green}{#1}}
-    \\newcommand{\\airisorange}[1]{\\textcolor{airis4d_orange}{#1}}
-    \\newcommand{\\airisred}[1]{\\textcolor{airis4d_red}{#1}}
-    \\newcommand{\\airispurple}[1]{\\textcolor{airis4d_purple}{#1}}
-
-    %% Color box environments
-    \\newenvironment{airisbluebox}{%
-        \\begin{tcolorbox}[colback=airis4d_blue!10,colframe=airis4d_blue,title={\\airisblue{Information}}]
-    }{\\end{tcolorbox}}
-
-    \\newenvironment{airisgreenbox}{%
-        \\begin{tcolorbox}[colback=airis4d_green!10,colframe=airis4d_green,title={\\airisgreen{Note}}]
-    }{\\end{tcolorbox}}
-
-    \\newenvironment{airisredbox}{%
-        \\begin{tcolorbox}[colback=airis4d_red!10,colframe=airis4d_red,title={\\airisred{Warning}}]
-    }{\\end{tcolorbox}}
-
-    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    % Example usage:
+    % \\node[fill=airis4d_blue, text=white] {White text on blue};
+    % \\node[fill=airis4d_orange, text=black] {Black text on orange};
     """
+                # Find the position after documentclass
+                docclass_end = tex_content.find("\\begin{document}")
+                if docclass_end != -1:
+                    # Insert color info right before begin{document}
+                    new_content = tex_content[:docclass_end] + color_info + tex_content[docclass_end:]
+                    return new_content
+                else:
+                    # Fallback: prepend
+                    return color_info + tex_content
+            else:
+                # Fallback: prepend
+                return color_info + tex_content
+        else:
+            # xcolor is already loaded, just add color definitions
+            # Find where to insert color definitions (after xcolor or before \begin{document})
+            color_definitions = """
+    % Default color palette
+    \\definecolor{airis4d_blue}{RGB}{41,128,185}
+    \\definecolor{airis4d_green}{RGB}{39,174,96}
+    \\definecolor{airis4d_orange}{RGB}{243,156,18}
+    \\definecolor{airis4d_red}{RGB}{231,76,60}
+    \\definecolor{airis4d_purple}{RGB}{155,89,182}
+    \\definecolor{airis4d_teal}{RGB}{26,188,156}
+    \\definecolor{airis4d_gray}{RGB}{149,165,166}
 
-        # Insert color info after documentclass but before begin{document}
-        if "\\documentclass" in tex_content:
-            # Find the position after documentclass and any packages
-            docclass_end = tex_content.find("\\begin{document}")
-
-            if docclass_end != -1:
-                # Insert color info right before begin{document}
-                new_content = tex_content[:docclass_end] + color_info + tex_content[docclass_end:]
-                return new_content
-
-        # Fallback: prepend if we can't find the right position
-        return color_info + tex_content
+    % XOR Rule for text colors:
+    % - Use text=white on dark backgrounds (luminance < 0.179)
+    % - Use text=black on light backgrounds (luminance > 0.179)
+    """
+            # Insert color definitions before \begin{document}
+            doc_pos = tex_content.find("\\begin{document}")
+            if doc_pos != -1:
+                # Check if color definitions already exist
+                if 'airis4d_blue' not in tex_content:
+                    return tex_content[:doc_pos] + color_definitions + tex_content[doc_pos:]
+            return tex_content
 
     def generate_color_report(self, tex_file):
         """Generate a report of color usage in the document"""
@@ -19535,7 +19812,7 @@ Created by {self.__author__}
         return tex_content
 
     def save_file(self) -> None:
-        """Save presentation preserving custom preamble and line-level masking"""
+        """Save presentation preserving custom preamble and line-level masking with preamble extraction"""
 
         # Declare global at the beginning
         global working_folder
@@ -19622,6 +19899,98 @@ Created by {self.__author__}
         try:
             # Get custom preamble with logo
             content = self.get_custom_preamble()
+
+            # ========== EXTRACT DEFINITIONS FROM CURRENT PREAMBLE ==========
+            import re
+
+            # Extract color definitions from the preamble we're using
+            extracted_colors = {}
+            definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+            for name, model, value in re.findall(definecolor_pattern, content):
+                extracted_colors[name.strip()] = (model.strip(), value.strip())
+
+            colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+            for name, source in re.findall(colorlet_pattern, content):
+                extracted_colors[name.strip()] = ('colorlet', source.strip())
+
+            # Extract packages
+            extracted_packages = set()
+            usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+            for options, pkg_list in re.findall(usepackage_pattern, content):
+                for pkg in pkg_list.split(','):
+                    extracted_packages.add(pkg.strip())
+
+            # Detect missing packages from slides
+            missing_packages = set()
+            for slide in self.slides:
+                slide_content = '\n'.join(slide.get('content', []))
+                slide_notes = '\n'.join(slide.get('notes', []))
+                combined = slide_content + slide_notes
+                missing_packages.update(self.detect_missing_packages_from_content(combined))
+
+            # ========== GENERATE PREAMBLE DEFINITION BLOCK ==========
+            preamble_block = []
+            preamble_block.append("% ====== PREAMBLE DEFINITIONS (Auto-extracted) ======")
+
+            # Add missing packages
+            if missing_packages:
+                preamble_block.append("% Required packages")
+                already_present = set()
+                for pkg in ['xcolor', 'graphicx', 'amsmath', 'amssymb', 'tikz', 'hyperref']:
+                    if f'\\usepackage{{{pkg}}}' in content:
+                        already_present.add(pkg)
+
+                for pkg in sorted(missing_packages):
+                    if pkg not in already_present and f'\\usepackage{{{pkg}}}' not in content:
+                        preamble_block.append(f"\\usepackage{{{pkg}}}")
+
+            # Add color definitions
+            if extracted_colors:
+                preamble_block.append("% Color definitions")
+                for name, (model, value) in extracted_colors.items():
+                    if f'\\definecolor{{{name}}}' not in content:
+                        if model == 'colorlet':
+                            preamble_block.append(f"\\colorlet{{{name}}}{{{value}}}")
+                        else:
+                            preamble_block.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
+
+            # Add siunitx configuration if needed
+            if 'siunitx' in missing_packages or 'siunitx' in extracted_packages:
+                if '\\sisetup' not in content:
+                    preamble_block.append("% siunitx configuration")
+                    preamble_block.append("\\sisetup{")
+                    preamble_block.append("    per-mode = symbol,")
+                    preamble_block.append("    output-decimal-marker = {.},")
+                    preamble_block.append("    group-separator = {,}")
+                    preamble_block.append("}")
+
+            # Add textcomp if needed
+            if 'textcomp' in missing_packages or 'textcomp' in extracted_packages:
+                if '\\usepackage{textcomp}' not in content:
+                    preamble_block.insert(1, "\\usepackage{textcomp}  % For special characters")
+
+            preamble_block.append("% ==================================================")
+            preamble_block.append("")
+
+            injection_block = "\n".join(preamble_block)
+
+            # Inject preamble block if not already present
+            if "% ====== PREAMBLE DEFINITIONS" not in content:
+                doc_pos = content.find("\\begin{document}")
+                if doc_pos != -1:
+                    # Find insertion point after the last package or color definition
+                    insert_pos = doc_pos
+                    for pattern in [r'\\usepackage\{[^}]*\}', r'\\definecolor\{[^}]*\}', r'\\usetheme\{[^}]*\}']:
+                        matches = list(re.finditer(pattern, content[:doc_pos]))
+                        if matches:
+                            last_match = matches[-1]
+                            if last_match.end() > insert_pos:
+                                insert_pos = last_match.end()
+
+                    content = (content[:insert_pos] +
+                              "\n" + injection_block +
+                              content[insert_pos:])
+                    self.write("  ✓ Injected preamble definitions into file\n", "green")
 
             # Track counts
             masked_count = 0
@@ -19739,14 +20108,17 @@ Created by {self.__author__}
             self.write(f"✓ File saved successfully: {filename}\n", "green")
 
             # Show summary
-            summary_parts = []
+            summary_parts = [f"✓ Saved {len(self.slides)} slides"]
             if masked_count > 0:
                 summary_parts.append(f"{masked_count} fully masked slide(s)")
             if total_hidden_lines > 0:
                 summary_parts.append(f"{total_hidden_lines} hidden line(s)")
+            if extracted_colors:
+                summary_parts.append(f"{len(extracted_colors)} color definitions preserved")
+            if missing_packages:
+                summary_parts.append(f"{len(missing_packages)} packages added")
 
-            if summary_parts:
-                self.write(f"ℹ Saved with: {', '.join(summary_parts)}\n", "yellow")
+            self.write(" | ".join(summary_parts) + "\n", "green")
 
             # Update recent files list
             if hasattr(self, 'session_manager') and self.session_manager:
@@ -19764,8 +20136,9 @@ Created by {self.__author__}
             return False
 
     def load_file(self, filename: str) -> None:
-        """Load presentation from file with full preservation of masked content"""
+        """Load presentation from file with enhanced preamble extraction and preservation"""
         try:
+            import re
             logger.info(f"Loading file: {filename}")
 
             # CRITICAL: Set current_file BEFORE any other operations
@@ -19783,185 +20156,109 @@ Created by {self.__author__}
             self.slides = []
             self.current_slide_index = -1
 
-            # Extract presentation info
-            import re
-            for key in self.presentation_info:
-                pattern = f"\\\\{key}{{(.*?)}}"
+            # ========== EXTRACT PREAMBLE INFORMATION ==========
+            # Extract and preserve preamble info for reconstruction
+            self.preamble_info = self._extract_preamble_info(content)
+            self.color_definitions = self._extract_color_definitions(content)
+            self.custom_packages = self._extract_custom_packages(content)
+
+            # ========== EXTRACT COLOR DEFINITIONS ==========
+            extracted_colors = {}
+            definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+            for name, model, value in re.findall(definecolor_pattern, content):
+                extracted_colors[name.strip()] = (model.strip(), value.strip())
+
+            colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+            for name, source in re.findall(colorlet_pattern, content):
+                extracted_colors[name.strip()] = ('colorlet', source.strip())
+
+            # Store extracted colors for later use
+            self._extracted_colors = extracted_colors
+
+            # ========== EXTRACT PACKAGES ==========
+            extracted_packages = set()
+            usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+            for options, pkg_list in re.findall(usepackage_pattern, content):
+                for pkg in pkg_list.split(','):
+                    extracted_packages.add(pkg.strip())
+
+            # ========== DETECT MISSING PACKAGES ==========
+            missing_packages = set()
+            # Scan the entire content for package patterns
+            missing_packages.update(self.detect_missing_packages_from_content(content))
+
+            # Store missing packages
+            self._missing_packages = missing_packages
+
+            # ========== LOG EXTRACTED DEFINITIONS ==========
+            if extracted_colors:
+                logger.info(f"Found custom colors: {', '.join(extracted_colors.keys())}")
+                self.write(f"  ✓ Extracted {len(extracted_colors)} color definitions\n", "green")
+            if extracted_packages:
+                logger.info(f"Found custom packages: {', '.join(extracted_packages)}")
+                self.write(f"  ✓ Found {len(extracted_packages)} package imports\n", "green")
+            if missing_packages:
+                logger.info(f"Detected missing packages: {', '.join(missing_packages)}")
+                self.write(f"  ⚠ Detected {len(missing_packages)} missing packages to add\n", "yellow")
+
+            # Extract presentation info from preamble
+            for key in ['title', 'subtitle', 'author', 'institute', 'date']:
+                pattern = rf"\\{key}{{([^}}]*)}}"
                 match = re.search(pattern, content)
                 if match:
-                    self.presentation_info[key] = match.group(1)
+                    self.presentation_info[key] = match.group(1).strip()
 
-            # Split into slides by finding all title lines
-            lines = content.split('\n')
+            # ========== DETECT FILE FORMAT - IMPROVED ==========
+            has_old_format = '\\title' in content and '\\begin{Content}' in content
+            has_new_format = '\\begin{frame}' in content
 
-            slides_raw = []
-            current_slide_lines = []
+            logger.info(f"File format detection - old: {has_old_format}, new: {has_new_format}")
 
-            for line in lines:
-                if re.match(r'^%?\s*\\title\s+', line):
-                    if current_slide_lines:
-                        slides_raw.append(current_slide_lines)
-                    current_slide_lines = [line]
-                else:
-                    current_slide_lines.append(line)
-
-            if current_slide_lines:
-                slides_raw.append(current_slide_lines)
+            # ========== PRIORITIZE OLD FORMAT IF DETECTED ==========
+            # The old format is more reliable because it's our native format
+            if has_old_format:
+                logger.info("Using old format parser (title/content)")
+                slides_raw = self._parse_old_format_enhanced(content)
+            elif has_new_format:
+                logger.info("Using new format parser (direct frames)")
+                slides_raw = self._parse_frame_format_enhanced(content)
+            else:
+                logger.warning("No recognized format detected")
+                slides_raw = []
 
             logger.info(f"Found {len(slides_raw)} slide blocks")
 
-            masked_slides_count = 0
-            total_masked_lines = 0
+            if not slides_raw:
+                logger.error("No slides were loaded!")
+                messagebox.showerror("Error", "No slides could be loaded from the file!\n\n"
+                                   "The file may be empty or in an unsupported format.")
+                return
 
-            for slide_idx, slide_lines in enumerate(slides_raw):
-                # Check if slide is fully masked
-                non_empty = [l for l in slide_lines if l.strip()]
-                is_fully_masked = False
-
-                if non_empty:
-                    first_line = non_empty[0].strip()
-                    if first_line.startswith('%') and '\\title' in first_line:
-                        is_fully_masked = all(l.strip().startswith('%') for l in non_empty)
-
-                # Extract title - preserve the original line including % if masked
-                title_line = None
-                title_raw = None
-                for line in slide_lines:
-                    title_match = re.search(r'(%?\s*\\title\s+)(.+)$', line)
-                    if title_match:
-                        title_raw = line  # Keep the raw line with potential %
-                        title_line = title_match.group(2).strip()
-                        break
-
-                if title_line is None:
-                    logger.warning(f"No title found in slide block {slide_idx}")
-                    continue
-
-                title = title_line
-
-                if is_fully_masked and not title.startswith('[DELETED]'):
-                    title = f"[DELETED] {title}"
-                    masked_slides_count += 1
-
-                # Parse content and notes blocks - PRESERVE ALL LINES INCLUDING MASKED ONES
-                in_content = False
-                in_notes = False
-                content_lines = []
-                notes_lines = []
-                hidden_content_indices = []
-                hidden_note_indices = []
-                media = ""
-                media_masked = False
-                found_media = False
-                content_line_index = 0
-                is_first_content_line = True  # Track first line of content block
-
-                for line in slide_lines:
-                    # Skip the title line itself
-                    if line == title_raw:
-                        continue
-
-                    # Check for Content block boundaries
-                    if re.match(r'^%?\s*\\begin{Content}\s*$', line):
-                        in_content = True
-                        in_notes = False
-                        is_first_content_line = True  # Reset for new content block
-                        continue
-                    elif re.match(r'^%?\s*\\end{Content}\s*$', line):
-                        in_content = False
-                        continue
-
-                    # Check for Notes block boundaries
-                    if re.match(r'^%?\s*\\begin{Notes}\s*$', line):
-                        in_notes = True
-                        in_content = False
-                        continue
-                    elif re.match(r'^%?\s*\\end{Notes}\s*$', line):
-                        in_notes = False
-                        continue
-
-                    # Process content lines - PRESERVE EVERY LINE including masked ones
-                    if in_content:
-                        # Check if this line is masked (starts with % after optional whitespace)
-                        is_masked = line.lstrip().startswith('%')
-
-                        # Clean the line for storage (remove the % prefix for masked lines)
-                        if is_masked:
-                            clean_line = re.sub(r'^\s*%\s*', '', line)
-                        else:
-                            clean_line = line
-
-                        # Store the line (even if empty, but skip completely empty)
-                        if clean_line.strip() or (is_masked and clean_line):
-                            # First non-empty line is media
-                            if not found_media:
-                                found_media = True
-                                media_value = clean_line.strip()
-
-                                # CRITICAL FIX: Handle \None marker properly
-                                if media_value == "\\None":
-                                    media = ""  # Empty string for no media
-                                    media_masked = is_masked
-                                    logger.info(f"  Media: None (explicit \\None marker, masked={media_masked})")
-                                else:
-                                    media = media_value
-                                    media_masked = is_masked
-                                    if is_masked and media != "\\None":
-                                        total_masked_lines += 1
-                                    logger.info(f"  Media found: '{media}' (masked={media_masked})")
-
-                                is_first_content_line = False
-                            else:
-                                # Regular content line
-                                # Skip if it's an empty line that was just a marker
-                                if clean_line.strip() or (is_masked and clean_line.strip()):
-                                    content_lines.append(clean_line.rstrip())
-                                    if is_masked:
-                                        hidden_content_indices.append(content_line_index)
-                                        total_masked_lines += 1
-                                        logger.info(f"  Masked content line {content_line_index + 1}: '{clean_line[:50]}'")
-                                    else:
-                                        logger.info(f"  Visible content line {content_line_index + 1}: '{clean_line[:50]}'")
-                                    content_line_index += 1
-
-                    # Process notes lines - PRESERVE EVERY LINE including masked ones
-                    if in_notes:
-                        is_masked = line.lstrip().startswith('%')
-
-                        if is_masked:
-                            clean_line = re.sub(r'^\s*%\s*', '', line)
-                        else:
-                            clean_line = line
-
-                        if clean_line.strip():
-                            notes_lines.append(clean_line.rstrip())
-                            if is_masked:
-                                hidden_note_indices.append(len(notes_lines) - 1)
-                                total_masked_lines += 1
-                                logger.info(f"  Masked note line {len(notes_lines)}: '{clean_line[:50]}'")
-
-                # If no media was found, set to empty string
-                if not found_media:
-                    media = ""
-                    media_masked = False
-                    logger.info(f"  No media found in slide")
-
-                # Create slide with preserved masking
-                slide = {
-                    'title': title,
-                    'media': media,
-                    'content': content_lines,
-                    'notes': notes_lines,
-                    '_hidden_content_indices': hidden_content_indices,
-                    '_hidden_note_indices': hidden_note_indices,
-                    '_media_masked': media_masked,
-                    '_fully_masked': is_fully_masked
-                }
+            # Process each slide
+            for slide_idx, slide_data in enumerate(slides_raw):
+                # Process each slide
+                if isinstance(slide_data, dict) and 'lines' in slide_data:
+                    # Old format with lines
+                    slide = self._process_old_format_slide_enhanced(slide_data, slide_idx)
+                elif isinstance(slide_data, dict):
+                    # New format or already processed
+                    slide = slide_data
+                else:
+                    # Fallback
+                    slide = {
+                        'title': f"Slide {slide_idx + 1}",
+                        'media': '',
+                        'content': [],
+                        'notes': [],
+                        '_hidden_content_indices': [],
+                        '_hidden_note_indices': [],
+                        '_media_masked': False,
+                        '_fully_masked': False
+                    }
 
                 self.slides.append(slide)
-                logger.info(f"Slide {len(self.slides)}: '{title[:50]}' (media='{media[:30] if media else 'None'}', "
-                           f"fully_masked={is_fully_masked}, content_lines={len(content_lines)}, "
-                           f"hidden_content={len(hidden_content_indices)})")
+                logger.info(f"Slide {len(self.slides)}: '{slide.get('title', 'Untitled')[:50]}' "
+                           f"(content_lines={len(slide.get('content', []))})")
 
             if self.slides:
                 self.current_slide_index = 0
@@ -19973,24 +20270,707 @@ Created by {self.__author__}
 
             self.update_slide_list()
 
-            # Show loading summary
+            # Show loading summary with extracted definitions
             summary_parts = [f"✓ Loaded {len(self.slides)} slides"]
-            if masked_slides_count > 0:
-                summary_parts.append(f"{masked_slides_count} fully masked")
-            if total_masked_lines > 0:
-                summary_parts.append(f"{total_masked_lines} masked lines")
+            if extracted_colors:
+                color_names = ', '.join(list(extracted_colors.keys())[:5])
+                if len(extracted_colors) > 5:
+                    color_names += f" +{len(extracted_colors)-5} more"
+                summary_parts.append(f"🎨 {len(extracted_colors)} colors: {color_names}")
+            if extracted_packages:
+                summary_parts.append(f"📦 {len(extracted_packages)} packages")
+            if missing_packages:
+                pkg_names = ', '.join(list(missing_packages)[:5])
+                if len(missing_packages) > 5:
+                    pkg_names += f" +{len(missing_packages)-5} more"
+                summary_parts.append(f"⚠ {len(missing_packages)} packages to add: {pkg_names}")
 
             self.write(" | ".join(summary_parts) + "\n", "green")
 
-            if masked_slides_count > 0 or total_masked_lines > 0:
-                self.write("ℹ Masked content is shown with strikethrough\n", "yellow")
-                self.write("  • Click on masked line + Ctrl+Delete to unmask\n", "cyan")
+            # If there are missing packages, prompt user
+            if missing_packages:
+                self.write(f"\n💡 Tip: The following packages may need to be added: {', '.join(missing_packages)}\n", "cyan")
+                self.write("  They will be automatically included when you generate PDF.\n", "cyan")
 
         except Exception as e:
             error_msg = f"Error loading file: {str(e)}"
             logger.error(error_msg, exc_info=True)
             self.write(f"✗ {error_msg}\n", "red")
             messagebox.showerror("Error", f"Error loading file:\n{str(e)}")
+
+    def _parse_old_format_enhanced(self, content: str) -> list:
+        """Enhanced parsing of old format with proper title extraction"""
+        slides_raw = []
+        lines = content.split('\n')
+        current_slide_lines = []
+        current_title = ""
+        in_content = False
+        in_notes = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Detect title lines - EXTRACT THE TITLE PROPERLY
+            title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
+            if title_match:
+                # If we have a previous slide, save it
+                if current_slide_lines:
+                    slides_raw.append({
+                        'title': current_title,
+                        'lines': current_slide_lines
+                    })
+                # Start new slide with the extracted title
+                current_title = title_match.group(1).strip()
+                # Remove any LaTeX formatting from the title
+                current_title = self._clean_latex_title(current_title)
+                current_slide_lines = [line]
+                in_content = False
+                in_notes = False
+            else:
+                current_slide_lines.append(line)
+
+            # Detect Content block boundaries
+            if re.match(r'^%?\s*\\begin{Content}\s*$', stripped):
+                in_content = True
+            elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
+                in_content = False
+
+            # Detect Notes block boundaries
+            if re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
+                in_notes = True
+            elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
+                in_notes = False
+
+        # Add the last slide
+        if current_slide_lines:
+            slides_raw.append({
+                'title': current_title,
+                'lines': current_slide_lines
+            })
+
+        return slides_raw
+
+    def _clean_latex_title(self, title: str) -> str:
+        """Clean LaTeX title for display in IDE"""
+        if not title:
+            return "Untitled"
+
+        import re
+
+        # Remove common LaTeX formatting commands
+        title = re.sub(r'\\textbf{([^}]*)}', r'\1', title)
+        title = re.sub(r'\\textit{([^}]*)}', r'\1', title)
+        title = re.sub(r'\\textcolor{[^}]*}{([^}]*)}', r'\1', title)
+        title = re.sub(r'\\Large\s*', '', title)
+        title = re.sub(r'\\large\s*', '', title)
+        title = re.sub(r'\\normalsize\s*', '', title)
+        title = re.sub(r'\\small\s*', '', title)
+        title = re.sub(r'\\tiny\s*', '', title)
+        title = re.sub(r'\\Huge\s*', '', title)
+        title = re.sub(r'\\huge\s*', '', title)
+
+        # Clean up extra whitespace
+        title = re.sub(r'\s+', ' ', title).strip()
+
+        # Remove remaining backslashes
+        title = re.sub(r'\\[a-zA-Z]+\s*', '', title)
+
+        return title
+
+    def _process_old_format_slide_enhanced(self, slide_data: dict, slide_idx: int) -> dict:
+        """Enhanced processing of old format slides with proper content extraction"""
+        import re
+
+        # Use the extracted title from slide_data
+        title = slide_data.get('title', f"Slide {slide_idx + 1}")
+        slide_lines = slide_data.get('lines', [])
+
+        # Parse content and notes
+        in_content = False
+        in_notes = False
+        content_lines = []
+        notes_lines = []
+        hidden_content_indices = []
+        hidden_note_indices = []
+        media = ""
+        media_masked = False
+        content_line_index = 0
+        found_media = False
+
+        for line in slide_lines:
+            stripped = line.strip()
+
+            # Skip the title line itself
+            if re.search(r'^%?\s*\\title\s+', line):
+                continue
+
+            # Check Content block boundaries
+            if re.match(r'^%?\s*\\begin{Content}\s*$', stripped):
+                in_content = True
+                in_notes = False
+                continue
+            elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
+                in_content = False
+                continue
+
+            # Check Notes block boundaries
+            if re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
+                in_notes = True
+                in_content = False
+                continue
+            elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
+                in_notes = False
+                continue
+
+            # Process content lines
+            if in_content:
+                is_masked = line.lstrip().startswith('%')
+
+                if is_masked:
+                    clean_line = re.sub(r'^\s*%\s*', '', line)
+                else:
+                    clean_line = line
+
+                if clean_line.strip() or (is_masked and clean_line):
+                    # Skip \None lines - they should be treated as "no media"
+                    if clean_line.strip() == "\\None":
+                        # If we haven't found media yet, this is the media line
+                        if not found_media:
+                            found_media = True
+                            media = ""
+                            media_masked = is_masked
+                        continue
+
+                    if not found_media:
+                        found_media = True
+                        media_value = clean_line.strip()
+                        # Check if this is a media directive
+                        if media_value.startswith('\\file') or media_value.startswith('\\play'):
+                            media = media_value
+                            media_masked = is_masked
+                        else:
+                            # Not media, treat as content
+                            content_lines.append(clean_line.rstrip())
+                            if is_masked:
+                                hidden_content_indices.append(content_line_index)
+                            content_line_index += 1
+                    else:
+                        if clean_line.strip() or (is_masked and clean_line.strip()):
+                            content_lines.append(clean_line.rstrip())
+                            if is_masked:
+                                hidden_content_indices.append(content_line_index)
+                            content_line_index += 1
+
+            # Process notes lines
+            if in_notes:
+                is_masked = line.lstrip().startswith('%')
+
+                if is_masked:
+                    clean_line = re.sub(r'^\s*%\s*', '', line)
+                else:
+                    clean_line = line
+
+                if clean_line.strip():
+                    notes_lines.append(clean_line.rstrip())
+                    if is_masked:
+                        hidden_note_indices.append(len(notes_lines) - 1)
+
+        if not found_media:
+            media = ""
+            media_masked = False
+
+        return {
+            'title': title,  # Use the extracted title
+            'media': media,
+            'content': content_lines,
+            'notes': notes_lines,
+            '_hidden_content_indices': hidden_content_indices,
+            '_hidden_note_indices': hidden_note_indices,
+            '_media_masked': media_masked,
+            '_fully_masked': False
+        }
+
+    def _extract_custom_commands(self, content: str) -> list:
+        """Extract custom command definitions from preamble"""
+        import re
+        commands = []
+
+        # Find all \newcommand and \renewcommand definitions
+        pattern = r'\\(?:re)?newcommand\{\\([^}]*)\}(?:\[[^\]]*\])?\{([^}]*)\}'
+        matches = re.findall(pattern, content)
+
+        for name, definition in matches:
+            commands.append({
+                'name': name,
+                'definition': definition.strip()
+            })
+
+        return commands
+
+    def _extract_preamble_info(self, content: str) -> dict:
+        """Extract preamble information from LaTeX document"""
+        import re
+        preamble_info = {}
+
+        # Find the preamble (everything before \begin{document})
+        doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+        if not doc_match:
+            return preamble_info
+
+        preamble = doc_match.group(1)
+
+        # Extract theme
+        theme_match = re.search(r'\\usetheme{([^}]*)}', preamble)
+        if theme_match:
+            preamble_info['theme'] = theme_match.group(1)
+
+        # Extract colortheme
+        colortheme_match = re.search(r'\\usecolortheme{([^}]*)}', preamble)
+        if colortheme_match:
+            preamble_info['colortheme'] = colortheme_match.group(1)
+
+        # Extract font theme
+        fonttheme_match = re.search(r'\\usefonttheme{([^}]*)}', preamble)
+        if fonttheme_match:
+            preamble_info['fonttheme'] = fonttheme_match.group(1)
+
+        # Extract packages
+        packages = re.findall(r'\\usepackage(?:\[[^\]]*\])?{([^}]*)}', preamble)
+        preamble_info['packages'] = packages
+
+        # Extract beamer template settings
+        template_settings = re.findall(r'\\setbeamertemplate{([^}]*)}{([^}]*)}', preamble)
+        preamble_info['templates'] = template_settings
+
+        # Extract beamer color settings
+        color_settings = re.findall(r'\\setbeamercolor{([^}]*)}{([^}]*)}', preamble)
+        preamble_info['beamercolors'] = color_settings
+
+        return preamble_info
+
+    def _extract_color_definitions(self, content: str) -> dict:
+        """Extract color definitions from LaTeX content"""
+        import re
+        color_defs = {}
+
+        # Find all \definecolor commands
+        color_pattern = r'\\definecolor{([^}]*)}{([^}]*)}{([^}]*)}'
+        matches = re.findall(color_pattern, content)
+
+        for name, model, value in matches:
+            color_defs[name] = {'model': model, 'value': value}
+
+        # Also find any color definitions with \colorlet
+        colorlet_pattern = r'\\colorlet{([^}]*)}{([^}]*)}'
+        matches = re.findall(colorlet_pattern, content)
+        for name, source in matches:
+            color_defs[name] = {'type': 'colorlet', 'source': source}
+
+        return color_defs
+
+    def _extract_custom_packages(self, content: str) -> list:
+        """Extract custom package usages for reconstruction"""
+        import re
+        packages = []
+
+        # Find all \usepackage commands with options
+        pattern = r'\\usepackage(?:\[([^\]]*)\])?{([^}]*)}'
+        matches = re.findall(pattern, content)
+
+        for options, package in matches:
+            packages.append({
+                'package': package,
+                'options': options if options else ''
+            })
+
+        return packages
+
+    def _parse_frame_format_enhanced(self, content: str) -> list:
+        """Enhanced parsing of frame format with better title detection"""
+        slides = []
+        import re
+
+        # Find all frame blocks with support for nested structures
+        # This handles frames with titles, frametitles, and complex content
+        frame_pattern = r'\\begin{frame}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end{frame}'
+        frames = re.finditer(frame_pattern, content, re.DOTALL)
+
+        for frame_match in frames:
+            title = frame_match.group(1) or ""
+            subtitle = frame_match.group(2) or ""
+            frame_content = frame_match.group(3).strip()
+
+            # Clean and extract the actual title
+            if not title and not subtitle:
+                # Try to find \frametitle inside the content
+                frametitle_match = re.search(r'\\frametitle{([^}]*)}', frame_content)
+                if frametitle_match:
+                    title = frametitle_match.group(1).strip()
+                    # Remove frametitle from content to avoid duplication
+                    frame_content = re.sub(r'\\frametitle{[^}]*}', '', frame_content)
+                else:
+                    # Try to find \title inside content (for title pages)
+                    title_match = re.search(r'\\title{([^}]*)}', frame_content)
+                    if title_match:
+                        title = title_match.group(1).strip()
+
+            # Clean title: remove LaTeX formatting artifacts
+            if title:
+                title = self._clean_latex_title(title)
+
+            if subtitle:
+                subtitle = self._clean_latex_title(subtitle)
+                title = f"{title} — {subtitle}" if title else subtitle
+
+            if not title:
+                title = "Untitled"
+
+            # Extract notes if present
+            notes = []
+            note_match = re.search(r'\\note{(.*?)}', frame_content, re.DOTALL)
+            if note_match:
+                note_content = note_match.group(1).strip()
+                # Extract items from note content
+                note_items = re.finditer(r'\\item\s*(.*?)(?=\\item|$)', note_content, re.DOTALL)
+                for item in note_items:
+                    note_text = item.group(1).strip()
+                    if note_text:
+                        notes.append(f"• {note_text}")
+                # Remove note from content
+                frame_content = re.sub(r'\\note{.*?}', '', frame_content, flags=re.DOTALL)
+
+            # Process content lines with enhanced detection
+            content_lines = self._process_frame_content(frame_content)
+
+            # Extract media if present
+            media = self._extract_media_from_frame(frame_content)
+
+            # Build slide dictionary
+            slide = {
+                'title': title,
+                'media': media,
+                'content': content_lines,
+                'notes': notes,
+                '_hidden_content_indices': [],
+                '_hidden_note_indices': [],
+                '_media_masked': False,
+                '_fully_masked': False
+            }
+
+            slides.append(slide)
+
+        return slides
+
+
+    def _process_frame_slide(self, slide_data: dict, slide_idx: int) -> dict:
+        """Process a slide from the enhanced frame format"""
+        # The slide_data is already a dictionary from _parse_frame_format_enhanced
+        # Just ensure all required fields are present
+        slide = {
+            'title': slide_data.get('title', f"Slide {slide_idx + 1}"),
+            'media': slide_data.get('media', ''),
+            'content': slide_data.get('content', []),
+            'notes': slide_data.get('notes', []),
+            '_hidden_content_indices': [],
+            '_hidden_note_indices': [],
+            '_media_masked': False,
+            '_fully_masked': False
+        }
+
+        return slide
+
+    def _process_old_format_slide(self, slide_lines: list, slide_idx: int) -> dict:
+        """Enhanced processing of old format slides with better content extraction"""
+        import re
+
+        # Extract title
+        title = f"Slide {slide_idx + 1}"
+        for line in slide_lines:
+            title_match = re.search(r'(%?\s*\\title\s+)(.+)$', line)
+            if title_match:
+                title = title_match.group(2).strip()
+                break
+
+        # Parse content and notes
+        in_content = False
+        in_notes = False
+        content_lines = []
+        notes_lines = []
+        hidden_content_indices = []
+        hidden_note_indices = []
+        media = ""
+        media_masked = False
+        content_line_index = 0
+        found_media = False
+
+        for line in slide_lines:
+            stripped = line.strip()
+
+            # Skip the title line itself
+            if re.search(r'^%?\s*\\title\s+', line):
+                continue
+
+            # Check Content block boundaries
+            if re.match(r'^%?\s*\\begin{Content}\s*$', stripped):
+                in_content = True
+                in_notes = False
+                continue
+            elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
+                in_content = False
+                continue
+
+            # Check Notes block boundaries
+            if re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
+                in_notes = True
+                in_content = False
+                continue
+            elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
+                in_notes = False
+                continue
+
+            # Process content lines
+            if in_content:
+                is_masked = line.lstrip().startswith('%')
+
+                if is_masked:
+                    clean_line = re.sub(r'^\s*%\s*', '', line)
+                else:
+                    clean_line = line
+
+                if clean_line.strip() or (is_masked and clean_line):
+                    if not found_media:
+                        found_media = True
+                        media_value = clean_line.strip()
+                        if media_value == "\\None":
+                            media = ""
+                            media_masked = is_masked
+                        else:
+                            media = media_value
+                            media_masked = is_masked
+                    else:
+                        if clean_line.strip() or (is_masked and clean_line.strip()):
+                            content_lines.append(clean_line.rstrip())
+                            if is_masked:
+                                hidden_content_indices.append(content_line_index)
+                            content_line_index += 1
+
+            # Process notes lines
+            if in_notes:
+                is_masked = line.lstrip().startswith('%')
+
+                if is_masked:
+                    clean_line = re.sub(r'^\s*%\s*', '', line)
+                else:
+                    clean_line = line
+
+                if clean_line.strip():
+                    notes_lines.append(clean_line.rstrip())
+                    if is_masked:
+                        hidden_note_indices.append(len(notes_lines) - 1)
+
+        if not found_media:
+            media = ""
+            media_masked = False
+
+        return {
+            'title': self._clean_latex_title(title),
+            'media': media,
+            'content': content_lines,
+            'notes': notes_lines,
+            '_hidden_content_indices': hidden_content_indices,
+            '_hidden_note_indices': hidden_note_indices,
+            '_media_masked': media_masked,
+            '_fully_masked': False
+        }
+
+    def _process_frame_content(self, frame_content: str) -> list:
+        """Process frame content with enhanced LaTeX command preservation"""
+        import re
+
+        content_lines = []
+
+        # Remove media and note commands first
+        clean_content = re.sub(r'\\includegraphics[^}]*}|\\movie[^}]*}|\\note{.*?}', '', frame_content, flags=re.DOTALL)
+
+        # Split into lines
+        lines = clean_content.split('\n')
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Skip comments
+            if line.startswith('%'):
+                continue
+
+            # Skip frametitle (already handled)
+            if line.startswith('\\frametitle'):
+                continue
+
+            # Skip frame-specific commands
+            if line.startswith('\\begin{frame}') or line.startswith('\\end{frame}'):
+                continue
+
+            # Preserve LaTeX commands and environments
+            content_lines.append(line)
+
+        # If no content, try to extract from the frame more carefully
+        if not content_lines:
+            # Look for itemize/enumerate content
+            item_pattern = r'\\item\s*(.*?)(?=\\item|\\end{itemize}|\\end{enumerate}|$)'
+            items = re.findall(item_pattern, frame_content, re.DOTALL)
+            if items:
+                for item in items:
+                    item_text = item.strip()
+                    if item_text:
+                        content_lines.append(f"- {item_text}")
+            else:
+                # Look for plain text paragraphs
+                text_pattern = r'(?<!\\)([A-Za-z][^\\$]*?)(?=\\begin|\\end|\n\n|$)'
+                texts = re.findall(text_pattern, frame_content)
+                for text in texts:
+                    text = text.strip()
+                    if text and len(text) > 3:
+                        content_lines.append(text)
+
+        return content_lines
+
+    def _extract_media_from_frame(self, frame_content: str) -> str:
+        """Extract media references from frame content"""
+        import re
+
+        media = ""
+
+        # Check for graphics
+        graphics_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}', frame_content)
+        if graphics_match:
+            media_path = graphics_match.group(1)
+            media = f"\\file {media_path}"
+
+        # Check for movies/videos
+        movie_match = re.search(r'\\movie(?:\[[^\]]*\])?{[^}]*}{([^}]*)}', frame_content)
+        if movie_match:
+            media_path = movie_match.group(1)
+            media = f"\\play {media_path}"
+
+        return media
+
+
+    def _extract_presentation_metadata(self, content: str) -> dict:
+        """Extract presentation metadata from content"""
+        import re
+        metadata = {}
+
+        patterns = {
+            'title': r'\\title{([^}]*)}',
+            'subtitle': r'\\subtitle{([^}]*)}',
+            'author': r'\\author{([^}]*)}',
+            'institute': r'\\institute{([^}]*)}',
+            'date': r'\\date{([^}]*)}',
+            'logo': r'\\logo{([^}]*)}',
+        }
+
+        for key, pattern in patterns.items():
+            match = re.search(pattern, content)
+            if match:
+                metadata[key] = match.group(1).strip()
+
+        return metadata
+
+    def _parse_frame_format(self, content: str) -> list:
+        """Parse content in new format: \begin{frame} ... \end{frame}"""
+        slides = []
+        import re
+
+        # ========== FIX: First check if this is actually old format with \title ==========
+        # If the content has \title commands and \begin{Content}, use old format parser
+        if '\\title' in content and '\\begin{Content}' in content:
+            logger.info("Content appears to be old format despite detection - using old parser")
+            return self._parse_old_format(content)
+
+        # Original frame pattern
+        frame_pattern = r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end\{frame\}'
+        frames = re.finditer(frame_pattern, content, re.DOTALL)
+
+        for frame_match in frames:
+            title = frame_match.group(1) or ""
+            subtitle = frame_match.group(2) or ""
+            frame_content = frame_match.group(3).strip()
+
+            # Clean up the title
+            title = title.strip()
+            if subtitle:
+                title = f"{title} — {subtitle}"
+
+            # Extract frametitle if present
+            frametitle_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
+            if frametitle_match:
+                title = frametitle_match.group(1).strip()
+                # Remove frametitle from content to avoid duplication
+                frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
+
+            # Extract notes if present
+            notes = []
+            note_match = re.search(r'\\note\{(.*?)\}', frame_content, re.DOTALL)
+            if note_match:
+                note_content = note_match.group(1).strip()
+                # Extract items from note content
+                note_items = re.finditer(r'\\item\s*(.*?)(?=\\item|$)', note_content, re.DOTALL)
+                for item in note_items:
+                    note_text = item.group(1).strip()
+                    if note_text:
+                        notes.append(f"• {note_text}")
+                # Remove note from content
+                frame_content = re.sub(r'\\note\{.*?\}', '', frame_content, flags=re.DOTALL)
+
+            # Process content lines
+            content_lines = []
+            for line in frame_content.split('\n'):
+                line = line.strip()
+                if line and not line.startswith('%'):
+                    content_lines.append(line)
+
+            # Build slide dictionary
+            slide = {
+                'title': title,
+                'media': '',  # Will be populated from content if present
+                'content': content_lines,
+                'notes': notes,
+                '_hidden_content_indices': [],
+                '_hidden_note_indices': [],
+                '_media_masked': False,
+                '_fully_masked': False
+            }
+
+            # Try to extract media from content
+            for line in content_lines:
+                if '\\includegraphics' in line or '\\movie' in line:
+                    slide['media'] = line
+                    break
+
+            slides.append(slide)
+
+        return slides
+
+    def _parse_old_format(self, content: str) -> list:
+        """Parse content in old format: \title + \begin{Content}"""
+        slides_raw = []
+        lines = content.split('\n')
+        current_slide_lines = []
+
+        for line in lines:
+            if re.match(r'^%?\s*\\title\s+', line):
+                if current_slide_lines:
+                    slides_raw.append(current_slide_lines)
+                current_slide_lines = [line]
+            else:
+                current_slide_lines.append(line)
+
+        if current_slide_lines:
+            slides_raw.append(current_slide_lines)
+
+        return slides_raw
 
     def _apply_masking_to_slide(self, slide_index: int) -> None:
         """Apply masking to a slide (mark as deleted)"""
@@ -20186,17 +21166,23 @@ Created by {self.__author__}
         print("=" * 40)
 
     def edit_preamble(self):
-        """Open preamble editor with logo support"""
-        # Get current preamble including logo
-        current_preamble = self.get_custom_preamble()
+        """Open preamble editor with custom preamble support"""
+        # Get current preamble (either custom or generated)
+        if hasattr(self, 'custom_preamble') and self.custom_preamble:
+            current_preamble = self.custom_preamble
+        else:
+            current_preamble = self.get_custom_preamble()
 
-        # Open preamble editor
+        # Open preamble editor - uses the static method
         new_preamble = PreambleEditor.edit_preamble(self, current_preamble)
 
         if new_preamble is not None:
             # Store the custom preamble
             self.custom_preamble = new_preamble
+            self.using_custom_preamble = True
             messagebox.showinfo("Success", "Preamble updated successfully!")
+            self.write("✓ Custom preamble saved and will be used for all future PDF generation\n", "green")
+            self.write("  To reset to default, use the 'Reset to Default' button in the editor\n", "cyan")
 
     def present_with_notes(self) -> None:
         """Present PDF using pympress for dual-screen display with notes"""
@@ -22911,6 +23897,178 @@ Created by {self.__author__}
             filename = filename[:100]
         return filename
 
+    def reset_preamble_to_default(self):
+        """Reset to default generated preamble"""
+        if messagebox.askyesno("Reset Preamble",
+                               "This will discard your custom preamble and use the default generated one.\n\n"
+                               "Are you sure?"):
+            if hasattr(self, 'custom_preamble'):
+                delattr(self, 'custom_preamble')
+            self.using_custom_preamble = False
+            self.write("✓ Reset to default preamble\n", "green")
+            messagebox.showinfo("Success", "Preamble reset to default")
+
+    def view_current_preamble(self):
+        """Show current preamble in a dialog"""
+        preamble = self.get_custom_preamble()
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Current Preamble")
+        dialog.geometry("700x500")
+        dialog.transient(self)
+
+        text_widget = ctk.CTkTextbox(dialog, font=("Courier", 10))
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+        text_widget.insert("1.0", preamble)
+        text_widget.configure(state="disabled")
+
+        def copy_preamble():
+            self.clipboard_clear()
+            self.clipboard_append(preamble)
+            messagebox.showinfo("Copied", "Preamble copied to clipboard")
+
+        button_frame = ctk.CTkFrame(dialog)
+        button_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkButton(button_frame, text="Copy to Clipboard", command=copy_preamble).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="Close", command=dialog.destroy).pack(side="right", padx=5)
+
+    def extract_preamble_definitions(self, content: str) -> dict:
+        """
+        Extract color definitions and package imports from preamble.
+        Returns dict with 'colors' and 'packages' keys.
+        """
+        import re
+
+        result = {
+            'colors': {},      # {name: (model, value)}
+            'packages': [],    # [package_name]
+            'package_options': {}  # {package_name: options}
+        }
+
+        # Extract \definecolor{name}{model}{value}
+        definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        matches = re.findall(definecolor_pattern, content)
+        for name, model, value in matches:
+            result['colors'][name.strip()] = (model.strip(), value.strip())
+
+        # Extract \colorlet{name}{source}
+        colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+        matches = re.findall(colorlet_pattern, content)
+        for name, source in matches:
+            result['colors'][name.strip()] = ('colorlet', source.strip())
+
+        # Extract \usepackage[options]{package}
+        usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        matches = re.findall(usepackage_pattern, content)
+        for options, pkg_list in matches:
+            for pkg in pkg_list.split(','):
+                pkg = pkg.strip()
+                if pkg:
+                    if pkg not in result['packages']:
+                        result['packages'].append(pkg)
+                    if options and pkg not in result['package_options']:
+                        result['package_options'][pkg] = options
+
+        return result
+
+    def detect_missing_packages_from_content(self, content: str) -> set:
+        """
+        Detect packages needed by content but not explicitly included.
+        """
+        import re
+        missing = set()
+
+        # Map content patterns to required packages
+        package_patterns = {
+            'siunitx': [r'\\SI\{', r'\\num\{', r'\\qty\{', r'Ω', r'\\Ohm', r'\\micro'],
+            'textcomp': [r'\\textmu', r'\\textendash', r'\\textcopyright', r'\\textregistered',
+                         r'\\texteuro', r'\\textcurrency', r'₹', r'\\textdollar', r'\\textdegree'],
+            'amsmath': [r'\\begin{align', r'\\begin{equation}', r'\\begin{gather}',
+                        r'\\begin{multline}', r'\\mathbb\{', r'\\mathcal\{'],
+            'amssymb': [r'\\mathbb\{', r'\\mathcal\{', r'\\mathfrak\{', r'\\mathscr\{', r'\\square'],
+            'booktabs': [r'\\toprule', r'\\midrule', r'\\bottomrule', r'\\cmidrule', r'\\addlinespace'],
+            'multirow': [r'\\multirow\{', r'\\multirowcell'],
+            'makecell': [r'\\makecell', r'\\thead'],
+            'tikz': [r'\\begin\{tikzpicture\}', r'\\usetikzlibrary', r'\\tikzset'],
+            'pgfplots': [r'\\begin\{axis\}', r'\\pgfplotsset', r'\\addplot'],
+            'hyperref': [r'\\href\{', r'\\url\{', r'\\hyperlink\{', r'\\hypersetup'],
+            'xcolor': [r'\\textcolor\{', r'\\colorbox\{', r'\\fcolorbox\{', r'\\color\{'],
+            'listings': [r'\\begin\{lstlisting\}', r'\\lstset', r'\\lstinputlisting'],
+            'tcolorbox': [r'\\begin\{tcolorbox\}', r'\\tcbset', r'\\newtcolorbox'],
+            'soul': [r'\\so\{', r'\\hl\{', r'\\ul\{', r'\\st\{', r'\\uline\{'],
+            'geometry': [r'\\geometry\{', r'\\paperwidth', r'\\paperheight'],
+            'graphicx': [r'\\includegraphics\{', r'\\includegraphics\['],
+            'array': [r'\\begin\{array\}', r'\\newcolumntype', r'\\>', r'\\<'],
+            'physics': [r'\\dv\{', r'\\pdv\{', r'\\grad\{', r'\\div\{', r'\\curl\{', r'\\qty\{'],
+            'siunitx': [r'\\si\{', r'\\SI\{', r'\\num\{', r'\\qty\{', r'Ω', r'\\Ohm', r'\\micro'],
+            'textcomp': [r'\\textmu', r'\\textendash', r'\\textcopyright', r'\\textregistered',
+                         r'\\texteuro', r'\\textcurrency', r'₹', r'\\textdollar', r'\\textdegree'],
+            'amsmath': [r'\\begin{align', r'\\begin{equation}', r'\\begin{gather}',
+                        r'\\begin{multline}', r'\\mathbb\{', r'\\mathcal\{'],
+            'amssymb': [r'\\mathbb\{', r'\\mathcal\{', r'\\mathfrak\{', r'\\mathscr\{', r'\\square'],
+            'booktabs': [r'\\toprule', r'\\midrule', r'\\bottomrule', r'\\cmidrule', r'\\addlinespace'],
+            'multirow': [r'\\multirow\{', r'\\multirowcell'],
+            'makecell': [r'\\makecell', r'\\thead'],
+            'tikz': [r'\\begin\{tikzpicture\}', r'\\usetikzlibrary', r'\\tikzset'],
+            'pgfplots': [r'\\begin\{axis\}', r'\\pgfplotsset', r'\\addplot'],
+            'hyperref': [r'\\href\{', r'\\url\{', r'\\hyperlink\{', r'\\hypersetup'],
+            'xcolor': [r'\\textcolor\{', r'\\colorbox\{', r'\\fcolorbox\{', r'\\color\{'],
+            'listings': [r'\\begin\{lstlisting\}', r'\\lstset', r'\\lstinputlisting'],
+            'tcolorbox': [r'\\begin\{tcolorbox\}', r'\\tcbset', r'\\newtcolorbox'],
+            'soul': [r'\\so\{', r'\\hl\{', r'\\ul\{', r'\\st\{', r'\\uline\{'],
+            'geometry': [r'\\geometry\{', r'\\paperwidth', r'\\paperheight'],
+            'graphicx': [r'\\includegraphics\{', r'\\includegraphics\['],
+            'array': [r'\\begin\{array\}', r'\\newcolumntype', r'\\>', r'\\<'],
+            'physics': [r'\\dv\{', r'\\pdv\{', r'\\grad\{', r'\\div\{', r'\\curl\{', r'\\qty\{'],
+        }
+
+        # Check each pattern
+        for pkg, patterns in package_patterns.items():
+            for pattern in patterns:
+                if re.search(pattern, content):
+                    missing.add(pkg)
+                    break
+
+        return missing
+
+    def generate_preamble_block(self, extracted: dict, missing_packages: set) -> str:
+        """
+        Generate a preamble block with extracted definitions and missing packages.
+        """
+        block = []
+        block.append("% ====== PREAMBLE DEFINITIONS (Auto-extracted) ======")
+
+        # Add missing packages
+        if missing_packages:
+            block.append("% Required packages")
+            for pkg in sorted(missing_packages):
+                # Skip packages that might be in the main preamble
+                if pkg in ['xcolor', 'graphicx', 'amsmath', 'amssymb', 'tikz']:
+                    continue
+                block.append(f"\\usepackage{{{pkg}}}")
+
+        # Add color definitions
+        if extracted['colors']:
+            block.append("% Color definitions")
+            for name, (model, value) in extracted['colors'].items():
+                if model == 'colorlet':
+                    block.append(f"\\colorlet{{{name}}}{{{value}}}")
+                else:
+                    block.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
+
+        # Add siunitx configuration if needed
+        if 'siunitx' in missing_packages or 'siunitx' in extracted['packages']:
+            block.append("% siunitx configuration")
+            block.append("\\sisetup{")
+            block.append("    per-mode = symbol,")
+            block.append("    output-decimal-marker = {.},")
+            block.append("    group-separator = {,}")
+            block.append("}")
+
+        block.append("% ==================================================")
+        block.append("")
+
+        return "\n".join(block)
 
 class ScreenCaptureMethod:
     """Detect and manage screen capture methods for different environments"""
@@ -23543,7 +24701,7 @@ def import_required_packages():
 
 def convert_beamer_tex_to_simple_text(tex_file_path):
     """
-    Convert Beamer .tex file to simple text format with error tracking.
+    Convert Beamer .tex file to simple text format with proper error handling.
     Returns tuple (output_path, errors_list) where errors_list contains
     (line_number, error_message, context) for each error found.
     """
@@ -23551,8 +24709,9 @@ def convert_beamer_tex_to_simple_text(tex_file_path):
     from pathlib import Path
 
     errors = []
+    warnings = []
 
-    def add_error(line_num, error_msg, context_line):
+    def add_error(line_num, error_msg, context_line=""):
         """Record an error with line number for later editing"""
         errors.append({
             'line': line_num,
@@ -23560,6 +24719,15 @@ def convert_beamer_tex_to_simple_text(tex_file_path):
             'context': context_line
         })
         print(f"  ⚠ Line {line_num}: {error_msg}")
+
+    def add_warning(line_num, warning_msg, context_line=""):
+        """Record a warning"""
+        warnings.append({
+            'line': line_num,
+            'message': warning_msg,
+            'context': context_line
+        })
+        print(f"  ℹ Line {line_num}: {warning_msg}")
 
     try:
         with open(tex_file_path, 'r', encoding='utf-8') as f:
@@ -23612,7 +24780,7 @@ def convert_beamer_tex_to_simple_text(tex_file_path):
 
         if not frames:
             add_error(1, "No frames found in document", "")
-            return None
+            return None, errors
 
         slides = []
         slide_count = 0
@@ -23623,44 +24791,75 @@ def convert_beamer_tex_to_simple_text(tex_file_path):
             subtitle = frame_match.group(2) or ""
             frame_content = frame_match.group(3).strip()
 
-            # Skip title page
-            if '\\titlepage' in frame_content:
+            # Skip title page frames but extract content
+            if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
+                # Try to extract title from frame content
+                title_match = re.search(r'\\title\{([^}]*)\}', frame_content)
+                if title_match:
+                    title = title_match.group(1)
+                # Create a proper title slide
+                slides.append({
+                    'title': title,
+                    'content': [f"\\begin{{frame}}{{{title}}}", "\\titlepage", "\\end{frame}"],
+                    'notes': []
+                })
                 continue
 
             # Build the slide content exactly as it appears
             content_lines = []
 
+            # Add frame title
             if subtitle:
-                content_lines.append(f"\\textbf{{{title}}} — {subtitle}")
+                content_lines.append(f"\\begin{{frame}}{{{title} - {subtitle}}}")
+                content_lines.append(f"\\frametitle{{{title} — {subtitle}}}")
             else:
-                content_lines.append(f"\\textbf{{{title}}}")
+                content_lines.append(f"\\begin{{frame}}{{{title}}}")
+                content_lines.append(f"\\frametitle{{{title}}}")
 
-            # Add frame content preserving all LaTeX
+            # Extract and process frame content
+            # Remove any existing \frametitle commands to avoid duplication
+            frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
+
+            # Process frame content preserving all LaTeX
             for line in frame_content.split('\n'):
                 line = line.strip()
                 if line:
                     content_lines.append(line)
 
+            # Close the frame
+            content_lines.append("\\end{frame}")
+
+            # Extract notes if present
+            notes = []
+            note_match = re.search(r'\\note\{(.*?)\}', frame_content, re.DOTALL)
+            if note_match:
+                note_content = note_match.group(1).strip()
+                notes = [note_content]
+
             slides.append({
                 'title': title,
                 'content': content_lines,
-                'notes': []
+                'notes': notes
             })
 
-        # Write to output file
+        # Write to output file with proper format
         with open(output_path, 'w', encoding='utf-8') as f:
             for slide in slides:
-                f.write(f"\\title {slide['title']}\n")
-                f.write("\\begin{Content}\n")
-                f.write("\\None\n")
-                for content_line in slide['content']:
-                    # Escape any problematic characters for the IDE format
-                    escaped_line = content_line.replace('\\&', '&')  # Keep as is
-                    f.write(f"{escaped_line}\n")
-                f.write("\\end{Content}\n")
-                f.write("\\begin{Notes}\n")
-                f.write("% No notes for this slide\n")
-                f.write("\\end{Notes}\n")
+                # Write the frame directly - NO \title or \begin{Content}
+                for line in slide['content']:
+                    f.write(f"{line}\n")
+                f.write("\n")
+
+                # Add notes if present
+                if slide['notes']:
+                    f.write("\\begin{Notes}\n")
+                    for note in slide['notes']:
+                        f.write(f"{note}\n")
+                    f.write("\\end{Notes}\n")
+                else:
+                    f.write("\\begin{Notes}\n")
+                    f.write("% No notes for this slide\n")
+                    f.write("\\end{Notes}\n")
                 f.write("\n")
 
         print(f"✓ Converted {len(slides)} slides from {tex_file_path}")
@@ -23669,6 +24868,11 @@ def convert_beamer_tex_to_simple_text(tex_file_path):
             print(f"\n⚠ Found {len(errors)} issue(s) during conversion:")
             for err in errors:
                 print(f"   Line {err['line']}: {err['message']}")
+
+        if warnings:
+            print(f"\nℹ Found {len(warnings)} warning(s):")
+            for warn in warnings:
+                print(f"   Line {warn['line']}: {warn['message']}")
 
         return output_path, errors
 

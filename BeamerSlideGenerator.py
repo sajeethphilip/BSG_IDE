@@ -3176,8 +3176,7 @@ def sanitize_latex_content(content_line):
 
 def process_input_file(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
     """
-    Process input file - PASS THROUGH WITHOUT MODIFICATION
-    The input file is already in the correct format for Beamer.
+    Process input file - CONVERT from native format to proper LaTeX frames.
     """
     processed = 0
     failed = 0
@@ -3188,12 +3187,40 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Write directly to output - NO MODIFICATIONS
-        with open(output_filename, 'w', encoding='utf-8') as outfile:
-            outfile.write(content)
+        # ========== CHECK IF THIS IS NATIVE FORMAT ==========
+        has_native_format = '\\title' in content and '\\begin{Content}' in content
 
-        # Count slides (approximate)
-        processed = content.count('\\title')
+        if has_native_format:
+            # ========== CONVERT NATIVE FORMAT TO PROPER LaTeX ==========
+            slides = self._parse_native_format(content)
+
+            if not slides:
+                errors.append("No slides found in native format")
+                return 0, 1, errors
+
+            # Generate proper LaTeX with frames
+            with open(output_filename, 'w', encoding='utf-8') as outfile:
+                # Get or generate preamble
+                preamble = self._get_preamble(content)
+                outfile.write(preamble)
+                outfile.write("\n\\begin{document}\n")
+                outfile.write("\\maketitle\n\n")
+
+                # Write each slide as a proper frame
+                for slide in slides:
+                    frame_code = self._generate_latex_frame(slide)
+                    outfile.write(frame_code)
+                    outfile.write("\n")
+
+                outfile.write("\\end{document}\n")
+
+            processed = len(slides)
+
+        else:
+            # Already in proper LaTeX format - pass through
+            with open(output_filename, 'w', encoding='utf-8') as outfile:
+                outfile.write(content)
+            processed = content.count('\\begin{frame}')
 
         return processed, failed, errors
 
@@ -3205,6 +3232,429 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         import traceback
         traceback.print_exc()
         return 0, 1, errors
+
+def _parse_native_format(self, content: str) -> list:
+    """Parse native format (\title + \begin{Content}) into slide dictionaries"""
+    slides = []
+    current_slide = None
+    in_content = False
+    in_notes = False
+
+    lines = content.split('\n')
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect title
+        title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
+        if title_match:
+            # Save previous slide
+            if current_slide:
+                slides.append(current_slide)
+            # Start new slide
+            title = title_match.group(1).strip()
+            current_slide = {
+                'title': title,
+                'content': [],
+                'notes': [],
+                'media': ''
+            }
+            in_content = False
+            in_notes = False
+            continue
+
+        if current_slide is None:
+            continue
+
+        # Detect Content block
+        if re.match(r'^%?\s*\\begin{Content}\s*$', stripped):
+            in_content = True
+            in_notes = False
+            continue
+        elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
+            in_content = False
+            continue
+
+        # Detect Notes block
+        if re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
+            in_notes = True
+            in_content = False
+            continue
+        elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
+            in_notes = False
+            continue
+
+        # Process content lines
+        if in_content:
+            # Skip \None lines (media marker)
+            if stripped == "\\None" or stripped.startswith("\\None"):
+                if not current_slide['media']:
+                    current_slide['media'] = ""
+                continue
+
+            # Check if this is a media directive
+            if stripped.startswith(('\\file', '\\play')):
+                current_slide['media'] = stripped
+                continue
+
+            # Regular content - preserve as-is (it already contains LaTeX)
+            if stripped:
+                current_slide['content'].append(stripped)
+
+        # Process notes lines
+        if in_notes:
+            if stripped and not stripped.startswith('%'):
+                # Remove bullet markers if present
+                note_text = stripped
+                if note_text.startswith('•'):
+                    note_text = note_text[1:].strip()
+                current_slide['notes'].append(note_text)
+
+    # Save last slide
+    if current_slide:
+        slides.append(current_slide)
+
+    return slides
+
+def _get_preamble(self, content: str) -> str:
+    """Extract or generate preamble"""
+    import re
+
+    # Try to find existing preamble
+    doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+    if doc_match:
+        preamble = doc_match.group(1).strip()
+        # Remove any \title, \author, \date commands (they'll be in slides)
+        preamble = re.sub(r'\\title\{[^}]*\}', '', preamble)
+        preamble = re.sub(r'\\author\{[^}]*\}', '', preamble)
+        preamble = re.sub(r'\\date\{[^}]*\}', '', preamble)
+        return preamble
+
+    # Generate default preamble with all needed colors
+    return r"""\documentclass[aspectratio=169]{beamer}
+\usepackage{graphicx}
+\usepackage{multimedia}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{textcomp}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+
+% Color definitions
+\definecolor{myred}{RGB}{255,50,50}
+\definecolor{myblue}{RGB}{0,130,255}
+\definecolor{mygreen}{RGB}{0,200,100}
+\definecolor{myyellow}{RGB}{255,210,0}
+\definecolor{myorange}{RGB}{255,130,0}
+\definecolor{mypurple}{RGB}{147,112,219}
+\definecolor{mypink}{RGB}{255,105,180}
+\definecolor{myteal}{RGB}{0,128,128}
+\definecolor{mygray}{RGB}{128,128,128}
+\definecolor{mybrown}{RGB}{139,69,19}
+\definecolor{mycyan}{RGB}{0,255,255}
+\definecolor{gold}{RGB}{212,175,55}
+\definecolor{primary}{RGB}{0,90,156}
+\definecolor{primarylight}{RGB}{230,242,255}
+\definecolor{secondary}{RGB}{0,162,184}
+\definecolor{secondarylight}{RGB}{220,245,250}
+\definecolor{accent}{RGB}{239,127,56}
+\definecolor{accentlight}{RGB}{255,240,230}
+\definecolor{forest}{RGB}{34,139,34}
+\definecolor{forestlight}{RGB}{220,245,220}
+\definecolor{teal}{RGB}{0,128,128}
+\definecolor{teallight}{RGB}{220,245,245}
+\definecolor{greenbiodiv}{RGB}{46,139,87}
+\definecolor{blueai}{RGB}{70,130,180}
+\definecolor{redwarning}{RGB}{200,50,50}
+\definecolor{redlight}{RGB}{255,230,230}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=true]
+\setbeamersize{text margin left=5pt,text margin right=5pt}
+
+% Notes support
+\usepackage{pgfpages}
+\setbeameroption{show notes on second screen=right}
+\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
+
+% TikZ libraries
+\usetikzlibrary{positioning, shapes, arrows.meta, calc, backgrounds, fit, shapes.geometric}
+\pgfplotsset{compat=1.18}
+"""
+
+def _generate_latex_frame(self, slide: dict) -> str:
+    """Generate a proper LaTeX frame from a slide dictionary"""
+    title = slide.get('title', 'Untitled')
+    media = slide.get('media', '')
+    content = slide.get('content', [])
+    notes = slide.get('notes', [])
+
+    # Clean title for LaTeX
+    clean_title = self._clean_title_for_latex(title)
+
+    frame_lines = []
+    frame_lines.append(f"\\begin{{frame}}{{{clean_title}}}")
+    frame_lines.append(f"\\frametitle{{{clean_title}}}")
+    frame_lines.append("")
+
+    # Add media if present
+    if media:
+        if media.startswith('\\file'):
+            file_path = media.replace('\\file', '').strip()
+            frame_lines.append("\\begin{center}")
+            frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}")
+            frame_lines.append("\\end{center}")
+        elif media.startswith('\\play'):
+            play_content = media.replace('\\play', '').strip()
+            if play_content.startswith('\\file'):
+                file_path = play_content.replace('\\file', '').strip()
+                frame_lines.append("\\begin{center}")
+                movie_line = f"    \\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}}}{{{file_path}}}"
+                frame_lines.append(movie_line)
+                frame_lines.append("\\end{center}")
+            else:
+                # URL-based play
+                frame_lines.append(f"    \\href{{{play_content}}}{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}")
+
+    # Add content - preserve all LaTeX as-is
+    if content:
+        content_str = '\n'.join(content)
+        frame_lines.append(content_str)
+
+    # Add notes
+    if notes:
+        frame_lines.append("")
+        frame_lines.append("\\note{")
+        frame_lines.append("\\begin{itemize}")
+        for note in notes:
+            note_text = note.strip()
+            if note_text:
+                frame_lines.append(f"    \\item {note_text}")
+        frame_lines.append("\\end{itemize}")
+        frame_lines.append("}")
+
+    frame_lines.append("\\end{frame}")
+
+    return '\n'.join(frame_lines)
+
+def extract_preamble_colors(tex_content: str) -> dict:
+    """
+    Extract ALL color definitions from TeX content including common color packages.
+    """
+    import re
+
+    colors = {}
+
+    # Standard color definitions
+    definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+    for name, model, value in re.findall(definecolor_pattern, tex_content):
+        colors[name] = {'model': model, 'value': value}
+
+    # Colorlet definitions
+    colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+    for name, source in re.findall(colorlet_pattern, tex_content):
+        colors[name] = {'model': 'colorlet', 'value': source}
+
+    # Xcolor named colors (if xcolor package is used)
+    if '\\usepackage{xcolor}' in tex_content or '\\usepackage[usenames]{xcolor}' in tex_content:
+        # Common xcolor named colors
+        common_colors = {
+            'red': 'RGB{255,0,0}',
+            'green': 'RGB{0,255,0}',
+            'blue': 'RGB{0,0,255}',
+            'yellow': 'RGB{255,255,0}',
+            'cyan': 'RGB{0,255,255}',
+            'magenta': 'RGB{255,0,255}',
+            'orange': 'RGB{255,165,0}',
+            'purple': 'RGB{128,0,128}',
+            'brown': 'RGB{165,42,42}',
+            'pink': 'RGB{255,192,203}',
+            'gold': 'RGB{212,175,55}',
+            'silver': 'RGB{192,192,192}',
+        }
+        for name, rgb in common_colors.items():
+            if name not in colors:
+                colors[name] = {'model': 'RGB', 'value': rgb}
+
+    # Check for custom gold definition
+    if 'gold' not in colors and ('gold' in tex_content or '\\textcolor{gold}' in tex_content):
+        colors['gold'] = {'model': 'RGB', 'value': '212,175,55'}
+
+    return colors
+
+def _clean_title_for_latex(self, title: str) -> str:
+    """Clean title for LaTeX - remove problematic characters"""
+    if not title:
+        return "Untitled"
+
+    # Remove excessive braces
+    title = title.replace('{{{', '{').replace('}}}', '}')
+    title = title.replace('{{', '{').replace('}}', '}')
+
+    # Escape special characters
+    title = title.replace('&', '\\&')
+    title = title.replace('%', '\\%')
+    title = title.replace('$', '\\$')
+    title = title.replace('#', '\\#')
+    title = title.replace('_', '\\_')
+
+    return title.strip() or "Untitled"
+
+def _extract_preamble(content: str) -> str:
+    """Extract the preamble from the content or generate default"""
+    import re
+
+    # Try to find existing preamble
+    doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+    if doc_match:
+        preamble = doc_match.group(1).strip()
+        # Remove any \title, \author, \date commands from preamble (they'll be in slides)
+        preamble = re.sub(r'\\title\{[^}]*\}', '', preamble)
+        preamble = re.sub(r'\\author\{[^}]*\}', '', preamble)
+        preamble = re.sub(r'\\date\{[^}]*\}', '', preamble)
+        return preamble
+
+    # Generate default preamble
+    return r"""\documentclass[aspectratio=169]{beamer}
+\usepackage{graphicx}
+\usepackage{multimedia}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{textcomp}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+
+\definecolor{myred}{RGB}{255,50,50}
+\definecolor{myblue}{RGB}{0,130,255}
+\definecolor{mygreen}{RGB}{0,200,100}
+\definecolor{myyellow}{RGB}{255,210,0}
+\definecolor{myorange}{RGB}{255,130,0}
+\definecolor{mypurple}{RGB}{147,112,219}
+\definecolor{mypink}{RGB}{255,105,180}
+\definecolor{myteal}{RGB}{0,128,128}
+\definecolor{mygray}{RGB}{128,128,128}
+\definecolor{mybrown}{RGB}{139,69,19}
+\definecolor{mycyan}{RGB}{0,255,255}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=true]
+\setbeamersize{text margin left=5pt,text margin right=5pt}
+
+% Notes support
+\usepackage{pgfpages}
+\setbeameroption{show notes on second screen=right}
+\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
+"""
+
+def _generate_frame_from_slide(slide: dict) -> str:
+    """Generate a proper LaTeX frame from a slide dictionary"""
+    title = slide.get('title', 'Untitled')
+    media = slide.get('media', '')
+    content = slide.get('content', [])
+    notes = slide.get('notes', [])
+
+    frame_lines = []
+    frame_lines.append(f"\\begin{{frame}}{{{title}}}")
+    frame_lines.append(f"\\frametitle{{{title}}}")
+    frame_lines.append("")
+
+    # Add media if present
+    if media:
+        # Convert media directives to proper LaTeX
+        if media.startswith('\\file'):
+            file_path = media.replace('\\file', '').strip()
+            # Use raw string or escape properly
+            frame_lines.append("\\begin{center}")
+            frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}")
+            frame_lines.append("\\end{center}")
+        elif media.startswith('\\play'):
+            # Handle playable media
+            play_content = media.replace('\\play', '').strip()
+            if play_content.startswith('\\file'):
+                file_path = play_content.replace('\\file', '').strip()
+                # Fixed: Use separate lines or properly escape the f-string
+                frame_lines.append("\\begin{center}")
+                movie_line = "    \\movie[externalviewer]{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{%s}}{%s}" % (file_path, file_path)
+                frame_lines.append(movie_line)
+                frame_lines.append("\\end{center}")
+            else:
+                # Handle URL-based play
+                frame_lines.append(f"    \\href{{{play_content}}}{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}")
+
+    # Add content
+    if content:
+        # Check if content is already in a columns environment
+        content_str = '\n'.join(content)
+        if '\\begin{columns}' in content_str:
+            # Preserve columns as-is
+            frame_lines.append(content_str)
+        else:
+            # Process content lines
+            in_itemize = False
+            for line in content:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+
+                # Check for LaTeX environments
+                if stripped.startswith('\\begin{'):
+                    if in_itemize:
+                        frame_lines.append("\\end{itemize}")
+                        in_itemize = False
+                    frame_lines.append(stripped)
+                    continue
+                elif stripped.startswith('\\end{'):
+                    frame_lines.append(stripped)
+                    if 'itemize' in stripped or 'enumerate' in stripped:
+                        in_itemize = False
+                    continue
+
+                # Handle bullet points
+                if stripped.startswith('-') or stripped.startswith('•'):
+                    if not in_itemize:
+                        frame_lines.append("\\begin{itemize}")
+                        in_itemize = True
+                    bullet_text = stripped[1:].strip()
+                    frame_lines.append(f"    \\item {bullet_text}")
+                else:
+                    if in_itemize:
+                        frame_lines.append("\\end{itemize}")
+                        in_itemize = False
+                    frame_lines.append(stripped)
+
+            if in_itemize:
+                frame_lines.append("\\end{itemize}")
+
+    # Add notes
+    if notes:
+        frame_lines.append("")
+        frame_lines.append("\\note{")
+        frame_lines.append("\\begin{itemize}")
+        for note in notes:
+            note_text = note.strip()
+            if note_text.startswith('•'):
+                note_text = note_text[1:].strip()
+            frame_lines.append(f"    \\item {note_text}")
+        frame_lines.append("\\end{itemize}")
+        frame_lines.append("}")
+
+    frame_lines.append("\\end{frame}")
+
+    return '\n'.join(frame_lines)
 
 def should_process_frame(title, content, media, notes):
     """
