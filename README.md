@@ -1,4 +1,4 @@
-#If you get an error, first check the preamble - edit the preamble from the IDE and insert the missing def or inputs - 90% cases, that is the reason.
+# If you get an error, first check the preamble - edit the preamble from the IDE and insert the missing def or inputs - 90% cases, that is the reason.
 
 # BSG-IDE - Beamer Slide Generator IDE
 
