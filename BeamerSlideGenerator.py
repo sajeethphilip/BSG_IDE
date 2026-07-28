@@ -102,16 +102,13 @@ def generate_preview_frame(filepath, output_path=None):
         return None
 
 def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
-    """Returns complete Beamer preamble including notes support and custom layout commands"""
+    """Returns complete Beamer preamble with intelligent auto-scaling"""
 
-    # Clean titles to prevent brace issues
     def clean_text(text):
         if not text:
             return text
-        # Remove excessive braces that cause compilation errors
         text = text.replace('{{', '').replace('}}', '')
         text = text.replace('{{{', '').replace('}}}', '')
-        # Escape special LaTeX characters
         text = text.replace('&', '\\&')
         text = text.replace('%', '\\%')
         text = text.replace('$', '\\$')
@@ -123,7 +120,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         text = text.replace('^', '\\textasciicircum')
         return text
 
-    # Clean all input text
     title = clean_text(title)
     subtitle = clean_text(subtitle) if subtitle else ""
     author = clean_text(author)
@@ -134,7 +130,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     core_preamble = r"""
 \documentclass[aspectratio=169]{beamer}
 
-% Essential packages (core)
+% Essential packages
 \usepackage{hyperref}
 \usepackage{graphicx}
 \usepackage{amsmath}
@@ -145,12 +141,14 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{multimedia}
 \usepackage{xifthen}
 \usepackage{xcolor}
-\usepackage{geometry}
 \usepackage{booktabs}
 \usepackage{grffile}
-\geometry{paperwidth=128mm,paperheight=96mm}
+\usepackage{adjustbox}
+\usepackage{environ}
 
-% Load TikZ libraries FIRST
+% NO geometry - let aspectratio handle sizing
+
+% Load TikZ libraries
 \usetikzlibrary{positioning}
 \usetikzlibrary{shapes.symbols}
 \usetikzlibrary{shapes.callouts}
@@ -162,7 +160,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usetikzlibrary{backgrounds}
 \usetikzlibrary{fit}
 
-% Define the style for covered text
 \setbeamercovered{dynamic}
 \setbeamerfont{item projected}{size=\small}
 \setbeamercolor{alerted text}{fg=white}
@@ -173,10 +170,8 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \IfFileExists{pifont.sty}{\usepackage{pifont}}{}
 \IfFileExists{soul.sty}{\usepackage{soul}}{}
 
-% Package configurations
 \pgfplotsset{compat=1.18}
 
-% SIMPLIFIED text effects - use standard LaTeX instead of problematic TikZ
 \newcommand{\shadowtext}[2][2pt]{%
     \textcolor{white}{\textbf{#2}}%
 }
@@ -185,8 +180,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     \textcolor{#1}{\textbf{#2}}%
 }
 
-% Conditional definitions based on package availability
-% CRITICAL: Use ##1 instead of #1 inside \IfFileExists
 \IfFileExists{tcolorbox.sty}{%
     \newtcolorbox{alertbox}[1][red]{%
         colback=##1!5!white,
@@ -195,7 +188,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         boxrule=0.5pt,
         rounded corners
     }
-
     \newtcolorbox{infobox}[1][blue]{%
         enhanced,
         colback=##1!5!white,
@@ -221,15 +213,15 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \definecolor{mybrown}{RGB}{139,69,19}
 \definecolor{mycyan}{RGB}{0,255,255}
 
-% Basic highlighting commands
 \newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
 \newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
 \newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
 \newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textbf{#1}}}
 \newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textbf{#1}}}
+"""
 
-% ========== LAYOUT COMMANDS - Check if already defined ==========
-% Split layout: image on left, text on right
+    layout_commands = r"""
+% ========== LAYOUT COMMANDS ==========
 \ifcsname split\endcsname\else
 \newcommand{\split}[2]{%
     \begin{columns}[T]
@@ -245,7 +237,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% PIP layout: text on left, small image on right
 \ifcsname pip\endcsname\else
 \newcommand{\pip}[2]{%
     \begin{columns}[T]
@@ -260,7 +251,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Fullframe layout: image takes entire frame
 \ifcsname ff\endcsname\else
 \newcommand{\ff}[1]{%
     \setbeamertemplate{background}{%
@@ -278,7 +268,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Watermark layout: image as background watermark
 \ifcsname wm\endcsname\else
 \newcommand{\wm}[1]{%
     \setbeamertemplate{background}{%
@@ -291,7 +280,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Highlight layout: image with highlighted content overlay
 \ifcsname hl\endcsname\else
 \newcommand{\hl}[2]{%
     \begin{columns}[T]
@@ -309,7 +297,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Background layout: image as background with content overlay
 \ifcsname bg\endcsname\else
 \newcommand{\bg}[1]{%
     \setbeamertemplate{background}{%
@@ -322,7 +309,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Top-bottom layout: image at top, content at bottom
 \ifcsname tb\endcsname\else
 \newcommand{\tb}[2]{%
     \begin{center}
@@ -333,7 +319,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Overlay layout: image with overlaid text blocks
 \ifcsname ol\endcsname\else
 \newcommand{\ol}[1]{%
     \begin{tikzpicture}[remember picture,overlay]
@@ -344,7 +329,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Corner layout: image in corner
 \ifcsname corner\endcsname\else
 \newcommand{\corner}[2]{%
     \begin{tikzpicture}[remember picture,overlay]
@@ -356,7 +340,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Mosaic layout: grid of images
 \ifcsname mosaic\endcsname\else
 \newcommand{\mosaic}[2]{%
     \begingroup
@@ -373,11 +356,9 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     \end{center}
     \endgroup
 }
-
 \def\mosaic@process{%
     \mosaic@process@helper\mosaic@images,\@empty
 }
-
 \def\mosaic@process@helper#1,#2\@empty{%
     \ifx\@empty#2\@empty
         \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
@@ -387,17 +368,17 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         \mosaic@process@next
     \fi
 }
-
 \def\mosaic@process@next{%
     \mosaic@process@helper\mosaic@remaining,\@empty
 }
 \fi
+"""
 
-% Basic theme setup
+    theme_setup = r"""
+% Theme setup
 \usetheme{Madrid}
 \usecolortheme{owl}
 
-% Color settings
 \setbeamercolor{normal text}{fg=white}
 \setbeamercolor{structure}{fg=myyellow}
 \setbeamercolor{alerted text}{fg=myorange}
@@ -405,18 +386,14 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \setbeamercolor{background canvas}{bg=black}
 \setbeamercolor{frametitle}{fg=white,bg=black}
 
-% Notes support
 \usepackage{pgfpages}
 \setbeameroption{show notes on second screen=right}
 \setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
 
-% Animated background support
 \newcommand{\anbg}[2][0.2]{%
     \ifx\@empty#2\@empty
-        % Clear background if empty argument
         \setbeamertemplate{background}{}
     \else
-        % Set animated background
         \setbeamertemplate{background}{%
             \begin{tikzpicture}[remember picture,overlay]
                 \node[opacity=#1] at (current page.center) {%
@@ -428,9 +405,8 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 """
 
-    # Progress bar template
-    frame_setup = r"""
-% Progress bar setup
+    progress_bar = r"""
+% Progress bar
 \makeatletter
 \def\progressbar@progressbar{}
 \newcount\progressbar@tmpcounta
@@ -453,7 +429,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
    \end{tikzpicture}%
 }
 
-% Modified frame title template
 \setbeamertemplate{frametitle}{
    \nointerlineskip
    \vskip1ex
@@ -468,36 +443,67 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
    \vskip.5ex
    \progressbar@progressbar
 }
-\makeatother"""
+\makeatother
+"""
 
-    # Institution setup
+    # ========== SIMPLE TIGHTER SPACING - NO FRAME REDEFINITION ==========
+    auto_scaling = r"""
+% ========== TIGHTER SPACING FOR DENSE CONTENT ==========
+% This reduces whitespace to fit more content
+% No frame redefinition - safe and reliable
+
+\setlength{\parskip}{0.12em}
+\setlength{\itemsep}{0.04em}
+\setlength{\topsep}{0.04em}
+\setlength{\partopsep}{0pt}
+\setlength{\abovedisplayskip}{0pt}
+\setlength{\belowdisplayskip}{0pt}
+\setlength{\abovedisplayshortskip}{0pt}
+\setlength{\belowdisplayshortskip}{0pt}
+
+% Make itemize more compact
+\def\beamer@itemize@itemshape{%
+    \setlength{\itemsep}{0.04em}%
+    \setlength{\topsep}{0.04em}%
+    \setlength{\partopsep}{0pt}%
+}
+
+% Reduce block spacing
+\setbeamertemplate{blocks}[rounded][shadow=true]
+\addtobeamertemplate{block begin}{%
+    \setlength{\abovedisplayskip}{0pt}%
+    \setlength{\belowdisplayskip}{0pt}%
+}{}
+
+% Reduce table spacing
+\setlength{\arrayrulewidth}{0.4pt}
+\renewcommand{\arraystretch}{0.9}
+\setlength{\tabcolsep}{2pt}
+"""
+
     inst_setup = rf"\makeatletter\def\insertshortinstitute{{{short_institute}}}\makeatother"
 
-    # Footline template
     footline_template = r"""
-% Footline template
+% Footline
 \setbeamertemplate{footline}{%
  \leavevmode%
  \hbox{%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.8ex,dp=0.6ex,center]{author in head/foot}%
      \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
    \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.8ex,dp=0.6ex,center]{title in head/foot}%
      \usebeamerfont{title in head/foot}\insertshorttitle%
    \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
-     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
-     \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.8ex,dp=0.6ex,right]{date in head/foot}%
+     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{1em}%
+     \insertframenumber{} / \inserttotalframenumber\hspace*{1ex}%
    \end{beamercolorbox}}%
  \vskip0pt%
-}"""
+}
 
-    # Additional settings
-    additional_settings = r"""
-% Additional settings
-\setbeamersize{text margin left=5pt,text margin right=5pt}
+\setbeamersize{text margin left=4pt,text margin right=4pt}
 \setbeamertemplate{navigation symbols}{}
-\setbeamertemplate{blocks}[rounded][shadow=true]"""
+"""
 
     title_setup = (
        "% Title setup\n"
@@ -507,18 +513,14 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
        f"\\institute{{\\textcolor{{mygreen}}{{{institution}}}}}\n"
        f"\\date{{{date}}}\n"
        "\\begin{document}\n"
-       "\\maketitle\n"
     )
 
-    # SIMPLIFIED title page without problematic glow effects
     title_page = (
        "% Title page\n"
        "\\begin{frame}[plain]\n"
        "   \\begin{tikzpicture}[overlay,remember picture]\n"
-       "       % Background gradient\n"
        "       \\fill[top color=black!90,bottom color=black!70,middle color=myblue!30]\n"
        "       (current page.south west) rectangle (current page.north east);\n"
-       "       % Title with simple text\n"
        "       \\node[align=center] at (current page.center) {\n"
        f"           {{\\Huge\\textcolor{{myblue}}{{\\textbf{{{title}}}}}}}\n"
        + (f"           \\\\[1em]{{\\large\\textcolor{{myyellow}}{{{subtitle}}}}}\n" if subtitle else "") +
@@ -533,16 +535,44 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
        "\\end{frame}"
     )
 
-    # Combine all parts
+    # ========== HELPER MACROS FOR DENSE FRAMES ==========
+    # These provide easy ways to add shrink to specific frames
+    helper_macros = r"""
+% ========== HELPER MACROS ==========
+% Use \begin{shrinkframe}{Title} for auto-shrinking frames
+% Use \begin{breakframe}{Title} for frames that auto-break
+
+\newenvironment{shrinkframe}[1][]{%
+    \begin{frame}[#1, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%
+}{%
+    \end{frame}%
+}
+
+\newenvironment{breakframe}[1][]{%
+    \begin{frame}[#1, allowframebreaks]%
+}{%
+    \end{frame}%
+}
+
+\newenvironment{smartframe}[1][]{%
+    \begin{frame}[#1, allowframebreaks, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%
+}{%
+    \end{frame}%
+}
+"""
+
     return "\n".join([
-       core_preamble,
-       frame_setup,
-       inst_setup,
-       footline_template,
-       additional_settings,
-       title_setup,
-       title_page
-   ])
+        core_preamble,
+        layout_commands,
+        theme_setup,
+        progress_bar,
+        inst_setup,
+        footline_template,
+        auto_scaling,
+        helper_macros,
+        title_setup,
+        title_page
+    ])
 
 def get_footline_template():
     """
