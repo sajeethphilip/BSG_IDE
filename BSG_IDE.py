@@ -7637,6 +7637,9 @@ class BeamerSlideEditor(ctk.CTk):
         # Create terminal I/O interface - KEEP ORIGINAL
         self.terminal_io = TerminalIO(self)
 
+        self.preamble_from_file = None  # Stores preamble read from file
+        self.preamble_origin = 'default'  # 'default', 'file', 'tex_import'
+
         # Initialize session manager with error handling - KEEP ORIGINAL
         try:
             self.session_manager = SessionManager()
@@ -8490,6 +8493,33 @@ class BeamerSlideEditor(ctk.CTk):
         self.media_entry.bind('<KeyRelease>', save_media_state)
         self.media_entry.bind('<FocusOut>', save_media_state)
 
+    def get_default_preamble(self) -> str:
+        """Generate the default preamble without any custom modifications"""
+        try:
+            from BeamerSlideGenerator import get_beamer_preamble
+
+            title = self.presentation_info.get('title', '').strip() or "Presentation"
+            subtitle = self.presentation_info.get('subtitle', '').strip() or ""
+            author = self.presentation_info.get('author', '').strip() or "airis4D"
+            institution = self.presentation_info.get('institution', 'Artificial Intelligence Research and Intelligent Systems (airis4D)')
+            short_institute = self.presentation_info.get('short_institute', 'airis4D')
+            date = self.presentation_info.get('date', '\\today')
+
+            return get_beamer_preamble(
+                title, subtitle, author, institution, short_institute, date
+            )
+        except Exception as e:
+            print(f"Error generating default preamble: {e}")
+            return r"""\documentclass[aspectratio=169]{beamer}
+    \usepackage{graphicx}
+    \usepackage{xcolor}
+    \usepackage{amsmath}
+    \usepackage{amssymb}
+    \usetheme{Madrid}
+    \title{Presentation}
+    \author{airis4D}
+    \begin{document}
+    """
 
     def navigate_to_next_slide(self):
         """Navigate to next slide"""
@@ -9626,8 +9656,8 @@ class BeamerSlideEditor(ctk.CTk):
             return
 
         try:
-            # Use the improved converter
-            result = convert_beamer_tex_to_simple_text(tex_file)
+            # Use the static method
+            result = BeamerSlideEditor.convert_beamer_tex_to_simple_text(tex_file)
 
             if isinstance(result, tuple):
                 text_file, errors = result
@@ -14307,209 +14337,6 @@ Created by {self.__author__}
                 )
 
 
-    def create_toolbar(self) -> None:
-        """Create main editor toolbar with dynamic layout - ALL FEATURES PRESERVED"""
-        # Create main toolbar container
-        self.toolbar = ctk.CTkFrame(self)
-        self.toolbar.grid(row=2, column=1, sticky="ew", padx=5, pady=5)
-
-        # Initialize dynamic toolbar managers
-        self.upper_dynamic_toolbar = DynamicToolbar(self.toolbar)
-        self.lower_dynamic_toolbar = DynamicToolbar(self.toolbar)
-
-        # ========== UPPER ROW - File and presentation operations ==========
-        upper_row = ctk.CTkFrame(self.toolbar)
-
-        # ALL original upper buttons preserved with priorities
-        # Higher priority = stays visible longer
-        buttons_upper = [
-            ("New", self.new_file, "Create new presentation", 100),
-            ("Open", self.open_file, "Open existing presentation", 100),
-            ("Save", self.save_file, "Save current presentation", 100),
-            ("Generate PDF", self.generate_pdf, "Generate PDF file", 95),  # High priority
-            ("Convert to TeX", self.convert_to_tex, "Convert to LaTeX format", 85),
-            ("Preview PDF", self.preview_pdf, "View generated PDF", 80),
-            ("Present with Notes", self.present_with_notes, "Launch dual-screen presentation with notes", 75),
-            ("Load TeX", self.load_tex_file, "Load and convert Beamer TeX file", 70),
-            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF", 65)
-        ]
-
-        for text, command, tooltip, priority in buttons_upper:
-            if text == "Export to Overleaf":
-                btn = ctk.CTkButton(
-                    upper_row,
-                    text=text,
-                    command=command,
-                    width=120,
-                    fg_color="#47A141",
-                    hover_color="#2E8B57"
-                )
-            elif text == "Present with Notes":
-                btn = ctk.CTkButton(
-                    upper_row,
-                    text=text,
-                    command=command,
-                    width=120,
-                    fg_color="#4A90E2",
-                    hover_color="#357ABD"
-                )
-            else:
-                btn = ctk.CTkButton(
-                    upper_row,
-                    text=text,
-                    command=command,
-                    width=100
-                )
-            self.create_tooltip(btn, tooltip)
-            self.upper_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 5})
-
-        # Pack upper row
-        upper_row.pack(fill="x", padx=5, pady=(5, 2))
-        self.upper_dynamic_toolbar.pack_all()
-
-
-        # ========== LOWER ROW - Screen capture and additional controls ==========
-        lower_row = ctk.CTkFrame(self.toolbar)
-
-        # ========== LEFT SIDE - Screen capture controls ==========
-        capture_frame = ctk.CTkFrame(lower_row, fg_color="transparent")
-
-        # Screen capture label (PRESERVED)
-        capture_label = ctk.CTkLabel(capture_frame, text="Screen Capture:")
-        capture_label.pack(side="left", padx=5)
-        self.create_tooltip(capture_label, "Choose capture mode and settings")
-
-        # Initialize capture settings (PRESERVED)
-        self.capture_mode = tk.StringVar(value="single")
-        self.frame_count = tk.IntVar(value=10)
-        self.frame_delay = tk.DoubleVar(value=0.5)
-
-        # Single frame mode (PRESERVED)
-        single_btn = ctk.CTkRadioButton(
-            capture_frame,
-            text="Single",
-            variable=self.capture_mode,
-            value="single"
-        )
-        single_btn.pack(side="left", padx=5)
-        self.create_tooltip(single_btn, "Capture single screenshot")
-
-        # Animation mode (PRESERVED)
-        anim_btn = ctk.CTkRadioButton(
-            capture_frame,
-            text="Animation",
-            variable=self.capture_mode,
-            value="animation"
-        )
-        anim_btn.pack(side="left", padx=5)
-        self.create_tooltip(anim_btn, "Capture animated GIF")
-
-        # Animation settings frame (PRESERVED - initially hidden)
-        self.anim_settings = ctk.CTkFrame(capture_frame, fg_color="transparent")
-
-        # Frames control (PRESERVED)
-        frames_frame = ctk.CTkFrame(self.anim_settings, fg_color="transparent")
-        frames_frame.pack(side="left", padx=5)
-        ctk.CTkLabel(frames_frame, text="Frames:").pack(side="left")
-        frames_entry = ctk.CTkEntry(frames_frame, textvariable=self.frame_count, width=40)
-        frames_entry.pack(side="left", padx=2)
-        self.create_tooltip(frames_entry, "Number of frames to capture")
-
-        # Delay control (PRESERVED)
-        delay_frame = ctk.CTkFrame(self.anim_settings, fg_color="transparent")
-        delay_frame.pack(side="left", padx=5)
-        ctk.CTkLabel(delay_frame, text="Delay:").pack(side="left")
-        delay_entry = ctk.CTkEntry(delay_frame, textvariable=self.frame_delay, width=40)
-        delay_entry.pack(side="left", padx=2)
-        self.create_tooltip(delay_entry, "Delay between frames (seconds)")
-
-        # Capture button (PRESERVED)
-        capture_btn = ctk.CTkButton(
-            capture_frame,
-            text="Capture",
-            command=self.capture_screen,
-            width=80,
-            fg_color="#4A90E2",
-            hover_color="#357ABD"
-        )
-        capture_btn.pack(side="left", padx=5)
-        self.create_tooltip(capture_btn, "Start screen capture")
-
-        # Add capture frame to dynamic toolbar (high priority)
-        self.lower_dynamic_toolbar.add_frame(capture_frame, priority=100, pack_kwargs={'side': 'left', 'padx': 5})
-
-        # ========== SEPARATOR (PRESERVED) ==========
-        separator = ttk.Separator(lower_row, orient="vertical")
-        self.lower_dynamic_toolbar.add_button(separator, priority=90, pack_kwargs={'side': 'left', 'padx': 10, 'fill': 'y', 'pady': 5})
-
-        # ========== RIGHT SIDE - Additional buttons (PRESERVED) ==========
-        right_frame = ctk.CTkFrame(lower_row, fg_color="transparent")
-
-        # ALL original right buttons preserved
-        right_buttons = [
-            ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble", 80),
-            ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings", 80),
-            ("Get Source", self.get_source_from_tex, "Extract source from TEX file", 70),
-            ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip", 60),
-            ("TikZ Colors", self.show_tikz_color_helper, "TikZ Color Helper", 50),
-            ("Command Index", self.show_enhanced_command_index, "LaTeX Command Reference", 50),
-            ("Grammarly", self.toggle_grammarly, "Toggle Grammarly grammar checking", 40)
-        ]
-
-        for text, command, tooltip, priority in right_buttons:
-            if text == "Export to Overleaf":
-                btn = ctk.CTkButton(
-                    right_frame,
-                    text=text,
-                    command=command,
-                    width=130,
-                    fg_color="#47A141",
-                    hover_color="#2E8B57"
-                )
-            elif text == "Grammarly":
-                btn = ctk.CTkButton(
-                    right_frame,
-                    text=f"{text}: Off",
-                    command=command,
-                    width=100,
-                    fg_color="#dc3545"
-                )
-                self.grammarly_button = btn  # Store reference for later updates
-            else:
-                btn = ctk.CTkButton(
-                    right_frame,
-                    text=text,
-                    command=command,
-                    width=130
-                )
-            btn.pack(side="left", padx=5)
-            self.create_tooltip(btn, tooltip)
-            self.lower_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 5})
-
-        # Add right frame to dynamic toolbar
-        self.lower_dynamic_toolbar.add_frame(right_frame, priority=70, pack_kwargs={'side': 'right', 'padx': 5})
-
-        # Pack lower row
-        lower_row.pack(fill="x", padx=5, pady=(2, 5))
-        self.lower_dynamic_toolbar.pack_all()
-
-        # ========== ANIMATION SETTINGS TOGGLE (PRESERVED) ==========
-        def toggle_anim_settings(*args):
-            """Show/hide animation settings based on mode - PRESERVED"""
-            if self.capture_mode.get() == "animation":
-                self.anim_settings.pack(side='left', padx=5)
-                # Update layout after showing
-                self.lower_dynamic_toolbar.update_layout()
-            else:
-                self.anim_settings.pack_forget()
-                self.lower_dynamic_toolbar.update_layout()
-
-        # Bind mode changes (PRESERVED)
-        self.capture_mode.trace('w', toggle_anim_settings)
-
-        # Initial state (PRESERVED)
-        toggle_anim_settings()
-
 #------------------------------------------------------------------------------------------------------
 
     def on_notes_mode_change(self, mode: str) -> None:
@@ -15079,35 +14906,248 @@ Created by {self.__author__}
         return line
 
     def convert_to_tex(self):
-        """Convert text to TeX while preserving line-level masking"""
+        """Convert text to TeX while preserving masked content and updating both files"""
         if not self.current_file:
             messagebox.showwarning("Warning", "Please save your file first!")
             return
 
         try:
-            self.save_file()
+            # First, save the current slide data to the internal structure
+            self.save_current_slide()
+
             base_filename = os.path.splitext(self.current_file)[0]
             tex_file = base_filename + '.tex'
+            txt_file = self.current_file
 
             self.clear_terminal()
-            self.write("Converting text to TeX while preserving masked content...\n")
+            self.write("="*60 + "\n", "cyan")
+            self.write("CONVERTING TO TEX\n", "cyan")
+            self.write("="*60 + "\n", "cyan")
 
-            # Generate TeX content with preserved masking
+            # ========== GENERATE TEX CONTENT ==========
+            self.write("\nGenerating TeX content...\n", "white")
             tex_content = self.generate_tex_with_preserved_masking()
 
-            if tex_content:
-                with open(tex_file, 'w', encoding='utf-8') as f:
-                    f.write(tex_content)
-                self.write(f"✓ TeX file generated: {tex_file}\n", "green")
-
-                # Show summary of masked content in TeX
-                self.write_tex_masking_summary(tex_content)
-            else:
+            if not tex_content:
                 self.write("✗ Failed to generate TeX content\n", "red")
+                return
+
+            # ========== EXTRACT THE COMBINED PREAMBLE FROM THE GENERATED TEX ==========
+            import re
+            preamble_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
+            combined_preamble = ""
+            if preamble_match:
+                combined_preamble = preamble_match.group(1).strip()
+                self.write(f"✓ Extracted combined preamble ({len(combined_preamble)} chars)\n", "green")
+            else:
+                self.write("⚠ Could not extract preamble from generated TeX\n", "yellow")
+
+            # ========== WRITE TEX FILE ==========
+            with open(tex_file, 'w', encoding='utf-8') as f:
+                f.write(tex_content)
+            self.write(f"✓ TeX file generated: {tex_file}\n", "green")
+
+            # ========== CRITICAL: UPDATE TXT FILE WITH COMBINED PREAMBLE ==========
+            # This must happen BEFORE we save the slide content, so the preamble is preserved
+            if combined_preamble:
+                # Update the TXT file with the combined preamble
+                self._update_txt_file_with_preamble(txt_file, combined_preamble)
+                self.write(f"✓ Updated TXT file with combined preamble\n", "green")
+
+                # Store the preamble in memory for future saves
+                self.preamble_from_file = combined_preamble
+                self.preamble_origin = 'combined'
+                self.custom_preamble = combined_preamble
+                self.using_custom_preamble = True
+
+            # ========== NOW SAVE THE SLIDE CONTENT ==========
+            # This saves the editor content (slides, media, notes) while preserving the preamble
+            self.write("\nSaving slide content to TXT file...\n", "white")
+            self._save_txt_content_only(txt_file)
+            self.write(f"✓ TXT file updated with slide content\n", "green")
+
+            # Show summary
+            self.write_tex_masking_summary(tex_content)
+
+            self.write("\n" + "="*60 + "\n", "green")
+            self.write("✓ CONVERSION COMPLETE\n", "green")
+            self.write("="*60 + "\n", "green")
 
         except Exception as e:
             self.write(f"✗ Error in conversion: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("Error", f"Error converting to TeX:\n{str(e)}")
+
+    def _update_txt_file_with_preamble(self, txt_file: str, combined_preamble: str) -> bool:
+        """
+        Update the TXT file with the combined preamble, preserving all existing content.
+        Returns True if successful.
+        """
+        try:
+            if not os.path.exists(txt_file):
+                # If TXT file doesn't exist, create it with just the preamble
+                with open(txt_file, 'w', encoding='utf-8') as f:
+                    f.write(combined_preamble + "\n\n")
+                return True
+
+            # Read the existing TXT file content
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            import re
+            # Find if there's an existing preamble
+            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+
+            if doc_match:
+                # Replace the existing preamble with the combined one
+                existing_preamble = doc_match.group(1)
+                # Find the position of the document body
+                doc_pos = content.find('\\begin{document}')
+                if doc_pos != -1:
+                    # Keep the document body (everything after \begin{document})
+                    document_body = content[doc_pos:]
+                    # Write the combined preamble + document body
+                    new_content = combined_preamble + "\n" + document_body
+                    with open(txt_file, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    self.write(f"  ✓ Replaced preamble in {os.path.basename(txt_file)}\n", "green")
+                    return True
+            else:
+                # No existing preamble, just prepend it
+                with open(txt_file, 'w', encoding='utf-8') as f:
+                    f.write(combined_preamble + "\n\n" + content)
+                self.write(f"  ✓ Added preamble to {os.path.basename(txt_file)}\n", "green")
+                return True
+
+            return False
+
+        except Exception as e:
+            self.write(f"✗ Error updating TXT with preamble: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _save_txt_content_only(self, txt_file: str) -> bool:
+        """
+        Save only the slide content (title, media, content, notes) to the TXT file,
+        WITHOUT modifying the preamble section.
+        """
+        try:
+            # Read the current TXT file to get the preamble
+            if not os.path.exists(txt_file):
+                self.write(f"⚠ TXT file not found: {txt_file}\n", "yellow")
+                # Create it with default preamble
+                preamble = self.get_custom_preamble()
+                slide_content = self._generate_slide_content_only()
+                with open(txt_file, 'w', encoding='utf-8') as f:
+                    f.write(preamble + "\n\n" + slide_content)
+                return True
+
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            import re
+            # Find the preamble and document body
+            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if not doc_match:
+                # No preamble found - treat entire file as content
+                self.write("  ⚠ No preamble found, using default\n", "yellow")
+                preamble = self.get_custom_preamble()
+            else:
+                preamble = doc_match.group(1).strip()
+                self.write(f"  ✓ Preserved preamble ({len(preamble)} chars)\n", "green")
+
+            # Generate the slide content
+            slide_content = self._generate_slide_content_only()
+
+            # Combine preamble + slides
+            new_content = preamble + "\n\n" + slide_content
+
+            # Write back to file
+            with open(txt_file, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            return True
+
+        except Exception as e:
+            self.write(f"✗ Error saving TXT content only: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _generate_slide_content_only(self) -> str:
+        """
+        Generate only the slide content (without preamble) for the TXT file.
+        Preserves the native format with \title, \begin{Content}, \begin{Notes}.
+        """
+        import re
+
+        content_lines = []
+        content_lines.append("\\begin{document}\n")
+
+        for idx, slide in enumerate(self.slides):
+            # Skip fully masked slides or mark them
+            if slide.get('_fully_masked', False):
+                # Add a comment indicating masked slide
+                title = slide.get('title', 'Masked Slide')
+                clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
+                content_lines.append(f"% \\title {clean_title}")
+                content_lines.append("% \\begin{Content}")
+                content_lines.append("%   [This slide is masked]")
+                content_lines.append("% \\end{Content}")
+                content_lines.append("% \\begin{Notes}")
+                content_lines.append("%   [Notes are masked]")
+                content_lines.append("% \\end{Notes}")
+                content_lines.append("")
+                continue
+
+            # Title - clean any [DELETED] prefix
+            title = slide.get('title', 'Untitled')
+            clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
+            content_lines.append(f"\\title {clean_title}")
+
+            # Content block
+            content_lines.append("\\begin{Content}")
+
+            # Media
+            media = slide.get('media', '')
+            media_masked = slide.get('_media_masked', False)
+            if media_masked:
+                content_lines.append(f"% {media}" if media else "% \\None")
+            elif media and media != "\\None":
+                content_lines.append(media)
+            else:
+                content_lines.append("\\None")
+
+            # Content items
+            hidden_indices = set(slide.get('_hidden_content_indices', []))
+            for i, item in enumerate(slide.get('content', [])):
+                if item and item.strip():
+                    if i in hidden_indices:
+                        content_lines.append(f"% {item}")
+                    else:
+                        content_lines.append(item)
+
+            content_lines.append("\\end{Content}")
+
+            # Notes block
+            content_lines.append("\\begin{Notes}")
+            hidden_note_indices = set(slide.get('_hidden_note_indices', []))
+            for i, note in enumerate(slide.get('notes', [])):
+                if note and note.strip():
+                    if i in hidden_note_indices:
+                        content_lines.append(f"% {note}")
+                    else:
+                        content_lines.append(note)
+            # Add a placeholder if no notes
+            if not slide.get('notes', []):
+                content_lines.append("% No notes for this slide")
+            content_lines.append("\\end{Notes}")
+            content_lines.append("")
+
+        content_lines.append("\\end{document}")
+        return "\n".join(content_lines)
 
     def generate_tex_with_preserved_masking(self):
         """Generate TeX content - remove masked content, preserve original styling and layout directives"""
@@ -17726,107 +17766,6 @@ Created by {self.__author__}
             self.write(f"Error adding package: {e}\n", "red")
             return False
 
-    def get_custom_preamble(self) -> str:
-        """Get custom preamble if set, otherwise generate from presentation info"""
-        # If user has set a custom preamble, use it
-        if hasattr(self, 'custom_preamble') and self.custom_preamble:
-            # Check if the custom preamble has xcolor loaded before color definitions
-            preamble = self.custom_preamble
-
-            # If the preamble contains \definecolor but not \usepackage{xcolor} or \usepackage{color}
-            if '\\definecolor' in preamble:
-                if '\\usepackage{xcolor}' not in preamble and '\\usepackage{color}' not in preamble:
-                    # Find where to insert xcolor (after documentclass and before \begin{document})
-                    doc_pos = preamble.find("\\begin{document}")
-                    if doc_pos != -1:
-                        # Check if we need to add xcolor before color definitions
-                        xcolor_insert = "\n\\usepackage{xcolor}  % Required for color definitions\n"
-                        preamble = preamble[:doc_pos] + xcolor_insert + preamble[doc_pos:]
-                        self.write("  ℹ Added \\usepackage{xcolor} to support color definitions\n", "cyan")
-
-            self.write("  Using custom preamble from user\n", "cyan")
-            return preamble
-
-        # Otherwise generate from presentation info
-        try:
-            from BeamerSlideGenerator import get_beamer_preamble
-
-            # Ensure we have non-empty values
-            title = self.presentation_info.get('title', '').strip()
-            subtitle = self.presentation_info.get('subtitle', '').strip()
-            author = self.presentation_info.get('author', '').strip()
-            institution = self.presentation_info.get('institution', 'Artificial Intelligence Research and Intelligent Systems (airis4D)')
-            short_institute = self.presentation_info.get('short_institute', 'airis4D')
-            date = self.presentation_info.get('date', '\\today')
-
-            # Use defaults if empty
-            if not title:
-                title = "Presentation"
-            if not author:
-                author = "airis4D"
-
-            # Get base preamble
-            base_preamble = get_beamer_preamble(
-                title, subtitle, author, institution, short_institute, date
-            )
-
-            # Additional packages needed for special characters and units
-            extra_packages = r"""
-    % Additional packages for special characters and units
-    \usepackage{textcomp}      % For \textmu, \textendash, etc.
-    \usepackage{siunitx}       % For proper units (Ω·cm², etc.)
-    \usepackage{amsmath}       % Enhanced math support
-    \usepackage{amssymb}       % Additional math symbols
-
-    % Configure siunitx for proper formatting
-    \sisetup{
-        per-mode = symbol,
-        output-decimal-marker = {.},
-        group-separator = {,}
-    }
-    """
-
-            # Insert extra packages before \begin{document}
-            doc_pos = base_preamble.find("\\begin{document}")
-            if doc_pos != -1:
-                # Check if packages already exist to avoid duplicates
-                if 'textcomp' not in base_preamble:
-                    base_preamble = base_preamble[:doc_pos] + extra_packages + base_preamble[doc_pos:]
-            else:
-                # If no \begin{document}, add at the end
-                base_preamble = base_preamble + extra_packages + "\n\\begin{document}\n"
-
-            # Process logo if present
-            if 'logo' in self.presentation_info and self.presentation_info['logo']:
-                preamble = re.sub(r'\\logo{[^}]*}\s*\n?', '', base_preamble)
-                doc_pos = preamble.find("\\begin{document}")
-                if doc_pos != -1:
-                    logo_command = self.presentation_info['logo'] + "\n\n"
-                    preamble = preamble[:doc_pos] + logo_command + preamble[doc_pos:]
-                else:
-                    preamble = base_preamble + "\n" + self.presentation_info['logo'] + "\n"
-            else:
-                preamble = base_preamble
-
-            return preamble
-
-        except Exception as e:
-            print(f"Error generating custom preamble: {e}")
-            # Return fallback preamble with all necessary packages
-            return r"""\documentclass[aspectratio=169]{beamer}
-    \usepackage{graphicx}
-    \usepackage{xcolor}
-    \usepackage{textcomp}
-    \usepackage{siunitx}
-    \usepackage{amsmath}
-    \usepackage{amssymb}
-    \usetheme{Madrid}
-    \title{Presentation}
-    \author{airis4D}
-    \sisetup{per-mode=symbol}
-    \begin{document}
-    """
-
     def _build_tex_slide_map(self, tex_lines: list) -> dict:
         """Build a map of slide numbers to line ranges in TeX file"""
         slide_map = {}
@@ -19811,329 +19750,9 @@ Created by {self.__author__}
 
         return tex_content
 
-    def save_file(self) -> None:
-        """Save presentation preserving custom preamble and line-level masking with preamble extraction"""
-
-        # Declare global at the beginning
-        global working_folder
-
-        # Determine the filename to save
-        filename = None
-
-        # Case 1: We have a current_file (file was loaded or previously saved)
-        if self.current_file and os.path.exists(self.current_file):
-            # Ask if user wants to overwrite or save as new
-            response = messagebox.askyesno(
-                "Save File",
-                f"File: {os.path.basename(self.current_file)}\n\n"
-                "Do you want to overwrite this file?\n"
-                "Click 'Yes' to overwrite, 'No' to save as a new file."
-            )
-            if response:
-                # Overwrite existing file
-                filename = self.current_file
-            else:
-                # Save as new file - use the current filename as base
-                base_name = os.path.splitext(os.path.basename(self.current_file))[0]
-                save_dir = os.path.dirname(self.current_file) or working_folder
-
-                filename = filedialog.asksaveasfilename(
-                    defaultextension=".txt",
-                    initialfile=f"{base_name}.txt",
-                    initialdir=save_dir,
-                    filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-                )
-                if not filename:
-                    return
-                self.current_file = filename
-        else:
-            # Case 2: No current_file (brand new unsaved document)
-            # Use the title as default filename, but don't force it
-            default_name = "presentation"
-
-            # Only use title if it's not the default placeholder
-            if hasattr(self, 'title_entry') and self.title_entry.get():
-                title_text = self.title_entry.get().strip()
-                if title_text and title_text != "Presentation Title":
-                    # Sanitize title for filename
-                    default_name = re.sub(r'[<>:"/\\|?*]', '', title_text)
-                    default_name = default_name.replace(' ', '_')
-                    if not default_name:
-                        default_name = "presentation"
-
-            # Use the last working directory or Documents folder
-            save_dir = working_folder
-            if save_dir == "~" or not os.path.exists(save_dir):
-                # Try to find Documents folder
-                possible_docs = [
-                    Path.home() / 'Documents',
-                    Path.home() / 'documents',
-                    Path(os.path.expandvars('%USERPROFILE%\\Documents'))
-                ]
-                for doc_path in possible_docs:
-                    if doc_path.exists() and doc_path.is_dir():
-                        save_dir = str(doc_path)
-                        break
-                else:
-                    save_dir = str(Path.home())
-
-            filename = filedialog.asksaveasfilename(
-                defaultextension=".txt",
-                initialfile=f"{default_name}.txt",
-                initialdir=save_dir,
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-            )
-            if not filename:
-                return
-            self.current_file = filename
-
-        # Update global working folder and terminal
-        working_folder = os.path.dirname(filename) or '.'
-        os.chdir(working_folder)
-        if hasattr(self, 'terminal'):
-            self.terminal.set_working_directory(working_folder)
-
-        # Save current slide before generating content
-        self.save_current_slide()
-
-        try:
-            # Get custom preamble with logo
-            content = self.get_custom_preamble()
-
-            # ========== EXTRACT DEFINITIONS FROM CURRENT PREAMBLE ==========
-            import re
-
-            # Extract color definitions from the preamble we're using
-            extracted_colors = {}
-            definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
-            for name, model, value in re.findall(definecolor_pattern, content):
-                extracted_colors[name.strip()] = (model.strip(), value.strip())
-
-            colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
-            for name, source in re.findall(colorlet_pattern, content):
-                extracted_colors[name.strip()] = ('colorlet', source.strip())
-
-            # Extract packages
-            extracted_packages = set()
-            usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
-            for options, pkg_list in re.findall(usepackage_pattern, content):
-                for pkg in pkg_list.split(','):
-                    extracted_packages.add(pkg.strip())
-
-            # Detect missing packages from slides
-            missing_packages = set()
-            for slide in self.slides:
-                slide_content = '\n'.join(slide.get('content', []))
-                slide_notes = '\n'.join(slide.get('notes', []))
-                combined = slide_content + slide_notes
-                missing_packages.update(self.detect_missing_packages_from_content(combined))
-
-            # ========== GENERATE PREAMBLE DEFINITION BLOCK ==========
-            preamble_block = []
-            preamble_block.append("% ====== PREAMBLE DEFINITIONS (Auto-extracted) ======")
-
-            # Add missing packages
-            if missing_packages:
-                preamble_block.append("% Required packages")
-                already_present = set()
-                for pkg in ['xcolor', 'graphicx', 'amsmath', 'amssymb', 'tikz', 'hyperref']:
-                    if f'\\usepackage{{{pkg}}}' in content:
-                        already_present.add(pkg)
-
-                for pkg in sorted(missing_packages):
-                    if pkg not in already_present and f'\\usepackage{{{pkg}}}' not in content:
-                        preamble_block.append(f"\\usepackage{{{pkg}}}")
-
-            # Add color definitions
-            if extracted_colors:
-                preamble_block.append("% Color definitions")
-                for name, (model, value) in extracted_colors.items():
-                    if f'\\definecolor{{{name}}}' not in content:
-                        if model == 'colorlet':
-                            preamble_block.append(f"\\colorlet{{{name}}}{{{value}}}")
-                        else:
-                            preamble_block.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
-
-            # Add siunitx configuration if needed
-            if 'siunitx' in missing_packages or 'siunitx' in extracted_packages:
-                if '\\sisetup' not in content:
-                    preamble_block.append("% siunitx configuration")
-                    preamble_block.append("\\sisetup{")
-                    preamble_block.append("    per-mode = symbol,")
-                    preamble_block.append("    output-decimal-marker = {.},")
-                    preamble_block.append("    group-separator = {,}")
-                    preamble_block.append("}")
-
-            # Add textcomp if needed
-            if 'textcomp' in missing_packages or 'textcomp' in extracted_packages:
-                if '\\usepackage{textcomp}' not in content:
-                    preamble_block.insert(1, "\\usepackage{textcomp}  % For special characters")
-
-            preamble_block.append("% ==================================================")
-            preamble_block.append("")
-
-            injection_block = "\n".join(preamble_block)
-
-            # Inject preamble block if not already present
-            if "% ====== PREAMBLE DEFINITIONS" not in content:
-                doc_pos = content.find("\\begin{document}")
-                if doc_pos != -1:
-                    # Find insertion point after the last package or color definition
-                    insert_pos = doc_pos
-                    for pattern in [r'\\usepackage\{[^}]*\}', r'\\definecolor\{[^}]*\}', r'\\usetheme\{[^}]*\}']:
-                        matches = list(re.finditer(pattern, content[:doc_pos]))
-                        if matches:
-                            last_match = matches[-1]
-                            if last_match.end() > insert_pos:
-                                insert_pos = last_match.end()
-
-                    content = (content[:insert_pos] +
-                              "\n" + injection_block +
-                              content[insert_pos:])
-                    self.write("  ✓ Injected preamble definitions into file\n", "green")
-
-            # Track counts
-            masked_count = 0
-            total_hidden_lines = 0
-
-            # Define layout directives
-            layout_directives = [
-                '\\begin{columns}', '\\end{columns}', '\\column',
-                '\\begin{itemize}', '\\end{itemize}', '\\begin{enumerate}', '\\end{enumerate}',
-                '\\begin{block}', '\\end{block}', '\\begin{alertblock}', '\\end{alertblock}',
-                '\\begin{exampleblock}', '\\end{exampleblock}',
-                '\\begin{figure}', '\\end{figure}', '\\begin{table}', '\\end{table}',
-                '\\begin{tikzpicture}', '\\end{tikzpicture}',
-                '\\ff', '\\wm', '\\pip', '\\split', '\\hl', '\\bg', '\\tb', '\\ol', '\\corner', '\\mosaic'
-            ]
-
-            # Add slides
-            for idx, slide in enumerate(self.slides):
-                is_fully_masked = slide.get('_fully_masked', False) or self.is_slide_masked(idx)
-                hidden_content_indices = set(slide.get('_hidden_content_indices', []))
-                hidden_note_indices = set(slide.get('_hidden_note_indices', []))
-                media_masked = slide.get('_media_masked', False)
-
-                if is_fully_masked:
-                    masked_count += 1
-                    content += "\n\n% ========== MASKED SLIDE (DELETED) ==========\n"
-
-                content += "\n\n"
-
-                # Handle title
-                title = slide.get('title', 'Untitled')
-                clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
-
-                if is_fully_masked:
-                    content += f"% \\title {clean_title}\n"
-                    content += "% \\begin{Content}\n"
-                else:
-                    content += f"\\title {clean_title}\n"
-                    content += "\\begin{Content}\n"
-
-                # Handle media
-                media = slide.get('media', '')
-                content_items = slide.get('content', [])
-
-                # Write media line
-                if is_fully_masked or media_masked:
-                    if media:
-                        content += f"% {media}\n"
-                    else:
-                        content += "% \\None\n"
-                else:
-                    if media and media != "\\None":
-                        content += f"{media}\n"
-                    else:
-                        content += "\\None\n"
-
-                # Write content items
-                for i, item in enumerate(content_items):
-                    if item and item.strip():
-                        is_line_hidden = i in hidden_content_indices
-
-                        if is_fully_masked or is_line_hidden:
-                            if not item.strip().startswith('%'):
-                                content += f"% {item}\n"
-                                total_hidden_lines += 1
-                            else:
-                                content += f"{item}\n"
-                        else:
-                            content += f"{item}\n"
-
-                # End Content block
-                if is_fully_masked:
-                    content += "% \\end{Content}\n\n"
-                else:
-                    content += "\\end{Content}\n\n"
-
-                # Handle notes
-                if is_fully_masked:
-                    content += "% \\begin{Notes}\n"
-                    if 'notes' in slide and slide['notes']:
-                        for i, note in enumerate(slide['notes']):
-                            if note and note.strip():
-                                is_note_hidden = i in hidden_note_indices
-                                if is_note_hidden:
-                                    if not note.strip().startswith('%'):
-                                        content += f"% {note}\n"
-                                        total_hidden_lines += 1
-                                    else:
-                                        content += f"{note}\n"
-                                else:
-                                    content += f"% {note}\n"
-                    content += "% \\end{Notes}\n"
-                else:
-                    if 'notes' in slide and slide['notes']:
-                        content += "\\begin{Notes}\n"
-                        for i, note in enumerate(slide['notes']):
-                            if note and note.strip():
-                                is_note_hidden = i in hidden_note_indices
-                                if is_note_hidden:
-                                    content += f"% {note}\n"
-                                    total_hidden_lines += 1
-                                else:
-                                    content += f"{note}\n"
-                        content += "\\end{Notes}\n"
-                    else:
-                        content += "\\begin{Notes}\n"
-                        content += "\\end{Notes}\n"
-
-            content += "\\end{document}"
-
-            # Save to text file
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-            self.write(f"✓ File saved successfully: {filename}\n", "green")
-
-            # Show summary
-            summary_parts = [f"✓ Saved {len(self.slides)} slides"]
-            if masked_count > 0:
-                summary_parts.append(f"{masked_count} fully masked slide(s)")
-            if total_hidden_lines > 0:
-                summary_parts.append(f"{total_hidden_lines} hidden line(s)")
-            if extracted_colors:
-                summary_parts.append(f"{len(extracted_colors)} color definitions preserved")
-            if missing_packages:
-                summary_parts.append(f"{len(missing_packages)} packages added")
-
-            self.write(" | ".join(summary_parts) + "\n", "green")
-
-            # Update recent files list
-            if hasattr(self, 'session_manager') and self.session_manager:
-                if filename not in self.session_data['recent_files']:
-                    self.session_data['recent_files'].append(filename)
-                    if len(self.session_data['recent_files']) > 10:
-                        self.session_data['recent_files'].pop(0)
-                    self.session_manager.save_session(self.session_data)
-
-            return True
-
-        except Exception as e:
-            self.write(f"✗ Error saving file: {str(e)}\n", "red")
-            messagebox.showerror("Error", f"Error saving file:\n{str(e)}")
-            return False
+    # ============================================================
+    # MODIFICATION 2: Modify load_file to preserve preamble
+    # ============================================================
 
     def load_file(self, filename: str) -> None:
         """Load presentation from file with enhanced preamble extraction and preservation"""
@@ -20155,6 +19774,31 @@ Created by {self.__author__}
 
             self.slides = []
             self.current_slide_index = -1
+
+            # ========== EXTRACT AND PRESERVE PREAMBLE FROM FILE ==========
+            # Extract the complete preamble from the file content
+            preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if preamble_match:
+                preamble_text = preamble_match.group(1).strip()
+                self.preamble_from_file = preamble_text
+
+                # Check if this is a combined preamble (contains extracted definitions)
+                if "% ====== PREAMBLE DEFINITIONS (Auto-extracted) =====" in preamble_text:
+                    self.preamble_origin = 'combined'
+                    self.write(f"✓ Loaded combined preamble from file\n", "green")
+                else:
+                    self.preamble_origin = 'file'
+                    self.write(f"✓ Loaded preamble from file\n", "green")
+
+                # Store as custom preamble for use in the editor
+                self.custom_preamble = preamble_text
+                self.using_custom_preamble = True
+            else:
+                # No preamble found, use default
+                self.preamble_from_file = None
+                self.preamble_origin = 'default'
+                self.using_custom_preamble = False
+                self.write(f"ℹ No preamble found in file, using default\n", "cyan")
 
             # ========== EXTRACT PREAMBLE INFORMATION ==========
             # Extract and preserve preamble info for reconstruction
@@ -20285,6 +19929,14 @@ Created by {self.__author__}
                     pkg_names += f" +{len(missing_packages)-5} more"
                 summary_parts.append(f"⚠ {len(missing_packages)} packages to add: {pkg_names}")
 
+            # Add preamble origin info
+            if self.preamble_origin == 'combined':
+                summary_parts.append("🔗 Combined preamble")
+            elif self.preamble_origin == 'file':
+                summary_parts.append("📄 File preamble")
+            else:
+                summary_parts.append("⚙️ Default preamble")
+
             self.write(" | ".join(summary_parts) + "\n", "green")
 
             # If there are missing packages, prompt user
@@ -20298,6 +19950,958 @@ Created by {self.__author__}
             self.write(f"✗ {error_msg}\n", "red")
             messagebox.showerror("Error", f"Error loading file:\n{str(e)}")
 
+    # ============================================================
+    # MODIFICATION 3: Modify save_file to use preamble from file
+    # ============================================================
+
+    def save_file(self) -> None:
+        """Save presentation preserving custom preamble and line-level masking with preamble extraction"""
+
+        # Declare global at the beginning
+        global working_folder
+
+        # Determine the filename to save
+        filename = None
+
+        # Case 1: We have a current_file (file was loaded or previously saved)
+        if self.current_file and os.path.exists(self.current_file):
+            # Ask if user wants to overwrite or save as new
+            response = messagebox.askyesno(
+                "Save File",
+                f"File: {os.path.basename(self.current_file)}\n\n"
+                "Do you want to overwrite this file?\n"
+                "Click 'Yes' to overwrite, 'No' to save as a new file."
+            )
+            if response:
+                # Overwrite existing file
+                filename = self.current_file
+            else:
+                # Save as new file - use the current filename as base
+                base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+                save_dir = os.path.dirname(self.current_file) or working_folder
+
+                filename = filedialog.asksaveasfilename(
+                    defaultextension=".txt",
+                    initialfile=f"{base_name}.txt",
+                    initialdir=save_dir,
+                    filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+                )
+                if not filename:
+                    return
+                self.current_file = filename
+        else:
+            # Case 2: No current_file (brand new unsaved document)
+            # Use the title as default filename, but don't force it
+            default_name = "presentation"
+
+            # Only use title if it's not the default placeholder
+            if hasattr(self, 'title_entry') and self.title_entry.get():
+                title_text = self.title_entry.get().strip()
+                if title_text and title_text != "Presentation Title":
+                    # Sanitize title for filename
+                    default_name = re.sub(r'[<>:"/\\|?*]', '', title_text)
+                    default_name = default_name.replace(' ', '_')
+                    if not default_name:
+                        default_name = "presentation"
+
+            # Use the last working directory or Documents folder
+            save_dir = working_folder
+            if save_dir == "~" or not os.path.exists(save_dir):
+                # Try to find Documents folder
+                possible_docs = [
+                    Path.home() / 'Documents',
+                    Path.home() / 'documents',
+                    Path(os.path.expandvars('%USERPROFILE%\\Documents'))
+                ]
+                for doc_path in possible_docs:
+                    if doc_path.exists() and doc_path.is_dir():
+                        save_dir = str(doc_path)
+                        break
+                else:
+                    save_dir = str(Path.home())
+
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                initialfile=f"{default_name}.txt",
+                initialdir=save_dir,
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            )
+            if not filename:
+                return
+            self.current_file = filename
+
+        # Update global working folder and terminal
+        working_folder = os.path.dirname(filename) or '.'
+        os.chdir(working_folder)
+        if hasattr(self, 'terminal'):
+            self.terminal.set_working_directory(working_folder)
+
+        # Save current slide before generating content
+        self.save_current_slide()
+
+        try:
+            # ========== DETERMINE WHICH PREAMBLE TO USE ==========
+            # Priority: 1. Combined preamble from TeX generation
+            #           2. Custom preamble (user explicitly set)
+            #           3. Preamble from file
+            #           4. Generated default preamble
+
+            if hasattr(self, 'preamble_from_file') and self.preamble_origin in ['combined', 'tex_import']:
+                # Use the combined preamble from TeX generation
+                preamble = self.preamble_from_file
+                self.write("  Using combined preamble from TeX generation\n", "cyan")
+            elif hasattr(self, 'custom_preamble') and self.custom_preamble and self.using_custom_preamble:
+                # Use the custom preamble
+                preamble = self.custom_preamble
+                self.write("  Using custom preamble\n", "cyan")
+            elif self.preamble_from_file and self.preamble_origin == 'file':
+                # Use the preamble we loaded from the file
+                preamble = self.preamble_from_file
+                self.write("  Using preamble from file\n", "cyan")
+            else:
+                # Generate default preamble
+                preamble = self.get_custom_preamble()
+                self.write("  Using generated default preamble\n", "cyan")
+
+            # ========== GENERATE SLIDE CONTENT ==========
+            slide_content = self._generate_slide_content_only()
+
+            # ========== COMBINE PREAMBLE + SLIDES ==========
+            content = preamble + "\n\n" + slide_content
+
+            # ========== WRITE TO FILE ==========
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            self.current_file = filename
+            self.write(f"✓ File saved: {os.path.basename(filename)}\n", "green")
+
+            # Update recent files list
+            if hasattr(self, 'session_manager') and self.session_manager:
+                if filename not in self.session_data['recent_files']:
+                    self.session_data['recent_files'].append(filename)
+                    if len(self.session_data['recent_files']) > 10:
+                        self.session_data['recent_files'].pop(0)
+                    self.session_manager.save_session(self.session_data)
+
+            return True
+
+        except Exception as e:
+            self.write(f"✗ Error saving file: {str(e)}\n", "red")
+            messagebox.showerror("Error", f"Error saving file:\n{str(e)}")
+            return False
+
+    # ============================================================
+    # MODIFICATION 4: Modify get_custom_preamble to check preamble_from_file
+    # ============================================================
+
+    def get_custom_preamble(self) -> str:
+        """Get custom preamble if set, otherwise from file, otherwise generate"""
+        # If user has set a custom preamble, use it
+        if hasattr(self, 'custom_preamble') and self.custom_preamble and self.using_custom_preamble:
+            self.write("  Using custom preamble from user\n", "cyan")
+            return self.custom_preamble
+
+        # If we have a preamble from the file, use it
+        if self.preamble_from_file and self.preamble_origin in ['file', 'tex_import']:
+            self.write("  Using preamble from file\n", "cyan")
+            return self.preamble_from_file
+
+        # Otherwise generate from presentation info
+        try:
+            from BeamerSlideGenerator import get_beamer_preamble
+
+            # Ensure we have non-empty values
+            title = self.presentation_info.get('title', '').strip()
+            subtitle = self.presentation_info.get('subtitle', '').strip()
+            author = self.presentation_info.get('author', '').strip()
+            institution = self.presentation_info.get('institution', 'Artificial Intelligence Research and Intelligent Systems (airis4D)')
+            short_institute = self.presentation_info.get('short_institute', 'airis4D')
+            date = self.presentation_info.get('date', '\\today')
+
+            # Use defaults if empty
+            if not title:
+                title = "Presentation"
+            if not author:
+                author = "airis4D"
+
+            # Get base preamble
+            base_preamble = get_beamer_preamble(
+                title, subtitle, author, institution, short_institute, date
+            )
+
+            # Additional packages needed for special characters and units
+            extra_packages = r"""
+    % Additional packages for special characters and units
+    \usepackage{textcomp}      % For \textmu, \textendash, etc.
+    \usepackage{siunitx}       % For proper units (Ω·cm², etc.)
+    \usepackage{amsmath}       % Enhanced math support
+    \usepackage{amssymb}       % Additional math symbols
+
+    % Configure siunitx for proper formatting
+    \sisetup{
+        per-mode = symbol,
+        output-decimal-marker = {.},
+        group-separator = {,}
+    }
+    """
+
+            # Insert extra packages before \begin{document}
+            doc_pos = base_preamble.find("\\begin{document}")
+            if doc_pos != -1:
+                # Check if packages already exist to avoid duplicates
+                if 'textcomp' not in base_preamble:
+                    base_preamble = base_preamble[:doc_pos] + extra_packages + base_preamble[doc_pos:]
+            else:
+                # If no \begin{document}, add at the end
+                base_preamble = base_preamble + extra_packages + "\n\\begin{document}\n"
+
+            # Process logo if present
+            if 'logo' in self.presentation_info and self.presentation_info['logo']:
+                import re
+                preamble = re.sub(r'\\logo{[^}]*}\s*\n?', '', base_preamble)
+                doc_pos = preamble.find("\\begin{document}")
+                if doc_pos != -1:
+                    logo_command = self.presentation_info['logo'] + "\n\n"
+                    preamble = preamble[:doc_pos] + logo_command + preamble[doc_pos:]
+                else:
+                    preamble = base_preamble + "\n" + self.presentation_info['logo'] + "\n"
+                return preamble
+
+            return base_preamble
+
+        except Exception as e:
+            print(f"Error generating custom preamble: {e}")
+            # Return fallback preamble with all necessary packages
+            return r"""\documentclass[aspectratio=169]{beamer}
+    \usepackage{graphicx}
+    \usepackage{xcolor}
+    \usepackage{textcomp}
+    \usepackage{siunitx}
+    \usepackage{amsmath}
+    \usepackage{amssymb}
+    \usetheme{Madrid}
+    \title{Presentation}
+    \author{airis4D}
+    \sisetup{per-mode=symbol}
+    \begin{document}
+    """
+
+    # ============================================================
+    # MODIFICATION 5: Add merge_preamble method to BeamerSlideEditor
+    # ============================================================
+
+    def merge_preamble(self) -> None:
+        """
+        Merge definitions from the current preamble (from file or TeX import)
+        into the default preamble. This updates the default preamble with
+        custom color definitions, package imports, and other settings.
+        """
+        try:
+            # Determine source preamble
+            source_preamble = None
+            source_name = ""
+
+            if self.preamble_from_file and self.preamble_origin in ['file', 'tex_import']:
+                source_preamble = self.preamble_from_file
+                source_name = "file"
+            elif hasattr(self, 'custom_preamble') and self.custom_preamble:
+                source_preamble = self.custom_preamble
+                source_name = "custom"
+            else:
+                messagebox.showinfo("No Preamble",
+                                   "No custom or file preamble found to merge.\n\n"
+                                   "Please load a file or import a TeX file first.")
+                return
+
+            # Generate the default preamble
+            default_preamble = self.get_default_preamble()
+
+            # Extract definitions from source preamble
+            import re
+
+            # Extract color definitions
+            colors = []
+            definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+            for name, model, value in re.findall(definecolor_pattern, source_preamble):
+                colors.append((name.strip(), model.strip(), value.strip()))
+
+            colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+            for name, source in re.findall(colorlet_pattern, source_preamble):
+                colors.append((name.strip(), 'colorlet', source.strip()))
+
+            # Extract package imports
+            packages = []
+            usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+            for options, pkg_list in re.findall(usepackage_pattern, source_preamble):
+                for pkg in pkg_list.split(','):
+                    pkg = pkg.strip()
+                    if pkg:
+                        packages.append((pkg, options if options else ''))
+
+            # Extract theme
+            theme_match = re.search(r'\\usetheme\{([^}]+)\}', source_preamble)
+            theme = theme_match.group(1) if theme_match else None
+
+            # Extract color theme
+            colortheme_match = re.search(r'\\usecolortheme\{([^}]+)\}', source_preamble)
+            colortheme = colortheme_match.group(1) if colortheme_match else None
+
+            # Extract font theme
+            fonttheme_match = re.search(r'\\usefonttheme\{([^}]+)\}', source_preamble)
+            fonttheme = fonttheme_match.group(1) if fonttheme_match else None
+
+            # Extract other settings
+            settings = []
+            setbeamercolor_pattern = r'\\setbeamercolor\{([^}]+)\}\{([^}]+)\}'
+            for name, value in re.findall(setbeamercolor_pattern, source_preamble):
+                settings.append(('setbeamercolor', name, value))
+
+            setbeamerfont_pattern = r'\\setbeamerfont\{([^}]+)\}\{([^}]+)\}'
+            for name, value in re.findall(setbeamerfont_pattern, source_preamble):
+                settings.append(('setbeamerfont', name, value))
+
+            # Build the merged preamble
+            merged_parts = []
+
+            # Start with documentclass
+            docclass_match = re.search(r'\\documentclass(?:\[[^\]]*\])?\{[^}]+\}', default_preamble)
+            if docclass_match:
+                merged_parts.append(docclass_match.group(0))
+            else:
+                merged_parts.append("\\documentclass[aspectratio=169]{beamer}")
+
+            merged_parts.append("")
+
+            # Add theme if found
+            if theme:
+                merged_parts.append(f"\\usetheme{{{theme}}}")
+            if colortheme:
+                merged_parts.append(f"\\usecolortheme{{{colortheme}}}")
+            if fonttheme:
+                merged_parts.append(f"\\usefonttheme{{{fonttheme}}}")
+            if theme or colortheme or fonttheme:
+                merged_parts.append("")
+
+            # Add packages from source (excluding duplicates)
+            added_packages = set()
+            for pkg, options in packages:
+                if pkg not in added_packages:
+                    if options:
+                        merged_parts.append(f"\\usepackage[{options}]{{{pkg}}}")
+                    else:
+                        merged_parts.append(f"\\usepackage{{{pkg}}}")
+                    added_packages.add(pkg)
+
+            # Add essential packages if missing
+            essential = ['graphicx', 'xcolor', 'amsmath', 'amssymb']
+            for pkg in essential:
+                if pkg not in added_packages:
+                    merged_parts.append(f"\\usepackage{{{pkg}}}")
+                    added_packages.add(pkg)
+
+            merged_parts.append("")
+
+            # Add color definitions
+            if colors:
+                merged_parts.append("% Color definitions")
+                for name, model, value in colors:
+                    if model == 'colorlet':
+                        merged_parts.append(f"\\colorlet{{{name}}}{{{value}}}")
+                    else:
+                        merged_parts.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
+                merged_parts.append("")
+
+            # Add settings
+            for setting_type, name, value in settings:
+                merged_parts.append(f"\\{setting_type}{{{name}}}{{{value}}}")
+
+            # Add siunitx config if needed
+            if 'siunitx' in added_packages:
+                merged_parts.append("\\sisetup{")
+                merged_parts.append("    per-mode = symbol,")
+                merged_parts.append("    output-decimal-marker = {.},")
+                merged_parts.append("    group-separator = {,}")
+                merged_parts.append("}")
+                merged_parts.append("")
+
+            # Add logo if present
+            logo_match = re.search(r'\\logo\{[^}]+\}', source_preamble)
+            if logo_match:
+                merged_parts.append(logo_match.group(0))
+                merged_parts.append("")
+
+            # Add \begin{document}
+            merged_parts.append("\\begin{document}")
+
+            merged_preamble = "\n".join(merged_parts)
+
+            # Show preview and ask for confirmation
+            preview_dialog = ctk.CTkToplevel(self)
+            preview_dialog.title("Merge Preamble Preview")
+            preview_dialog.geometry("700x500")
+            preview_dialog.transient(self)
+            preview_dialog.grab_set()
+
+            # Center dialog
+            preview_dialog.update_idletasks()
+            x = (preview_dialog.winfo_screenwidth() - 700) // 2
+            y = (preview_dialog.winfo_screenheight() - 500) // 2
+            preview_dialog.geometry(f"+{x}+{y}")
+
+            # Text widget for preview
+            text_widget = ctk.CTkTextbox(preview_dialog, font=("Courier", 10))
+            text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+            text_widget.insert("1.0", merged_preamble)
+            text_widget.configure(state="disabled")
+
+            # Buttons
+            button_frame = ctk.CTkFrame(preview_dialog)
+            button_frame.pack(fill="x", padx=10, pady=10)
+
+            def apply_merge():
+                """Apply the merged preamble"""
+                self.custom_preamble = merged_preamble
+                self.using_custom_preamble = True
+                self.preamble_origin = 'merged'
+                self.preamble_from_file = merged_preamble
+                preview_dialog.destroy()
+                self.write("✓ Preamble merged successfully\n", "green")
+                messagebox.showinfo("Success", "Preamble merged successfully!")
+
+            def cancel_merge():
+                preview_dialog.destroy()
+
+            ctk.CTkButton(
+                button_frame,
+                text="Apply Merge",
+                command=apply_merge,
+                width=120,
+                fg_color="#28a745"
+            ).pack(side="left", padx=5)
+
+            ctk.CTkButton(
+                button_frame,
+                text="Cancel",
+                command=cancel_merge,
+                width=120,
+                fg_color="#dc3545"
+            ).pack(side="right", padx=5)
+
+            # Show summary in terminal
+            self.write(f"\n📋 Preamble Merge Summary:\n", "cyan")
+            self.write(f"  • Source: {source_name}\n", "white")
+            self.write(f"  • Colors: {len(colors)}\n", "white")
+            self.write(f"  • Packages: {len(packages)}\n", "white")
+            if theme:
+                self.write(f"  • Theme: {theme}\n", "white")
+            if colortheme:
+                self.write(f"  • Color Theme: {colortheme}\n", "white")
+            if fonttheme:
+                self.write(f"  • Font Theme: {fonttheme}\n", "white")
+            self.write(f"  • Settings: {len(settings)}\n", "white")
+
+        except Exception as e:
+            error_msg = f"Error merging preamble: {str(e)}"
+            self.write(f"✗ {error_msg}\n", "red")
+            messagebox.showerror("Error", error_msg)
+            import traceback
+            traceback.print_exc()
+
+    # ============================================================
+    # MODIFICATION 6: Add reset_to_default_preamble method
+    # ============================================================
+
+    def reset_to_default_preamble(self) -> None:
+        """Reset preamble to default generated preamble"""
+        if messagebox.askyesno("Reset Preamble",
+                               "This will discard your custom/file preamble and use the default generated one.\n\n"
+                               "Are you sure?"):
+            self.preamble_from_file = None
+            self.preamble_origin = 'default'
+            if hasattr(self, 'custom_preamble'):
+                delattr(self, 'custom_preamble')
+            self.using_custom_preamble = False
+            self.write("✓ Reset to default preamble\n", "green")
+            messagebox.showinfo("Success", "Preamble reset to default")
+
+    # ============================================================
+    # MODIFICATION 7: Modify edit_preamble to include merge option
+    # ============================================================
+
+    def edit_preamble(self):
+        """Open preamble editor with custom preamble support and merge option"""
+        # Determine current preamble to display
+        if hasattr(self, 'custom_preamble') and self.custom_preamble and self.using_custom_preamble:
+            current_preamble = self.custom_preamble
+            is_custom = True
+        elif self.preamble_from_file and self.preamble_origin in ['file', 'tex_import']:
+            current_preamble = self.preamble_from_file
+            is_custom = True
+        else:
+            current_preamble = self.get_custom_preamble()
+            is_custom = False
+
+        # Open preamble editor
+        editor = PreambleEditor(self, current_preamble, is_custom)
+        editor.wait_window()
+        new_preamble = editor.preamble
+
+        if new_preamble is not None:
+            # Store the custom preamble
+            self.custom_preamble = new_preamble
+            self.using_custom_preamble = True
+            self.preamble_origin = 'custom'
+            self.preamble_from_file = new_preamble
+            messagebox.showinfo("Success", "Preamble updated successfully!")
+            self.write("✓ Custom preamble saved and will be used for all future PDF generation\n", "green")
+            self.write("  To reset to default, use the 'Reset to Default' button in the editor\n", "cyan")
+
+    # ============================================================
+    # MODIFICATION 8: Modify PreambleEditor to add merge and reset options
+    # ============================================================
+
+    def create_toolbar(self) -> None:
+        """Create main editor toolbar with dynamic layout - ALL FEATURES PRESERVED"""
+        # Create main toolbar container
+        self.toolbar = ctk.CTkFrame(self)
+        self.toolbar.grid(row=2, column=1, sticky="ew", padx=5, pady=5)  # Use grid instead of pack
+
+        # Initialize dynamic toolbar managers
+        self.upper_dynamic_toolbar = DynamicToolbar(self.toolbar)
+        self.lower_dynamic_toolbar = DynamicToolbar(self.toolbar)
+
+        # ========== UPPER ROW - File and presentation operations ==========
+        upper_row = ctk.CTkFrame(self.toolbar)
+        # Use pack inside the toolbar frame since it's a child of the toolbar
+        # but the toolbar itself should use grid
+
+        # ALL original upper buttons preserved with priorities
+        # Higher priority = stays visible longer
+        buttons_upper = [
+            ("New", self.new_file, "Create new presentation", 100),
+            ("Open", self.open_file, "Open existing presentation", 100),
+            ("Save", self.save_file, "Save current presentation", 100),
+            ("Generate PDF", self.generate_pdf, "Generate PDF file", 95),
+            ("Convert to TeX", self.convert_to_tex, "Convert to LaTeX format", 85),
+            ("Preview PDF", self.preview_pdf, "View generated PDF", 80),
+            ("Present with Notes", self.present_with_notes, "Launch dual-screen presentation with notes", 75),
+            ("Load TeX", self.load_tex_file, "Load and convert Beamer TeX file", 70),
+            ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF", 65)
+        ]
+
+        for text, command, tooltip, priority in buttons_upper:
+            if text == "Export to Overleaf":
+                btn = ctk.CTkButton(
+                    upper_row,
+                    text=text,
+                    command=command,
+                    width=120,
+                    fg_color="#47A141",
+                    hover_color="#2E8B57"
+                )
+            elif text == "Present with Notes":
+                btn = ctk.CTkButton(
+                    upper_row,
+                    text=text,
+                    command=command,
+                    width=120,
+                    fg_color="#4A90E2",
+                    hover_color="#357ABD"
+                )
+            else:
+                btn = ctk.CTkButton(
+                    upper_row,
+                    text=text,
+                    command=command,
+                    width=100
+                )
+            self.create_tooltip(btn, tooltip)
+            self.upper_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 5})
+
+        # Pack upper row
+        upper_row.pack(fill="x", padx=5, pady=(5, 2))
+        self.upper_dynamic_toolbar.pack_all()
+
+        # ========== LOWER ROW - Screen capture and additional controls ==========
+        lower_row = ctk.CTkFrame(self.toolbar)
+
+        # ========== LEFT SIDE - Screen capture controls ==========
+        capture_frame = ctk.CTkFrame(lower_row, fg_color="transparent")
+
+        # Screen capture label (PRESERVED)
+        capture_label = ctk.CTkLabel(capture_frame, text="Screen Capture:")
+        capture_label.pack(side="left", padx=5)
+        self.create_tooltip(capture_label, "Choose capture mode and settings")
+
+        # Initialize capture settings (PRESERVED)
+        self.capture_mode = tk.StringVar(value="single")
+        self.frame_count = tk.IntVar(value=10)
+        self.frame_delay = tk.DoubleVar(value=0.5)
+
+        # Single frame mode (PRESERVED)
+        single_btn = ctk.CTkRadioButton(
+            capture_frame,
+            text="Single",
+            variable=self.capture_mode,
+            value="single"
+        )
+        single_btn.pack(side="left", padx=5)
+        self.create_tooltip(single_btn, "Capture single screenshot")
+
+        # Animation mode (PRESERVED)
+        anim_btn = ctk.CTkRadioButton(
+            capture_frame,
+            text="Animation",
+            variable=self.capture_mode,
+            value="animation"
+        )
+        anim_btn.pack(side="left", padx=5)
+        self.create_tooltip(anim_btn, "Capture animated GIF")
+
+        # Animation settings frame (PRESERVED - initially hidden)
+        self.anim_settings = ctk.CTkFrame(capture_frame, fg_color="transparent")
+
+        # Frames control (PRESERVED)
+        frames_frame = ctk.CTkFrame(self.anim_settings, fg_color="transparent")
+        frames_frame.pack(side="left", padx=5)
+        ctk.CTkLabel(frames_frame, text="Frames:").pack(side="left")
+        frames_entry = ctk.CTkEntry(frames_frame, textvariable=self.frame_count, width=40)
+        frames_entry.pack(side="left", padx=2)
+        self.create_tooltip(frames_entry, "Number of frames to capture")
+
+        # Delay control (PRESERVED)
+        delay_frame = ctk.CTkFrame(self.anim_settings, fg_color="transparent")
+        delay_frame.pack(side="left", padx=5)
+        ctk.CTkLabel(delay_frame, text="Delay:").pack(side="left")
+        delay_entry = ctk.CTkEntry(delay_frame, textvariable=self.frame_delay, width=40)
+        delay_entry.pack(side="left", padx=2)
+        self.create_tooltip(delay_entry, "Delay between frames (seconds)")
+
+        # Capture button (PRESERVED)
+        capture_btn = ctk.CTkButton(
+            capture_frame,
+            text="Capture",
+            command=self.capture_screen,
+            width=80,
+            fg_color="#4A90E2",
+            hover_color="#357ABD"
+        )
+        capture_btn.pack(side="left", padx=5)
+        self.create_tooltip(capture_btn, "Start screen capture")
+
+        # Add capture frame to dynamic toolbar (high priority)
+        self.lower_dynamic_toolbar.add_frame(capture_frame, priority=100, pack_kwargs={'side': 'left', 'padx': 5})
+
+        # ========== SEPARATOR (PRESERVED) ==========
+        separator = ttk.Separator(lower_row, orient="vertical")
+        self.lower_dynamic_toolbar.add_button(separator, priority=90, pack_kwargs={'side': 'left', 'padx': 10, 'fill': 'y', 'pady': 5})
+
+        # ========== RIGHT SIDE - Additional buttons (PRESERVED) ==========
+        right_frame = ctk.CTkFrame(lower_row, fg_color="transparent")
+
+        # ALL original right buttons preserved
+        right_buttons = [
+            ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble", 80),
+            ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings", 80),
+            ("Get Source", self.get_source_from_tex, "Extract source from TEX file", 70),
+            ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip", 60),
+            ("TikZ Colors", self.show_tikz_color_helper, "TikZ Color Helper", 50),
+            ("Command Index", self.show_enhanced_command_index, "LaTeX Command Reference", 50),
+            ("Grammarly", self.toggle_grammarly, "Toggle Grammarly grammar checking", 40)
+        ]
+
+        for text, command, tooltip, priority in right_buttons:
+            if text == "Export to Overleaf":
+                btn = ctk.CTkButton(
+                    right_frame,
+                    text=text,
+                    command=command,
+                    width=130,
+                    fg_color="#47A141",
+                    hover_color="#2E8B57"
+                )
+            elif text == "Grammarly":
+                btn = ctk.CTkButton(
+                    right_frame,
+                    text=f"{text}: Off",
+                    command=command,
+                    width=100,
+                    fg_color="#dc3545"
+                )
+                self.grammarly_button = btn  # Store reference for later updates
+            else:
+                btn = ctk.CTkButton(
+                    right_frame,
+                    text=text,
+                    command=command,
+                    width=130
+                )
+            btn.pack(side="left", padx=5)
+            self.create_tooltip(btn, tooltip)
+            self.lower_dynamic_toolbar.add_button(btn, priority, pack_kwargs={'side': 'left', 'padx': 5})
+
+        # Add right frame to dynamic toolbar
+        self.lower_dynamic_toolbar.add_frame(right_frame, priority=70, pack_kwargs={'side': 'right', 'padx': 5})
+
+        # Pack lower row
+        lower_row.pack(fill="x", padx=5, pady=(2, 5))
+        self.lower_dynamic_toolbar.pack_all()
+
+        # ========== ANIMATION SETTINGS TOGGLE (PRESERVED) ==========
+        def toggle_anim_settings(*args):
+            """Show/hide animation settings based on mode - PRESERVED"""
+            if self.capture_mode.get() == "animation":
+                self.anim_settings.pack(side='left', padx=5)
+                # Update layout after showing
+                self.lower_dynamic_toolbar.update_layout()
+            else:
+                self.anim_settings.pack_forget()
+                self.lower_dynamic_toolbar.update_layout()
+
+        # Bind mode changes (PRESERVED)
+        self.capture_mode.trace('w', toggle_anim_settings)
+
+        # Initial state (PRESERVED)
+        toggle_anim_settings()
+
+    def merge_preamble(self):
+        """Merge definitions from current preamble into default"""
+        if hasattr(self.master, 'merge_preamble'):
+            # Close the editor and call the main merge method
+            self.preamble = self.editor.get('1.0', 'end-1c')
+            self.destroy()
+            self.master.merge_preamble()
+
+    # ============================================================
+    # MODIFICATION 9: Modify convert_beamer_tex_to_simple_text
+    # to preserve preamble
+    # ============================================================
+
+    @staticmethod
+    def convert_beamer_tex_to_simple_text(tex_file_path):
+        """
+        Convert Beamer .tex file to simple text format with proper error handling.
+        PRESERVES the preamble from the TeX file.
+        Returns tuple (output_path, errors_list) where errors_list contains
+        (line_number, error_message, context) for each error found.
+        """
+        import re
+        from pathlib import Path
+
+        errors = []
+        warnings = []
+
+        def add_error(line_num, error_msg, context_line=""):
+            """Record an error with line number for later editing"""
+            errors.append({
+                'line': line_num,
+                'message': error_msg,
+                'context': context_line
+            })
+            print(f"  ⚠ Line {line_num}: {error_msg}")
+
+        def add_warning(line_num, warning_msg, context_line=""):
+            """Record a warning"""
+            warnings.append({
+                'line': line_num,
+                'message': warning_msg,
+                'context': context_line
+            })
+            print(f"  ℹ Line {line_num}: {warning_msg}")
+
+        try:
+            with open(tex_file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                tex_content = ''.join(lines)
+
+            # Create output path
+            tex_path = Path(tex_file_path)
+            output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
+
+            # ========== EXTRACT AND PRESERVE THE COMPLETE PREAMBLE ==========
+            # Find everything before \begin{document}
+            preamble_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
+            preamble = ""
+            if preamble_match:
+                preamble = preamble_match.group(1).strip()
+                # Remove any existing \begin{document} from the end
+                if preamble.endswith('\\begin{document}'):
+                    preamble = preamble[:-len('\\begin{document}')].strip()
+                print(f"✓ Extracted preamble ({len(preamble)} chars)")
+            else:
+                print("⚠ No preamble found in TeX file")
+                # Generate a minimal preamble
+                preamble = r"""\documentclass[aspectratio=169]{beamer}
+    \usepackage{graphicx}
+    \usepackage{xcolor}
+    \usepackage{amsmath}
+    \usepackage{amssymb}
+    \usetheme{Madrid}
+    """
+                add_warning(1, "No preamble found, using default", "")
+
+            # Validate the TeX content line by line
+            brace_stack = []
+            in_math = False
+            dollar_count = 0
+
+            for i, line in enumerate(lines, 1):
+                line_stripped = line.strip()
+                if not line_stripped or line_stripped.startswith('%'):
+                    continue
+
+                # Check for unbalanced braces (skip preamble check)
+                if '\\begin{document}' not in line and '\\end{document}' not in line:
+                    for char in line:
+                        if char == '{':
+                            brace_stack.append(('{', i))
+                        elif char == '}':
+                            if brace_stack:
+                                brace_stack.pop()
+                            else:
+                                add_error(i, "Unmatched closing brace '}'", line_stripped[:80])
+
+                # Check for unbalanced math mode
+                dollar_count += line.count('$') - line.count('\\$')
+                if dollar_count % 2 != 0:
+                    add_error(i, "Unbalanced math mode (odd number of $)", line_stripped[:80])
+
+            if brace_stack:
+                add_error(brace_stack[0][1], f"Unclosed brace(s): {len(brace_stack)} remaining", "")
+
+            # Extract the document body
+            doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', tex_content, re.DOTALL)
+            if not doc_match:
+                add_error(1, "No \\begin{document} found in TeX file", "")
+                # Still try to continue with what we have
+                document_body = tex_content
+            else:
+                document_body = doc_match.group(1)
+
+            # Find all frames with line number tracking
+            frame_pattern = r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end\{frame\}'
+            frames = list(re.finditer(frame_pattern, document_body, re.DOTALL))
+
+            if not frames:
+                add_error(1, "No frames found in document", "")
+                # Create a minimal slide
+                slides = [{
+                    'title': 'Untitled Slide',
+                    'content': ['\\begin{frame}{Untitled Slide}', '\\frametitle{Untitled Slide}', '\\end{frame}'],
+                    'notes': []
+                }]
+            else:
+                slides = []
+                slide_count = 0
+
+                for frame_match in frames:
+                    slide_count += 1
+                    title = frame_match.group(1) or f"Slide {slide_count}"
+                    subtitle = frame_match.group(2) or ""
+                    frame_content = frame_match.group(3).strip()
+
+                    # Skip title page frames but extract content
+                    if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
+                        # Try to extract title from frame content
+                        title_match = re.search(r'\\title\{([^}]*)\}', frame_content)
+                        if title_match:
+                            title = title_match.group(1)
+                        # Create a proper title slide
+                        slides.append({
+                            'title': title,
+                            'content': [f"\\begin{{frame}}{{{title}}}", "\\titlepage", "\\end{frame}"],
+                            'notes': []
+                        })
+                        continue
+
+                    # Build the slide content exactly as it appears
+                    content_lines = []
+
+                    # Add frame title
+                    if subtitle:
+                        content_lines.append(f"\\begin{{frame}}{{{title} - {subtitle}}}")
+                        content_lines.append(f"\\frametitle{{{title} — {subtitle}}}")
+                    else:
+                        content_lines.append(f"\\begin{{frame}}{{{title}}}")
+                        content_lines.append(f"\\frametitle{{{title}}}")
+
+                    # Extract and process frame content
+                    # Remove any existing \frametitle commands to avoid duplication
+                    frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
+
+                    # Process frame content preserving all LaTeX
+                    for line in frame_content.split('\n'):
+                        line = line.strip()
+                        if line:
+                            content_lines.append(line)
+
+                    # Close the frame
+                    content_lines.append("\\end{frame}")
+
+                    # Extract notes if present
+                    notes = []
+                    note_match = re.search(r'\\note\{(.*?)\}', frame_content, re.DOTALL)
+                    if note_match:
+                        note_content = note_match.group(1).strip()
+                        notes = [note_content]
+
+                    slides.append({
+                        'title': title,
+                        'content': content_lines,
+                        'notes': notes
+                    })
+
+            # ========== WRITE TO OUTPUT FILE WITH PREAMBLE PRESERVED ==========
+            with open(output_path, 'w', encoding='utf-8') as f:
+                # Write the preamble first
+                f.write(preamble)
+                f.write("\n\n")
+
+                # Write the document body with frames
+                for slide in slides:
+                    # Write the frame directly - NO \title or \begin{Content}
+                    for line in slide['content']:
+                        f.write(f"{line}\n")
+                    f.write("\n")
+
+                    # Add notes if present
+                    if slide['notes']:
+                        f.write("\\begin{Notes}\n")
+                        for note in slide['notes']:
+                            f.write(f"{note}\n")
+                        f.write("\\end{Notes}\n")
+                    else:
+                        f.write("\\begin{Notes}\n")
+                        f.write("% No notes for this slide\n")
+                        f.write("\\end{Notes}\n")
+                    f.write("\n")
+
+                # Ensure the document ends properly
+                f.write("\\end{document}\n")
+
+            print(f"✓ Converted {len(slides)} slides from {tex_file_path}")
+            print(f"✓ Preamble preserved in output file")
+
+            if errors:
+                print(f"\n⚠ Found {len(errors)} issue(s) during conversion:")
+                for err in errors:
+                    print(f"   Line {err['line']}: {err['message']}")
+
+            if warnings:
+                print(f"\nℹ Found {len(warnings)} warning(s):")
+                for warn in warnings:
+                    print(f"   Line {warn['line']}: {warn['message']}")
+
+            return output_path, errors
+
+        except Exception as e:
+            print(f"Error converting TeX file: {e}")
+            import traceback
+            traceback.print_exc()
+            return None, []
+
+    #----------------update ends -------------------------
     def _parse_old_format_enhanced(self, content: str) -> list:
         """Enhanced parsing of old format with proper title extraction"""
         slides_raw = []
@@ -21164,25 +21768,6 @@ Created by {self.__author__}
             print(f"  Hidden note indices: {slide.get('_hidden_note_indices')}")
             print(f"  Fully masked: {slide.get('_fully_masked')}")
         print("=" * 40)
-
-    def edit_preamble(self):
-        """Open preamble editor with custom preamble support"""
-        # Get current preamble (either custom or generated)
-        if hasattr(self, 'custom_preamble') and self.custom_preamble:
-            current_preamble = self.custom_preamble
-        else:
-            current_preamble = self.get_custom_preamble()
-
-        # Open preamble editor - uses the static method
-        new_preamble = PreambleEditor.edit_preamble(self, current_preamble)
-
-        if new_preamble is not None:
-            # Store the custom preamble
-            self.custom_preamble = new_preamble
-            self.using_custom_preamble = True
-            messagebox.showinfo("Success", "Preamble updated successfully!")
-            self.write("✓ Custom preamble saved and will be used for all future PDF generation\n", "green")
-            self.write("  To reset to default, use the 'Reset to Default' button in the editor\n", "cyan")
 
     def present_with_notes(self) -> None:
         """Present PDF using pympress for dual-screen display with notes"""
@@ -24699,189 +25284,6 @@ def import_required_packages():
         traceback.print_exc()
         sys.exit(1)
 
-def convert_beamer_tex_to_simple_text(tex_file_path):
-    """
-    Convert Beamer .tex file to simple text format with proper error handling.
-    Returns tuple (output_path, errors_list) where errors_list contains
-    (line_number, error_message, context) for each error found.
-    """
-    import re
-    from pathlib import Path
-
-    errors = []
-    warnings = []
-
-    def add_error(line_num, error_msg, context_line=""):
-        """Record an error with line number for later editing"""
-        errors.append({
-            'line': line_num,
-            'message': error_msg,
-            'context': context_line
-        })
-        print(f"  ⚠ Line {line_num}: {error_msg}")
-
-    def add_warning(line_num, warning_msg, context_line=""):
-        """Record a warning"""
-        warnings.append({
-            'line': line_num,
-            'message': warning_msg,
-            'context': context_line
-        })
-        print(f"  ℹ Line {line_num}: {warning_msg}")
-
-    try:
-        with open(tex_file_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            tex_content = ''.join(lines)
-
-        # Create output path
-        tex_path = Path(tex_file_path)
-        output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
-
-        # Validate the TeX content line by line
-        brace_stack = []
-        in_math = False
-        dollar_count = 0
-
-        for i, line in enumerate(lines, 1):
-            line_stripped = line.strip()
-            if not line_stripped or line_stripped.startswith('%'):
-                continue
-
-            # Check for unbalanced braces
-            for char in line:
-                if char == '{':
-                    brace_stack.append(('{', i))
-                elif char == '}':
-                    if brace_stack:
-                        brace_stack.pop()
-                    else:
-                        add_error(i, "Unmatched closing brace '}'", line_stripped[:80])
-
-            # Check for unbalanced math mode
-            dollar_count += line.count('$') - line.count('\\$')
-            if dollar_count % 2 != 0:
-                add_error(i, "Unbalanced math mode (odd number of $)", line_stripped[:80])
-
-        if brace_stack:
-            add_error(brace_stack[0][1], f"Unclosed brace(s): {len(brace_stack)} remaining", "")
-
-        # Extract the document body
-        doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', tex_content, re.DOTALL)
-        if not doc_match:
-            add_error(1, "No \\begin{document} found in TeX file", "")
-            raise ValueError("No document body found in TeX file")
-
-        document_body = doc_match.group(1)
-
-        # Find all frames with line number tracking
-        frame_pattern = r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end\{frame\}'
-        frames = list(re.finditer(frame_pattern, document_body, re.DOTALL))
-
-        if not frames:
-            add_error(1, "No frames found in document", "")
-            return None, errors
-
-        slides = []
-        slide_count = 0
-
-        for frame_match in frames:
-            slide_count += 1
-            title = frame_match.group(1) or f"Slide {slide_count}"
-            subtitle = frame_match.group(2) or ""
-            frame_content = frame_match.group(3).strip()
-
-            # Skip title page frames but extract content
-            if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
-                # Try to extract title from frame content
-                title_match = re.search(r'\\title\{([^}]*)\}', frame_content)
-                if title_match:
-                    title = title_match.group(1)
-                # Create a proper title slide
-                slides.append({
-                    'title': title,
-                    'content': [f"\\begin{{frame}}{{{title}}}", "\\titlepage", "\\end{frame}"],
-                    'notes': []
-                })
-                continue
-
-            # Build the slide content exactly as it appears
-            content_lines = []
-
-            # Add frame title
-            if subtitle:
-                content_lines.append(f"\\begin{{frame}}{{{title} - {subtitle}}}")
-                content_lines.append(f"\\frametitle{{{title} — {subtitle}}}")
-            else:
-                content_lines.append(f"\\begin{{frame}}{{{title}}}")
-                content_lines.append(f"\\frametitle{{{title}}}")
-
-            # Extract and process frame content
-            # Remove any existing \frametitle commands to avoid duplication
-            frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
-
-            # Process frame content preserving all LaTeX
-            for line in frame_content.split('\n'):
-                line = line.strip()
-                if line:
-                    content_lines.append(line)
-
-            # Close the frame
-            content_lines.append("\\end{frame}")
-
-            # Extract notes if present
-            notes = []
-            note_match = re.search(r'\\note\{(.*?)\}', frame_content, re.DOTALL)
-            if note_match:
-                note_content = note_match.group(1).strip()
-                notes = [note_content]
-
-            slides.append({
-                'title': title,
-                'content': content_lines,
-                'notes': notes
-            })
-
-        # Write to output file with proper format
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for slide in slides:
-                # Write the frame directly - NO \title or \begin{Content}
-                for line in slide['content']:
-                    f.write(f"{line}\n")
-                f.write("\n")
-
-                # Add notes if present
-                if slide['notes']:
-                    f.write("\\begin{Notes}\n")
-                    for note in slide['notes']:
-                        f.write(f"{note}\n")
-                    f.write("\\end{Notes}\n")
-                else:
-                    f.write("\\begin{Notes}\n")
-                    f.write("% No notes for this slide\n")
-                    f.write("\\end{Notes}\n")
-                f.write("\n")
-
-        print(f"✓ Converted {len(slides)} slides from {tex_file_path}")
-
-        if errors:
-            print(f"\n⚠ Found {len(errors)} issue(s) during conversion:")
-            for err in errors:
-                print(f"   Line {err['line']}: {err['message']}")
-
-        if warnings:
-            print(f"\nℹ Found {len(warnings)} warning(s):")
-            for warn in warnings:
-                print(f"   Line {warn['line']}: {warn['message']}")
-
-        return output_path, errors
-
-    except Exception as e:
-        print(f"Error converting TeX file: {e}")
-        import traceback
-        traceback.print_exc()
-        return None, []
-
 
 def update_installation():
     """Silently update installed files if running from a newer version"""
@@ -25653,6 +26055,10 @@ import socket
 import ctypes
 from importlib import util
 
+# ============================================================
+# MODIFICATION 10: Update main to handle new arguments
+# ============================================================
+
 def main():
     """Main entry point for both source and installed runs"""
     try:
@@ -25673,25 +26079,17 @@ def main():
         args = parser.parse_args()
 
         if args.fix or args.install:
-            #from installation import install_bsg_ide
             success = install_bsg_ide(fix_mode=args.fix)
             verify_installation()
             sys.exit(0 if success else 1)
 
         # Launch IDE
-
         app = BeamerSlideEditor()
         app.mainloop()
 
     except Exception as e:
         print(f"Error starting BSG-IDE: {str(e)}")
         import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-    except Exception as e:
-        print(f"Error in main: {str(e)}")
         traceback.print_exc()
         sys.exit(1)
 
