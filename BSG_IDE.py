@@ -14906,7 +14906,7 @@ Created by {self.__author__}
         return line
 
     def convert_to_tex(self):
-        """Convert text to TeX while preserving masked content and updating both files"""
+        """Convert text to TeX using BeamerSlideGenerator's process_input_file"""
         if not self.current_file:
             messagebox.showwarning("Warning", "Please save your file first!")
             return
@@ -14924,60 +14924,57 @@ Created by {self.__author__}
             self.write("CONVERTING TO TEX\n", "cyan")
             self.write("="*60 + "\n", "cyan")
 
-            # ========== GENERATE TEX CONTENT ==========
-            self.write("\nGenerating TeX content...\n", "white")
-            tex_content = self.generate_tex_with_preserved_masking()
+            # ========== SAVE THE TXT FILE FIRST ==========
+            self.write("\nSaving current state to TXT file...\n", "white")
+            self.save_file()
 
-            if not tex_content:
-                self.write("✗ Failed to generate TeX content\n", "red")
-                return
+            # ========== USE PROCESS_INPUT_FILE FOR CONVERSION ==========
+            self.write("\nConverting to TeX using BeamerSlideGenerator...\n", "white")
 
-            # ========== EXTRACT THE COMBINED PREAMBLE FROM THE GENERATED TEX ==========
-            import re
-            preamble_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
-            combined_preamble = ""
-            if preamble_match:
-                combined_preamble = preamble_match.group(1).strip()
-                self.write(f"✓ Extracted combined preamble ({len(combined_preamble)} chars)\n", "green")
+            from BeamerSlideGenerator import process_input_file
+            processed, failed, errors = process_input_file(txt_file, tex_file)
+
+            if processed > 0:
+                self.write(f"\n✓ TeX file generated: {tex_file}\n", "green")
+                self.write(f"  Processed {processed} slides, {failed} failed\n", "green")
+
+                if errors:
+                    self.write(f"\n⚠ Issues encountered:\n", "yellow")
+                    for err in errors:
+                        self.write(f"  • {err}\n", "yellow")
+
+                # Show summary
+                self.write("\n" + "="*60 + "\n", "green")
+                self.write("✓ CONVERSION COMPLETE\n", "green")
+                self.write("="*60 + "\n", "green")
+
+                # Update the preamble from file
+                with open(tex_file, 'r', encoding='utf-8') as f:
+                    tex_content = f.read()
+                    import re
+                    preamble_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
+                    if preamble_match:
+                        self.preamble_from_file = preamble_match.group(1).strip()
+                        self.preamble_origin = 'tex_import'
+                        self.custom_preamble = self.preamble_from_file
+                        self.using_custom_preamble = True
+                        self.write("✓ Extracted and stored preamble from TeX file\n", "green")
+
+                return True
             else:
-                self.write("⚠ Could not extract preamble from generated TeX\n", "yellow")
-
-            # ========== WRITE TEX FILE ==========
-            with open(tex_file, 'w', encoding='utf-8') as f:
-                f.write(tex_content)
-            self.write(f"✓ TeX file generated: {tex_file}\n", "green")
-
-            # ========== CRITICAL: UPDATE TXT FILE WITH COMBINED PREAMBLE ==========
-            # This must happen BEFORE we save the slide content, so the preamble is preserved
-            if combined_preamble:
-                # Update the TXT file with the combined preamble
-                self._update_txt_file_with_preamble(txt_file, combined_preamble)
-                self.write(f"✓ Updated TXT file with combined preamble\n", "green")
-
-                # Store the preamble in memory for future saves
-                self.preamble_from_file = combined_preamble
-                self.preamble_origin = 'combined'
-                self.custom_preamble = combined_preamble
-                self.using_custom_preamble = True
-
-            # ========== NOW SAVE THE SLIDE CONTENT ==========
-            # This saves the editor content (slides, media, notes) while preserving the preamble
-            self.write("\nSaving slide content to TXT file...\n", "white")
-            self._save_txt_content_only(txt_file)
-            self.write(f"✓ TXT file updated with slide content\n", "green")
-
-            # Show summary
-            self.write_tex_masking_summary(tex_content)
-
-            self.write("\n" + "="*60 + "\n", "green")
-            self.write("✓ CONVERSION COMPLETE\n", "green")
-            self.write("="*60 + "\n", "green")
+                self.write(f"✗ Conversion failed\n", "red")
+                if errors:
+                    for err in errors:
+                        self.write(f"  • {err}\n", "red")
+                messagebox.showerror("Error", f"Conversion failed:\n{'\n'.join(errors) if errors else 'Unknown error'}")
+                return False
 
         except Exception as e:
             self.write(f"✗ Error in conversion: {str(e)}\n", "red")
             import traceback
             traceback.print_exc()
             messagebox.showerror("Error", f"Error converting to TeX:\n{str(e)}")
+            return False
 
     def _update_txt_file_with_preamble(self, txt_file: str, combined_preamble: str) -> bool:
         """
@@ -22513,6 +22510,41 @@ Created by {self.__author__}
         14. Single image layout (centered)
         15. Single content layout
         """
+
+        # ============================================================
+        # FIX: Fix malformed table specifications in content FIRST
+        # ============================================================
+        import re
+        fixed_content = []
+        for line in content:
+            if isinstance(line, str) and '\\begin{tabular}' in line:
+                match = re.search(r'\\begin\{tabular\}\{([^}]*)\}', line)
+                if match:
+                    spec = match.group(1)
+                    # Fix all malformed @ patterns
+                    # Fix: @ l -> @{}l, @ r -> @{}r, @ c -> @{}c
+                    fixed_spec = re.sub(r'@\s+([lrc])', r'@{\1}', spec)
+                    # Fix: l/r/c followed by space then @ (but not @{...})
+                    fixed_spec = re.sub(r'([lrc])\s+@(?!\{)', r'\1@{}', fixed_spec)
+                    # Fix: @{ l -> @{}l
+                    fixed_spec = re.sub(r'@\{\s+([lrc])', r'@{\1}', fixed_spec)
+                    # Fix: l @} -> l@{}
+                    fixed_spec = re.sub(r'([lrc])\s+@\}', r'\1@{}', fixed_spec)
+                    # Fix: @{@{} -> @{}
+                    fixed_spec = re.sub(r'@\{\}\{\}', r'@{}', fixed_spec)
+                    # Fix: @ @ -> @{}@{}
+                    fixed_spec = re.sub(r'@\s+@', r'@{}@{}', fixed_spec)
+                    # Fix: @ at beginning or end without {}
+                    fixed_spec = re.sub(r'^@\s*', r'@{}', fixed_spec)
+                    fixed_spec = re.sub(r'\s*@$', r'@{}', fixed_spec)
+                    # Fix: @ followed by | (vertical bar)
+                    fixed_spec = re.sub(r'@\s*\|', r'@{\\vline}', fixed_spec)
+                    # Final cleanup: remove any remaining malformed @
+                    fixed_spec = re.sub(r'@\s+', r'@', fixed_spec)
+
+                    line = line.replace(match.group(0), f'\\begin{{tabular}}{{{fixed_spec}}}')
+            fixed_content.append(line)
+        content = fixed_content
 
         # ========== 1. BIBLIOGRAPHY/REFERENCES HANDLING ==========
         is_bibliography = False
