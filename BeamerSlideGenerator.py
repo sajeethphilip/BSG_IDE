@@ -17,6 +17,192 @@ from urllib.parse import urlparse, unquote
 from pathlib import Path
 import mimetypes
 output_dir = ""
+
+# ============================================================
+# TIKZ FIX FUNCTIONS
+# ============================================================
+
+def fix_tikz_node_line_breaks(tikz_content: str) -> str:
+    """
+    Fix TikZ node line breaks by adding proper minipage or minimum height.
+    This handles nodes within tikzpicture environments.
+    """
+    import re
+
+    if not tikz_content or not isinstance(tikz_content, str):
+        return tikz_content
+
+    def fix_node_content(match):
+        """Fix a single TikZ node's content."""
+        # Extract the full node command
+        full_node = match.group(0)
+
+        # Safely extract groups based on what's available
+        num_groups = len(match.groups())
+
+        options = match.group(1) if num_groups >= 1 and match.group(1) is not None else ""
+        node_name = match.group(2) if num_groups >= 2 and match.group(2) is not None else ""
+        position = match.group(3) if num_groups >= 3 and match.group(3) is not None else ""
+        content_text = match.group(4) if num_groups >= 4 and match.group(4) is not None else ""
+
+        # If we couldn't extract content properly, try a different approach
+        if not content_text and match.groups():
+            # Try to find content in the last group
+            content_text = match.groups()[-1] if match.groups()[-1] is not None else ""
+
+        # Check if content has line breaks (\\)
+        if '\\\\' not in content_text and '\\' not in content_text:
+            return full_node  # No line breaks, return as-is
+
+        # Check if minipage is already used
+        if '\\begin{minipage}' in content_text:
+            return full_node  # Already has minipage
+
+        # Check if minimum height is already set
+        if 'minimum height' in options:
+            return full_node  # Already has minimum height
+
+        # Add minimum height and adjust text width
+        if 'text width' not in options and options:
+            options = options + ', text width=2.2cm, minimum height=1.5cm'
+        elif options:
+            options = options + ', minimum height=1.5cm'
+        else:
+            options = 'text width=2.2cm, minimum height=1.5cm'
+
+        # Fix the content with proper minipage
+        # Split by \\ and clean up, handling both \\ and \\\\
+        lines = re.split(r'\\\\+', content_text)
+        lines = [line.strip() for line in lines if line.strip()]
+
+        if len(lines) > 1:
+            # Create minipage with proper line breaks
+            minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+
+            # Reconstruct the node with the fixed content
+            if node_name and position:
+                return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
+            elif node_name:
+                return f'\\node[{options}] ({node_name}) {{{minipage_content}}};'
+            else:
+                return f'\\node[{options}] {{{minipage_content}}};'
+        else:
+            return full_node
+
+    # Pattern 1: \node[options] (name) at (position) {content};
+    # Use a more robust pattern with non-greedy matching
+    pattern1 = r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};'
+
+    # Try each pattern separately and accumulate results
+    try:
+        tikz_content = re.sub(pattern1, fix_node_content, tikz_content, flags=re.DOTALL)
+    except (IndexError, TypeError) as e:
+        print(f"  ⚠ Pattern1 fix failed: {e}")
+
+    # Pattern 2: \node[options] (name) {content};
+    pattern2 = r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*\{([^}]*)\};'
+    try:
+        tikz_content = re.sub(pattern2, fix_node_content, tikz_content, flags=re.DOTALL)
+    except (IndexError, TypeError) as e:
+        print(f"  ⚠ Pattern2 fix failed: {e}")
+
+    # Pattern 3: \node[options] {content}; (no name)
+    pattern3 = r'\\node\[([^\]]*)\]\s*\{([^}]*)\};'
+    try:
+        tikz_content = re.sub(pattern3, fix_node_content, tikz_content, flags=re.DOTALL)
+    except (IndexError, TypeError) as e:
+        print(f"  ⚠ Pattern3 fix failed: {e}")
+
+    # Pattern 4: \node (name) at (position) {content}; (no options)
+    pattern4 = r'\\node\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};'
+    try:
+        def fix_no_options(match):
+            node_name = match.group(1)
+            position = match.group(2)
+            content_text = match.group(3)
+
+            if '\\\\' not in content_text:
+                return match.group(0)
+
+            lines = re.split(r'\\\\+', content_text)
+            lines = [line.strip() for line in lines if line.strip()]
+
+            if len(lines) > 1:
+                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+                return f'\\node ({node_name}) at ({position}) {{{minipage_content}}};'
+            return match.group(0)
+
+        tikz_content = re.sub(pattern4, fix_no_options, tikz_content, flags=re.DOTALL)
+    except (IndexError, TypeError) as e:
+        print(f"  ⚠ Pattern4 fix failed: {e}")
+
+    # Pattern 5: \node (name) {content}; (no options, no position)
+    pattern5 = r'\\node\s*\(([^)]*)\)\s*\{([^}]*)\};'
+    try:
+        def fix_no_options_no_pos(match):
+            node_name = match.group(1)
+            content_text = match.group(2)
+
+            if '\\\\' not in content_text:
+                return match.group(0)
+
+            lines = re.split(r'\\\\+', content_text)
+            lines = [line.strip() for line in lines if line.strip()]
+
+            if len(lines) > 1:
+                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+                return f'\\node ({node_name}) {{{minipage_content}}};'
+            return match.group(0)
+
+        tikz_content = re.sub(pattern5, fix_no_options_no_pos, tikz_content, flags=re.DOTALL)
+    except (IndexError, TypeError) as e:
+        print(f"  ⚠ Pattern5 fix failed: {e}")
+
+    # Also handle nodes with curly braces inside content - use a different approach
+    # Pattern for nodes with nested braces
+    pattern6 = r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};'
+    try:
+        def fix_nested_content(match):
+            options = match.group(1) if match.group(1) is not None else ""
+            node_name = match.group(2) if match.group(2) is not None else ""
+            position = match.group(3) if match.group(3) is not None else ""
+            content_text = match.group(4) if match.group(4) is not None else ""
+
+            if '\\\\' not in content_text:
+                return match.group(0)
+
+            if '\\begin{minipage}' in content_text:
+                return match.group(0)
+
+            if 'minimum height' in options:
+                return match.group(0)
+
+            if 'text width' not in options and options:
+                options = options + ', text width=2.2cm, minimum height=1.5cm'
+            elif options:
+                options = options + ', minimum height=1.5cm'
+            else:
+                options = 'text width=2.2cm, minimum height=1.5cm'
+
+            lines = re.split(r'\\\\+', content_text)
+            lines = [line.strip() for line in lines if line.strip()]
+
+            if len(lines) > 1:
+                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+                if node_name and position:
+                    return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
+                elif node_name:
+                    return f'\\node[{options}] ({node_name}) {{{minipage_content}}};'
+                else:
+                    return f'\\node[{options}] {{{minipage_content}}};'
+            return match.group(0)
+
+        tikz_content = re.sub(pattern6, fix_nested_content, tikz_content, flags=re.DOTALL)
+    except (IndexError, TypeError) as e:
+        print(f"  ⚠ Pattern6 fix failed: {e}")
+
+    return tikz_content
+
 #--------------------------------------------------------------------------------------------------------
 def set_terminal_io(term_io):
     """Set the terminal I/O object and verify it's working"""
@@ -405,8 +591,9 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 """
 
+    # ========== PROGRESS BAR - ALWAYS DEFINED ==========
     progress_bar = r"""
-% Progress bar
+% Progress bar - always defined
 \makeatletter
 \def\progressbar@progressbar{}
 \newcount\progressbar@tmpcounta
@@ -427,21 +614,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
                (0pt, 0pt) rectangle (\progress@ratio\progressbar@pbwd, \progressbar@pbht);
        \fi
    \end{tikzpicture}%
-}
-
-\setbeamertemplate{frametitle}{
-   \nointerlineskip
-   \vskip1ex
-   \begin{beamercolorbox}[wd=\paperwidth,ht=4ex,dp=2ex]{frametitle}
-       \begin{minipage}[t]{\dimexpr\paperwidth-4em}
-           \centering
-           \vspace{2pt}
-           \insertframetitle
-           \vspace{2pt}
-       \end{minipage}
-   \end{beamercolorbox}
-   \vskip.5ex
-   \progressbar@progressbar
 }
 \makeatother
 """
@@ -506,7 +678,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 """
 
     # ========== FRAME MODE HELPER MACROS ==========
-    # NOTE: plainframe is already defined in BeamerSlideGenerator, so we skip it
     helper_macros = r"""
 % ========== FRAME MODE HELPER MACROS ==========
 % These macros support the GUI frame mode selector
@@ -579,14 +750,204 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
         core_preamble,
         layout_commands,
         theme_setup,
-        progress_bar,
+        progress_bar,        # <-- Progress bar definition added here
+        auto_scaling,
         inst_setup,
         footline_template,
-        auto_scaling,
         helper_macros,
         title_setup,
         title_page
     ])
+
+def fix_tikz_node_line_breaks(tikz_content: str) -> str:
+    """
+    Fix TikZ node line breaks by adding proper minipage or minimum height.
+    This handles nodes within tikzpicture environments.
+    """
+    import re
+
+    if not tikz_content or not isinstance(tikz_content, str):
+        return tikz_content
+
+    def fix_node_content(match):
+        """Fix a single TikZ node's content."""
+        # Get all groups as a list
+        groups = match.groups()
+        num_groups = len(groups)
+
+        # Extract the full node command
+        full_node = match.group(0)
+
+        # Safely extract groups based on what's available
+        options = groups[0] if num_groups >= 1 and groups[0] is not None else ""
+        node_name = groups[1] if num_groups >= 2 and groups[1] is not None else ""
+        position = groups[2] if num_groups >= 3 and groups[2] is not None else ""
+        content_text = groups[3] if num_groups >= 4 and groups[3] is not None else ""
+
+        # If we still don't have content, try to find it from the match
+        if not content_text:
+            # Try to find content between the last set of braces
+            import re as re2
+            brace_match = re2.search(r'\{([^}]*)\}$', full_node)
+            if brace_match:
+                content_text = brace_match.group(1)
+            else:
+                return full_node  # Can't extract content, return as-is
+
+        # Check if content has line breaks (\\)
+        if '\\\\' not in content_text and '\\' not in content_text:
+            return full_node  # No line breaks, return as-is
+
+        # Check if minipage is already used
+        if '\\begin{minipage}' in content_text:
+            return full_node  # Already has minipage
+
+        # Check if minimum height is already set
+        if 'minimum height' in options:
+            return full_node  # Already has minimum height
+
+        # Add minimum height and adjust text width
+        if 'text width' not in options and options:
+            options = options + ', text width=2.2cm, minimum height=1.5cm'
+        elif options:
+            options = options + ', minimum height=1.5cm'
+        else:
+            options = 'text width=2.2cm, minimum height=1.5cm'
+
+        # Fix the content with proper minipage
+        # Split by \\ and clean up, handling both \\ and \\\\
+        lines = re.split(r'\\\\+', content_text)
+        lines = [line.strip() for line in lines if line.strip()]
+
+        if len(lines) > 1:
+            # Create minipage with proper line breaks
+            minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+
+            # Reconstruct the node with the fixed content
+            if node_name and position:
+                return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
+            elif node_name:
+                return f'\\node[{options}] ({node_name}) {{{minipage_content}}};'
+            else:
+                return f'\\node[{options}] {{{minipage_content}}};'
+        else:
+            return full_node
+
+    # Try different patterns - each with its own try/except
+    patterns = [
+        # Pattern 1: \node[options] (name) at (position) {content};
+        r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};',
+        # Pattern 2: \node[options] (name) {content};
+        r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*\{([^}]*)\};',
+        # Pattern 3: \node[options] {content}; (no name)
+        r'\\node\[([^\]]*)\]\s*\{([^}]*)\};',
+        # Pattern 4: \node (name) at (position) {content}; (no options)
+        r'\\node\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};',
+        # Pattern 5: \node (name) {content}; (no options, no position)
+        r'\\node\s*\(([^)]*)\)\s*\{([^}]*)\};',
+        # Pattern 6: \node {content}; (bare node)
+        r'\\node\s*\{([^}]*)\};',
+        # Pattern 7: Nodes with nested braces
+        r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+    ]
+
+    for pattern in patterns:
+        try:
+            # Use a custom function that handles the match safely
+            def safe_sub(match_obj):
+                try:
+                    return fix_node_content(match_obj)
+                except (IndexError, TypeError) as e:
+                    # If this pattern fails, return the original match
+                    return match_obj.group(0)
+
+            tikz_content = re.sub(pattern, safe_sub, tikz_content, flags=re.DOTALL)
+        except Exception as e:
+            # If the entire pattern fails, continue with the next one
+            print(f"  ⚠ Pattern failed: {str(e)[:50]}")
+            continue
+
+    # Also handle any remaining nodes with line breaks using a simpler approach
+    # Find any node with line breaks that wasn't caught by the patterns above
+    import re as re2
+    node_pattern = r'\\node.*?\{([^}]*\\\\[^}]*)\}'
+    matches = re2.findall(node_pattern, tikz_content, re.DOTALL)
+
+    for match in matches:
+        if '\\\\' in match and '\\begin{minipage}' not in match:
+            # This node has line breaks but wasn't fixed - try a manual fix
+            lines = re2.split(r'\\\\+', match)
+            lines = [line.strip() for line in lines if line.strip()]
+            if len(lines) > 1:
+                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+                # Replace the content in the node
+                tikz_content = tikz_content.replace(match, minipage_content)
+
+    return tikz_content
+
+
+def process_line_for_media(line, inside_column=False):
+    """Process a single line, converting any media or layout directives"""
+    stripped = line.strip()
+
+    # Skip empty lines
+    if not stripped:
+        return line
+
+    # ============================================================
+    # CRITICAL: PRESERVE AND FIX TIKZ CONTENT
+    # ============================================================
+    if '\\begin{tikzpicture}' in stripped or '\\end{tikzpicture}' in stripped:
+        return fix_tikz_node_line_breaks(line)
+
+    if '\\begin{scope}' in stripped or '\\end{scope}' in stripped:
+        return line
+
+    if '\\node' in stripped and ('draw' in stripped or 'fill' in stripped or 'fit' in stripped):
+        # This is likely a TikZ node - fix it
+        return fix_tikz_node_line_breaks(line)
+
+    # FIRST: Check for layout directives
+    if stripped.startswith('\\mosaic'):
+        return convert_mosaic_to_latex(line)
+    elif stripped.startswith('\\split'):
+        return line
+    elif stripped.startswith('\\pip'):
+        return line
+    elif stripped.startswith('\\wm') or stripped.startswith('\\ff') or stripped.startswith('\\hl') or \
+         stripped.startswith('\\bg') or stripped.startswith('\\tb') or stripped.startswith('\\ol') or \
+         stripped.startswith('\\corner'):
+        return line
+
+    # THEN: Check for media directives (including YouTube)
+    if '\\play' in stripped:
+        return convert_play_to_movie(line)
+    elif '\\file' in stripped and '\\play' not in stripped:
+        file_match = re.search(r'\\file\s+(.+?)(?=\s*$|\s*\\|$)', stripped)
+        if file_match:
+            file_path = file_match.group(1).strip()
+            converted = convert_file_to_includegraphics(file_path)
+            if converted:
+                if inside_column:
+                    return converted
+                else:
+                    remaining = stripped[file_match.end():].strip()
+                    if remaining:
+                        return f"\\begin{{center}}{converted}\\end{{center}} {remaining}"
+                    return f"\\begin{{center}}{converted}\\end{{center}}"
+            else:
+                return f"\\textcolor{{gray}}{{[File not found: {os.path.basename(file_path)}]}}"
+        return line
+
+    # Handle direct URLs (without \file or \play)
+    elif stripped.startswith(('http://', 'https://')):
+        if 'youtube.com' in stripped or 'youtu.be' in stripped:
+            # ... YouTube handling ...
+            pass
+        else:
+            return f"\\href{{{stripped}}}{{\\textcolor{{blue}}{{\\underline{{Open Link}}}}}}"
+
+    return line
 
 def get_footline_template():
     """
@@ -1453,17 +1814,120 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         if not title_text:
             return "Untitled"
 
+        import re  # <-- Add this import
+
         title_text = str(title_text)
+
+        # First, handle the problematic \\& pattern
+        # Replace \\& with just & (we'll escape it properly)
+        title_text = title_text.replace('\\\\&', '&')
+        title_text = title_text.replace('\\&', '&')
+
+        # Remove any remaining backslashes that might cause issues
+        title_text = title_text.replace('\\', ' ')
+
+        # Remove excessive braces
         title_text = title_text.replace('\\{', '').replace('\\}', '')
         title_text = title_text.replace('{', '').replace('}', '')
+
+        # Escape special characters
         title_text = title_text.replace('&', '\\&')
         title_text = title_text.replace('%', '\\%')
         title_text = title_text.replace('#', '\\#')
-        title_text = title_text.strip()
+        title_text = title_text.replace('_', '\\_')
+        title_text = title_text.replace('$', '\\$')
+        title_text = title_text.replace('~', '\\textasciitilde')
+        title_text = title_text.replace('^', '\\textasciicircum')
+
+        # Clean up extra spaces
+        title_text = re.sub(r'\s+', ' ', title_text).strip()
 
         if not title_text:
             return "Untitled"
         return title_text
+
+    # ============================================================
+    # FIX TIKZ CONTENT BEFORE PROCESSING
+    # ============================================================
+    def fix_tikz_node_line_breaks(tikz_content: str) -> str:
+        """
+        Fix TikZ node line breaks by adding proper minipage or minimum height.
+        Also escapes backslashes properly.
+        """
+        if not tikz_content or not isinstance(tikz_content, str):
+            return tikz_content
+
+        import re
+
+        # Pattern to find circle nodes with line breaks
+        circle_pattern = r'\\node\[(.*?)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};'
+
+        def fix_node(match):
+            options = match.group(1)
+            node_name = match.group(2)
+            position = match.group(3)
+            content_text = match.group(4)
+
+            # Check if content has line breaks (\\)
+            if '\\\\' not in content_text and '\\' not in content_text:
+                return match.group(0)  # No line breaks, return as-is
+
+            # Check if minipage is already used
+            if '\\begin{minipage}' in content_text:
+                return match.group(0)  # Already has minipage
+
+            # Check if minimum height is already set
+            if 'minimum height' in options:
+                return match.group(0)  # Already has minimum height
+
+            # Add minimum height and adjust text width
+            if 'text width' not in options:
+                options = options + ', text width=2.2cm, minimum height=1.5cm'
+            else:
+                # Increase minimum height
+                options = options + ', minimum height=1.5cm'
+
+            # Fix the content with proper minipage
+            # Split by \\ and clean up
+            lines = content_text.split('\\\\')
+            lines = [line.strip() for line in lines if line.strip()]
+
+            if len(lines) > 1:
+                # Create minipage with proper line breaks
+                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+                return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
+            else:
+                return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+
+        # Fix circle nodes
+        fixed_content = re.sub(circle_pattern, fix_node, tikz_content, flags=re.DOTALL)
+
+        # Also fix general nodes with line breaks
+        general_node_pattern = r'\\node\[(.*?)\]\s*\(([^)]*)\)\s*\{([^}]*)\};'
+
+        def fix_general_node(match):
+            options = match.group(1)
+            node_name = match.group(2)
+            content_text = match.group(3)
+
+            if '\\\\' not in content_text or '\\begin{minipage}' in content_text:
+                return match.group(0)
+
+            if 'minimum height' not in options and 'text width' not in options:
+                options = options + ', text width=2.2cm, minimum height=1.5cm'
+
+            lines = content_text.split('\\\\')
+            lines = [line.strip() for line in lines if line.strip()]
+
+            if len(lines) > 1:
+                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+                return f'\\node[{options}] ({node_name}) {{{minipage_content}}};'
+            else:
+                return match.group(0)
+
+        fixed_content = re.sub(general_node_pattern, fix_general_node, fixed_content, flags=re.DOTALL)
+
+        return fixed_content
 
     # Process title
     if title:
@@ -1473,6 +1937,35 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         frame_title = "Media: " + base_name_escaped
 
     frame_title_code = frame_title
+
+    # ============================================================
+    # APPLY TIKZ FIXES TO CONTENT
+    # ============================================================
+    if content:
+        # Convert content to string if it's a list
+        if isinstance(content, list):
+            content_str = '\n'.join(str(c) for c in content)
+        else:
+            content_str = str(content) if content else ""
+
+        # Apply TikZ fixes to content
+        if '\\begin{tikzpicture}' in content_str:
+            content_str = fix_tikz_node_line_breaks(content_str)
+            # Convert back to list if needed
+            if isinstance(content, list):
+                content = content_str.split('\n')
+        else:
+            # Check each item for TikZ
+            fixed_content = []
+            for item in content:
+                if isinstance(item, str) and '\\begin{tikzpicture}' in item:
+                    item = fix_tikz_node_line_breaks(item)
+                fixed_content.append(item)
+            content = fixed_content
+
+        # Also check media for TikZ (if filename contains TikZ)
+        if filename and isinstance(filename, str) and '\\begin{tikzpicture}' in filename:
+            filename = fix_tikz_node_line_breaks(filename)
 
     # ========== CHECK FOR EXISTING COLUMNS IN CONTENT ==========
     has_existing_columns = False
@@ -1558,6 +2051,8 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
                     if in_itemize:
                         latex_code += "    \\end{itemize}\n"
                         in_itemize = False
+                    # Apply TikZ fixes if needed
+                    item_str = fix_tikz_node_line_breaks(item_str)
                     latex_code += f"    {item_str}\n"
                 elif item_str.startswith('-'):
                     if not in_itemize:
@@ -2148,15 +2643,6 @@ def generate_content_items(content, color=None):
                 break
 
     return '\n        '.join(items)
-
-def clean_frame_title(title):
-    """Clean frame titles to prevent brace issues"""
-    if not title:
-        return ""
-    # Remove excessive braces and escape special characters
-    title = title.replace('{{{', '{').replace('}}}', '}')
-    title = title.replace('{{', '{').replace('}}', '}')
-    return title
 
 def verify_media_file(filepath):
     """
@@ -3245,9 +3731,84 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             errors.append("Input file is empty")
             return 0, 1, errors
 
-        file_content = ''.join(lines)
+        # ========== FIX TIKZ CONTENT GLOBALLY ==========
+        print("\n🔧 Fixing TikZ content...")
+        fixed_lines = []
+        in_tikz = False
+        tikz_buffer = []
+        tikz_fix_count = 0
+        tikz_block_count = 0
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Check for tikzpicture start
+            if '\\begin{tikzpicture}' in stripped:
+                in_tikz = True
+                tikz_buffer = [line]
+                tikz_block_count += 1
+                continue
+
+            if in_tikz:
+                tikz_buffer.append(line)
+                if '\\end{tikzpicture}' in stripped:
+                    in_tikz = False
+                    # Process the entire TikZ block
+                    tikz_content = '\n'.join(tikz_buffer)
+
+                    # Check if it needs fixing (has line breaks with potential issues)
+                    needs_fix = False
+                    if '\\\\' in tikz_content:
+                        # Check if it has nodes with line breaks that lack proper handling
+                        if 'minimum height' not in tikz_content and 'minipage' not in tikz_content:
+                            needs_fix = True
+                        # Also check for nodes with line breaks
+                        node_pattern = r'\\node.*?\{[^}]*\\\\[^}]*\}'
+                        if re.search(node_pattern, tikz_content):
+                            needs_fix = True
+
+                    if needs_fix:
+                        try:
+                            fixed_tikz = fix_tikz_node_line_breaks(tikz_content)
+                            if fixed_tikz is None:
+                                fixed_tikz = tikz_content
+                            # Ensure we don't lose the tikzpicture environment
+                            if '\\begin{tikzpicture}' in fixed_tikz and '\\end{tikzpicture}' in fixed_tikz:
+                                fixed_lines.extend(fixed_tikz.split('\n'))
+                                tikz_fix_count += 1
+                                print(f"  ✓ Fixed TikZ block {tikz_fix_count}")
+                            else:
+                                # If fix broke the environment, use original
+                                fixed_lines.extend(tikz_buffer)
+                                print(f"  ⚠ TikZ block {tikz_block_count} fix failed (environment broken), using original")
+                        except Exception as e:
+                            print(f"  ⚠ TikZ block {tikz_block_count} fix error: {str(e)[:50]}, using original")
+                            fixed_lines.extend(tikz_buffer)
+                    else:
+                        fixed_lines.extend(tikz_buffer)
+                        if '\\\\' in tikz_content:
+                            print(f"  ℹ TikZ block {tikz_block_count} already has minimum height or minipage")
+                    tikz_buffer = []
+                continue
+
+            # If we're not in a TikZ block, just add the line
+            fixed_lines.append(line)
+
+        # If we were still in a TikZ block at EOF, add it
+        if in_tikz and tikz_buffer:
+            fixed_lines.extend(tikz_buffer)
+            print(f"  ⚠ Incomplete TikZ block at end of file")
+
+        if tikz_fix_count > 0:
+            print(f"  ✓ Applied fixes to {tikz_fix_count} TikZ block(s)")
+            lines = fixed_lines
+        else:
+            # Even if no blocks were fixed, use the fixed lines if any changes were made
+            if fixed_lines != lines:
+                lines = fixed_lines
 
         # ========== DETECT FILE FORMAT ==========
+        file_content = ''.join(lines)
         has_document_begin = '\\begin{document}' in file_content
         has_document_end = '\\end{document}' in file_content
         has_native_titles = bool(re.search(r'^\\title\s+[^{]', file_content, re.MULTILINE))
@@ -3297,10 +3858,9 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             else:
                 has_document_end = False
 
-
-                # Remove any leading empty lines from content
-                while content_lines and not content_lines[0].strip():
-                    content_lines.pop(0)
+            # Remove any leading empty lines from content
+            while content_lines and not content_lines[0].strip():
+                content_lines.pop(0)
         else:
             content_lines = lines
             preamble_lines = []
@@ -3357,6 +3917,32 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             errors.append("No slides were found in the input file")
             return 0, 1, errors
 
+        # ========== POST-PROCESS SLIDES TO ENSURE TIKZ FIXES ==========
+        # Apply additional TikZ fixes to any remaining problematic content
+        print("\n🔧 Applying final TikZ fixes to slides...")
+        final_tikz_fix_count = 0
+
+        for slide in slides:
+            if slide.get('content'):
+                fixed_content = []
+                for line in slide['content']:
+                    if isinstance(line, str) and '\\begin{tikzpicture}' in line:
+                        try:
+                            # Fix any remaining TikZ content
+                            fixed_line = fix_tikz_node_line_breaks(line)
+                            if fixed_line is not None and fixed_line != line:
+                                final_tikz_fix_count += 1
+                            fixed_content.append(fixed_line if fixed_line is not None else line)
+                        except Exception as e:
+                            print(f"  ⚠ Slide TikZ fix error: {str(e)[:50]}, keeping original")
+                            fixed_content.append(line)
+                    else:
+                        fixed_content.append(line)
+                slide['content'] = fixed_content
+
+        if final_tikz_fix_count > 0:
+            print(f"  ✓ Applied {final_tikz_fix_count} additional TikZ fixes")
+
         # ========== WRITE OUTPUT ==========
         with open(output_filename, 'w', encoding='utf-8') as outfile:
             # Write preamble
@@ -3384,22 +3970,31 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 outfile.write("\\maketitle\n\n")
 
             # Process each slide
-            # In process_input_file, before processing content:
             for slide in slides:
                 # Protect TikZ content before any processing
                 if slide.get('content'):
                     protected_content = []
                     for line in slide['content']:
-                        protected_content.append(protect_tikz_content(line))
+                        try:
+                            protected_line = protect_tikz_content(line)
+                            protected_content.append(protected_line)
+                        except Exception as e:
+                            print(f"  ⚠ Protect TikZ error: {str(e)[:50]}, using original")
+                            protected_content.append(line)
                     slide['content'] = protected_content
 
-                processed_slide = process_slide_with_features(slide, outfile, warnings)
-                if processed_slide:
-                    outfile.write(processed_slide)
-                    outfile.write('\n')
-                    processed += 1
-                else:
+                try:
+                    processed_slide = process_slide_with_features(slide, outfile, warnings)
+                    if processed_slide:
+                        outfile.write(processed_slide)
+                        outfile.write('\n')
+                        processed += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    print(f"  ⚠ Slide processing error: {str(e)[:50]}, skipping")
                     failed += 1
+                    errors.append(f"Slide {processed + 1}: {str(e)}")
 
             # After processing all slides, add \end{document} if not present
             if not has_document_end:
@@ -3407,6 +4002,24 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             else:
                 # If it was present in the original, make sure it's at the end
                 outfile.write("\n\\end{document}\n")
+
+        # ========== APPLY TIKZ FIXES TO THE GENERATED TEX FILE ==========
+        print("\n🔧 Applying final TikZ fixes to TeX output...")
+        try:
+            with open(output_filename, 'r', encoding='utf-8') as f:
+                tex_content = f.read()
+
+            # Apply TikZ fixes to the entire TeX content
+            fixed_tex_content = fix_tikz_in_tex_content(tex_content)
+
+            if fixed_tex_content != tex_content:
+                with open(output_filename, 'w', encoding='utf-8') as f:
+                    f.write(fixed_tex_content)
+                print("  ✓ Applied TikZ fixes to TeX output")
+            else:
+                print("  ℹ No additional TikZ fixes needed")
+        except Exception as e:
+            print(f"  ⚠ Failed to apply TikZ fixes to TeX output: {str(e)[:50]}")
 
         print(f"\nProcessed {processed} slides, {failed} failed")
 
@@ -3422,6 +4035,75 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         import traceback
         traceback.print_exc()
         return processed, failed, errors
+
+def sanitize_title_for_latex(title: str) -> str:
+    """Sanitize a title for LaTeX, handling special characters properly."""
+    if not title:
+        return "Untitled"
+
+    # Replace literal \& with just & (since we'll escape it properly)
+    title = title.replace('\\&', '&')
+
+    # Escape special characters
+    title = title.replace('&', '\\&')
+    title = title.replace('%', '\\%')
+    title = title.replace('$', '\\$')
+    title = title.replace('#', '\\#')
+    title = title.replace('_', '\\_')
+    title = title.replace('~', '\\textasciitilde')
+    title = title.replace('^', '\\textasciicircum')
+
+    # Handle backslashes - remove them or replace with proper commands
+    # In titles, backslashes are problematic, so we remove them
+    title = title.replace('\\', ' ')
+
+    # Clean up extra spaces
+    title = re.sub(r'\s+', ' ', title).strip()
+
+    return title
+
+def fix_tikz_in_tex_content(tex_content: str) -> str:
+    """
+    Apply TikZ fixes to the generated TeX content.
+    This catches any TikZ diagrams that weren't fixed during conversion.
+    """
+    import re
+
+    if not tex_content:
+        return tex_content
+
+    # Find all tikzpicture environments
+    tikz_pattern = r'(\\begin\{tikzpicture\}.*?\\end\{tikzpicture\})'
+    tikz_blocks = re.findall(tikz_pattern, tex_content, re.DOTALL)
+
+    if not tikz_blocks:
+        return tex_content
+
+    print(f"  🔧 Found {len(tikz_blocks)} TikZ blocks in TeX output")
+    fixed_count = 0
+
+    for block in tikz_blocks:
+        # Check if this block has problematic line breaks
+        has_line_breaks = '\\\\' in block
+        has_minipage = '\\begin{minipage}' in block
+        has_min_height = 'minimum height' in block
+
+        if has_line_breaks and not has_minipage and not has_min_height:
+            try:
+                fixed_block = fix_tikz_node_line_breaks(block)
+                if fixed_block != block:
+                    tex_content = tex_content.replace(block, fixed_block)
+                    fixed_count += 1
+                    print(f"  ✓ Fixed TikZ block {fixed_count}")
+            except Exception as e:
+                print(f"  ⚠ Failed to fix TikZ block: {str(e)[:50]}")
+
+    if fixed_count > 0:
+        print(f"  ✓ Applied fixes to {fixed_count} TikZ block(s) in TeX output")
+    else:
+        print("  ℹ All TikZ blocks already have proper formatting")
+
+    return tex_content
 
 def _fix_table_formatting(self, table_lines: list) -> list:
     """
@@ -4813,27 +5495,6 @@ def process_content_with_features(content):
         stripped = line.strip()
 
         # ============================================================
-        # TRACK TABULAR ENVIRONMENT
-        # ============================================================
-        if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
-            in_tabular = True
-            # Close any open itemize before tabular
-            while itemize_stack:
-                result.append("\\end{itemize}")
-                itemize_stack.pop()
-            result.append(line)
-            continue
-
-        if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
-            in_tabular = False
-            # Close any open itemize before ending tabular
-            while itemize_stack:
-                result.append("\\end{itemize}")
-                itemize_stack.pop()
-            result.append(line)
-            continue
-
-        # ============================================================
         # FIX: Clean up any remaining placeholder artifacts
         # ============================================================
         if isinstance(line, str):
@@ -4856,7 +5517,10 @@ def process_content_with_features(content):
             tikz_buffer.append(line)
             if '\\end{tikzpicture}' in stripped:
                 in_tikz = False
-                result.append('\n'.join(tikz_buffer))
+                # Apply TikZ fixes to the entire buffer
+                tikz_content = '\n'.join(tikz_buffer)
+                fixed_tikz = fix_tikz_node_line_breaks(tikz_content)
+                result.append(fixed_tikz)
                 tikz_buffer = []
             continue
 
@@ -5035,7 +5699,7 @@ def process_content_with_features(content):
             while itemize_stack:
                 result.append("\\end{itemize}")
                 itemize_stack.pop()
-            result.append(stripped)
+            result.append(fix_tikz_node_line_breaks(stripped))
             continue
 
         # ============================================================
@@ -5236,12 +5900,12 @@ import re
 def protect_tikz_content(text):
     """
     Protect TikZ content from being modified by other processing functions.
-    Returns the protected text with TikZ content preserved.
+    Returns the protected text with TikZ content preserved and fixed.
     """
     if not text:
         return text
 
-    # If this is a TikZ line, return it unchanged
+    # If this is a TikZ line, return it with fixes applied
     tikz_patterns = [
         r'\\begin\{tikzpicture\}',
         r'\\end\{tikzpicture\}',
@@ -5255,9 +5919,11 @@ def protect_tikz_content(text):
         r'\\clip\[.*?\].*?;',
     ]
 
+    import re
     for pattern in tikz_patterns:
         if re.search(pattern, text, re.DOTALL):
-            return text
+            # Apply TikZ fixes to the entire text
+            return fix_tikz_node_line_breaks(text)
 
     return text
 

@@ -8,7 +8,11 @@ Combines GUI editing, syntax highlighting, and presentation generation.
 import os
 import sys
 from pathlib import Path
-
+# Add these imports at the top of the file with the other imports
+import json
+import time
+from datetime import datetime
+from pathlib import Path
 def setup_package_paths():
     """Setup Python paths for both source and installed runs"""
     try:
@@ -1364,6 +1368,2686 @@ except ImportError as e:
     ENHANCED_FEATURES_AVAILABLE = True
     from Grammarly import  GrammarlyIntegration,GrammarlySetupDialog,AutomatedGrammarlyIntegration
     from InteractiveTerminal import InteractiveTerminal
+
+# ============================================================================
+# COMPLETE THEME & STYLE SYSTEM - All-in-One Implementation
+# ============================================================================
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+import customtkinter as ctk
+import re
+import os
+import json
+import time
+from pathlib import Path
+from datetime import datetime
+
+# ============================================================================
+# WINDOW MANAGER - Add this after imports
+# ============================================================================
+
+class WindowManager:
+    """Utility to ensure windows appear on top and are properly focused"""
+
+    @staticmethod
+    def ensure_on_top(window, parent=None):
+        """Force a window to appear on top of all others."""
+        try:
+            window.lift()
+            if parent:
+                window.transient(parent)
+            window.attributes('-topmost', True)
+            window.focus_force()
+            window.grab_set()
+            window.after(100, lambda: window.attributes('-topmost', False))
+
+            # Platform-specific fixes
+            import platform
+            if platform.system() == "Windows":
+                try:
+                    import ctypes
+                    hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    ctypes.windll.user32.BringWindowToTop(hwnd)
+                except:
+                    pass
+
+            window.update_idletasks()
+            window.update()
+            return True
+        except Exception as e:
+            print(f"Warning: Could not ensure window on top: {e}")
+            return False
+
+    @staticmethod
+    def center_on_parent(window, parent):
+        """Center a window on its parent"""
+        try:
+            window.update_idletasks()
+            parent_x = parent.winfo_rootx()
+            parent_y = parent.winfo_rooty()
+            parent_width = parent.winfo_width()
+            parent_height = parent.winfo_height()
+            window_width = window.winfo_width()
+            window_height = window.winfo_height()
+
+            x = parent_x + (parent_width - window_width) // 2
+            y = parent_y + (parent_height - window_height) // 2
+
+            screen_width = window.winfo_screenwidth()
+            screen_height = window.winfo_screenheight()
+
+            if x < 0:
+                x = 50
+            if y < 0:
+                y = 50
+            if x + window_width > screen_width:
+                x = screen_width - window_width - 50
+            if y + window_height > screen_height:
+                y = screen_height - window_height - 50
+
+            window.geometry(f"+{x}+{y}")
+        except Exception as e:
+            print(f"Warning: Could not center window: {e}")
+
+    @staticmethod
+    def create_progress_dialog(parent, title, message):
+        """Create a progress dialog that appears on top"""
+        try:
+            import customtkinter as ctk
+
+            dialog = ctk.CTkToplevel(parent)
+            dialog.title(title)
+            dialog.geometry("450x180")
+
+            # Make it modal and on top
+            dialog.transient(parent)
+            dialog.grab_set()
+            WindowManager.ensure_on_top(dialog, parent)
+            WindowManager.center_on_parent(dialog, parent)
+
+            # Make it non-resizable
+            dialog.resizable(False, False)
+
+            # Create widgets
+            main_frame = ctk.CTkFrame(dialog)
+            main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+            message_label = ctk.CTkLabel(main_frame, text=message, font=("Arial", 12))
+            message_label.pack(pady=10)
+
+            progress_bar = ctk.CTkProgressBar(main_frame, width=350)
+            progress_bar.pack(pady=10)
+            progress_bar.set(0)
+
+            status_label = ctk.CTkLabel(main_frame, text="0%", font=("Arial", 10))
+            status_label.pack(pady=5)
+
+            # Store references
+            dialog.progress_bar = progress_bar
+            dialog.status_label = status_label
+            dialog.message_label = message_label
+            dialog.is_cancelled = False
+
+            return dialog
+        except Exception as e:
+            print(f"Error creating progress dialog: {e}")
+            return None
+
+    @staticmethod
+    def update_progress_dialog(dialog, value, message=None):
+        """Update a progress dialog"""
+        try:
+            if dialog and dialog.winfo_exists():
+                dialog.progress_bar.set(value / 100)
+                dialog.status_label.configure(text=f"{value:.1f}%")
+                if message:
+                    dialog.message_label.configure(text=message)
+                dialog.update_idletasks()
+                return True
+        except:
+            pass
+        return False
+
+    @staticmethod
+    def close_progress_dialog(dialog):
+        """Close a progress dialog"""
+        try:
+            if dialog and dialog.winfo_exists():
+                dialog.grab_release()
+                dialog.destroy()
+                return True
+        except:
+            pass
+        return False
+
+    @staticmethod
+    def show_message(parent, title, message, icon="info"):
+        """Show a message box that appears on top"""
+        try:
+            import tkinter.messagebox as messagebox
+            parent.attributes('-topmost', True)
+            parent.update()
+        except:
+            pass
+
+        if icon == "info":
+            result = messagebox.showinfo(title, message, parent=parent)
+        elif icon == "warning":
+            result = messagebox.showwarning(title, message, parent=parent)
+        elif icon == "error":
+            result = messagebox.showerror(title, message, parent=parent)
+        elif icon == "yesno":
+            result = messagebox.askyesno(title, message, parent=parent)
+        elif icon == "okcancel":
+            result = messagebox.askokcancel(title, message, parent=parent)
+        else:
+            result = messagebox.showinfo(title, message, parent=parent)
+
+        try:
+            parent.attributes('-topmost', False)
+            parent.update()
+        except:
+            pass
+
+        return result
+
+
+# ============================================================================
+# THEME MANAGER - Add this after WindowManager
+# ============================================================================
+
+class ThemeManager:
+    """Manages saving, loading, and applying custom themes"""
+
+    THEME_DIR = Path.home() / '.bsg-ide' / 'themes'
+
+    @classmethod
+    def ensure_theme_dir(cls):
+        """Ensure the themes directory exists"""
+        cls.THEME_DIR.mkdir(parents=True, exist_ok=True)
+        return cls.THEME_DIR
+
+    @classmethod
+    def get_theme_path(cls, theme_name):
+        """Get the full path for a theme file"""
+        cls.ensure_theme_dir()
+        return cls.THEME_DIR / f"{theme_name}.json"
+
+    @classmethod
+    def save_theme(cls, theme_name, settings, preamble=""):
+        """Save a theme with its settings and preamble"""
+        cls.ensure_theme_dir()
+
+        theme_data = {
+            'name': theme_name,
+            'created': datetime.now().isoformat(),
+            'settings': settings,
+            'preamble': preamble,
+            'version': '1.0'
+        }
+
+        theme_path = cls.get_theme_path(theme_name)
+        with open(theme_path, 'w', encoding='utf-8') as f:
+            json.dump(theme_data, f, indent=2, ensure_ascii=False)
+
+        return theme_path
+
+    @classmethod
+    def load_theme(cls, theme_name):
+        """Load a theme by name"""
+        theme_path = cls.get_theme_path(theme_name)
+        if not theme_path.exists():
+            return None
+
+        with open(theme_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    @classmethod
+    def list_themes(cls):
+        """List all saved themes"""
+        cls.ensure_theme_dir()
+        themes = []
+        for theme_file in cls.THEME_DIR.glob('*.json'):
+            try:
+                with open(theme_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    themes.append({
+                        'name': data.get('name', theme_file.stem),
+                        'created': data.get('created', 'Unknown'),
+                        'path': theme_file,
+                        'settings': data.get('settings', {})
+                    })
+            except:
+                themes.append({
+                    'name': theme_file.stem,
+                    'created': 'Unknown',
+                    'path': theme_file,
+                    'settings': {}
+                })
+        return sorted(themes, key=lambda x: x.get('created', ''), reverse=True)
+
+    @classmethod
+    def delete_theme(cls, theme_name):
+        """Delete a theme"""
+        theme_path = cls.get_theme_path(theme_name)
+        if theme_path.exists():
+            theme_path.unlink()
+            return True
+        return False
+
+    @classmethod
+    def apply_theme_to_preamble(cls, preamble, settings):
+        """Apply theme settings to a preamble"""
+        import re
+
+        # Theme
+        if 'theme' in settings:
+            pattern = r'\\usetheme\{[^}]*\}'
+            replacement = f'\\usetheme{{{settings["theme"]}}}'
+            if re.search(pattern, preamble):
+                preamble = re.sub(pattern, replacement, preamble)
+
+        # Color theme
+        if 'colortheme' in settings and settings['colortheme'] != 'default':
+            pattern = r'\\usecolortheme\{[^}]*\}'
+            replacement = f'\\usecolortheme{{{settings["colortheme"]}}}'
+            if re.search(pattern, preamble):
+                preamble = re.sub(pattern, replacement, preamble)
+            else:
+                preamble = preamble.replace('\\begin{document}', f'{replacement}\n\\begin{document}')
+
+        # Font theme
+        if 'fonttheme' in settings and settings['fonttheme'] != 'default':
+            pattern = r'\\usefonttheme\{[^}]*\}'
+            replacement = f'\\usefonttheme{{{settings["fonttheme"]}}}'
+            if re.search(pattern, preamble):
+                preamble = re.sub(pattern, replacement, preamble)
+            else:
+                preamble = preamble.replace('\\begin{document}', f'{replacement}\n\\begin{document}')
+
+        # Aspect ratio
+        if 'aspect' in settings:
+            pattern = r'\\documentclass\[aspectratio=\d+\]'
+            if re.search(pattern, preamble):
+                preamble = re.sub(r'aspectratio=\d+', f'aspectratio={settings["aspect"]}', preamble)
+            else:
+                doc_pattern = r'\\documentclass(\[.*?\])?\{beamer\}'
+                if re.search(doc_pattern, preamble):
+                    preamble = re.sub(doc_pattern, f'\\documentclass[aspectratio={settings["aspect"]}]{{beamer}}', preamble)
+
+        # Background color
+        if 'bg_color' in settings:
+            pattern = r'\\setbeamercolor\{background canvas\}\{bg=[^}]*\}'
+            replacement = f'\\setbeamercolor{{background canvas}}{{bg={settings["bg_color"]}}}'
+            if re.search(pattern, preamble):
+                preamble = re.sub(pattern, replacement, preamble)
+            else:
+                preamble = preamble.replace('\\begin{document}', f'{replacement}\n\\begin{document}')
+
+        # Notes mode
+        if 'notes_mode' in settings:
+            notes_map = {
+                "Slides Only": "hide notes",
+                "Notes Only": "show only notes",
+                "Slides + Notes": "show notes on second screen=right"
+            }
+            notes_option = notes_map.get(settings['notes_mode'], "show notes on second screen=right")
+            pattern = r'\\setbeameroption\{[^}]*\}'
+            replacement = f'\\setbeameroption{{{notes_option}}}'
+            if re.search(pattern, preamble):
+                preamble = re.sub(pattern, replacement, preamble)
+
+        # Progress bar
+        if 'progress' in settings:
+            if not settings['progress']:
+                pattern = r'% Progress bar\s*\\makeatletter.*?\\makeatother'
+                preamble = re.sub(pattern, '', preamble, flags=re.DOTALL)
+
+        # Navigation
+        if 'nav' in settings and not settings['nav']:
+            if '\\setbeamertemplate{navigation symbols}' not in preamble:
+                preamble = preamble.replace('\\begin{document}', '\\setbeamertemplate{navigation symbols}{}\n\\begin{document}')
+
+        return preamble
+
+
+# ============================================================================
+# PRESET THEMES - Add this after ThemeManager
+# ============================================================================
+
+class PresetThemes:
+    """Collection of built-in professional themes"""
+
+    @staticmethod
+    def get_presets():
+        """Get all preset themes"""
+        return {
+            'Modern Blue': {
+                'theme': 'Madrid',
+                'colortheme': 'default',
+                'fonttheme': 'default',
+                'aspect': '169',
+                'bg_color': 'white',
+                'bg_opacity': 0.3,
+                'progress': True,
+                'nav': True,
+                'notes_mode': 'Slides + Notes',
+                'font_size': 11,
+                'line_spacing': 1.2,
+                'table_width': 0.92,
+                'image_width': 0.7,
+                'content_margin': 0.04,
+                'description': 'Clean, professional blue theme'
+            },
+            'Dark Professional': {
+                'theme': 'Ilmenau',
+                'colortheme': 'whale',
+                'fonttheme': 'professionalfonts',
+                'aspect': '169',
+                'bg_color': '#1a1a2e',
+                'bg_opacity': 0.2,
+                'progress': True,
+                'nav': False,
+                'notes_mode': 'Slides + Notes',
+                'font_size': 12,
+                'line_spacing': 1.3,
+                'table_width': 0.90,
+                'image_width': 0.65,
+                'content_margin': 0.05,
+                'description': 'Dark theme for technical presentations'
+            },
+            'Minimalist': {
+                'theme': 'Malmoe',
+                'colortheme': 'default',
+                'fonttheme': 'serif',
+                'aspect': '169',
+                'bg_color': '#f5f5f5',
+                'bg_opacity': 0.0,
+                'progress': False,
+                'nav': False,
+                'notes_mode': 'Slides Only',
+                'font_size': 10,
+                'line_spacing': 1.1,
+                'table_width': 0.85,
+                'image_width': 0.6,
+                'content_margin': 0.06,
+                'description': 'Clean minimalist design'
+            },
+            'Classic Academic': {
+                'theme': 'CambridgeUS',
+                'colortheme': 'dove',
+                'fonttheme': 'serif',
+                'aspect': '43',
+                'bg_color': 'white',
+                'bg_opacity': 0.0,
+                'progress': True,
+                'nav': True,
+                'notes_mode': 'Slides + Notes',
+                'font_size': 11,
+                'line_spacing': 1.4,
+                'table_width': 0.88,
+                'image_width': 0.65,
+                'content_margin': 0.05,
+                'description': 'Traditional academic style'
+            },
+            'Ultrawide Cinema': {
+                'theme': 'Copenhagen',
+                'colortheme': 'seahorse',
+                'fonttheme': 'professionalfonts',
+                'aspect': '141',
+                'bg_color': '#0a0a1a',
+                'bg_opacity': 0.15,
+                'progress': True,
+                'nav': True,
+                'notes_mode': 'Slides + Notes',
+                'font_size': 14,
+                'line_spacing': 1.5,
+                'table_width': 0.94,
+                'image_width': 0.75,
+                'content_margin': 0.03,
+                'description': 'Cinematic ultrawide format'
+            },
+            'Green Eco': {
+                'theme': 'Boadilla',
+                'colortheme': 'seahorse',
+                'fonttheme': 'default',
+                'aspect': '169',
+                'bg_color': '#f0f7f0',
+                'bg_opacity': 0.0,
+                'progress': True,
+                'nav': True,
+                'notes_mode': 'Slides + Notes',
+                'font_size': 11,
+                'line_spacing': 1.2,
+                'table_width': 0.90,
+                'image_width': 0.68,
+                'content_margin': 0.04,
+                'description': 'Eco-friendly green theme'
+            },
+            'Red Energy': {
+                'theme': 'Warsaw',
+                'colortheme': 'wolverine',
+                'fonttheme': 'structurebold',
+                'aspect': '169',
+                'bg_color': '#fff5f5',
+                'bg_opacity': 0.0,
+                'progress': True,
+                'nav': True,
+                'notes_mode': 'Slides + Notes',
+                'font_size': 12,
+                'line_spacing': 1.3,
+                'table_width': 0.90,
+                'image_width': 0.68,
+                'content_margin': 0.04,
+                'description': 'Energetic red theme'
+            },
+            'Purple Innovation': {
+                'theme': 'PaloAlto',
+                'colortheme': 'orchid',
+                'fonttheme': 'structureitalicserif',
+                'aspect': '169',
+                'bg_color': '#f8f4ff',
+                'bg_opacity': 0.0,
+                'progress': True,
+                'nav': True,
+                'notes_mode': 'Slides + Notes',
+                'font_size': 11,
+                'line_spacing': 1.3,
+                'table_width': 0.90,
+                'image_width': 0.68,
+                'content_margin': 0.04,
+                'description': 'Innovative purple theme'
+            },
+        }
+
+    @staticmethod
+    def get_preset_names():
+        """Get list of preset theme names"""
+        return list(PresetThemes.get_presets().keys())
+
+    @staticmethod
+    def get_preset(name):
+        """Get a specific preset theme"""
+        presets = PresetThemes.get_presets()
+        return presets.get(name)
+
+
+# ============================================================================
+# COMPLETE FIXED ENHANCED THEME & STYLE DIALOG
+# ============================================================================
+
+class EnhancedThemeStyleDialog(ctk.CTkToplevel):
+    """
+    Complete Theme & Style Dialog with:
+    - Visual dashboard preview
+    - All theme settings
+    - Content scaling
+    - Preset themes
+    - Save/Load custom themes
+    - Live preview updates
+    - Proper window management
+    """
+
+    # Scaling factors for different aspect ratios
+    SCALING_FACTORS = {
+        '169': {'font_scale': 1.0, 'table_width': 0.92, 'image_width': 0.7,
+                'content_margin': 0.04, 'header_height': 0.12, 'footer_height': 0.08},
+        '43':  {'font_scale': 1.15, 'table_width': 0.90, 'image_width': 0.65,
+                'content_margin': 0.05, 'header_height': 0.13, 'footer_height': 0.09},
+        '141': {'font_scale': 0.85, 'table_width': 0.94, 'image_width': 0.75,
+                'content_margin': 0.03, 'header_height': 0.10, 'footer_height': 0.07},
+    }
+
+    def __init__(self, parent, current_preamble=None):
+        super().__init__(parent)
+        self.title("Theme & Style Settings")
+        self.geometry("1300x800")
+        self.parent = parent
+        self.result = None
+        self.current_preamble = current_preamble or ""
+        self._is_applying = False
+        self._current_theme_name = None
+
+        # Store current values from preamble
+        self.current_values = self._extract_current_settings(self.current_preamble)
+
+        # Window management
+        self.transient(parent)
+        self.grab_set()
+        WindowManager.ensure_on_top(self, parent)
+        self.center_window()
+
+        # Create UI
+        self.create_widgets()
+        self.load_current_settings()
+        self.update_preview()
+
+        # Load theme list
+        self.refresh_theme_list()
+
+    def _extract_current_settings(self, preamble: str) -> dict:
+        """Extract current settings from the preamble"""
+        settings = {
+            'theme': 'Madrid',
+            'colortheme': 'default',
+            'fonttheme': 'default',
+            'aspect': '169',
+            'bg_color': 'white',
+            'bg_image': '',
+            'bg_opacity': 0.3,
+            'progress': True,
+            'nav': True,
+            'notes_mode': 'Slides + Notes',
+            'tight_spacing': True,
+            'font_size': 11,
+            'line_spacing': 1.2,
+            'table_width': 0.92,
+            'image_width': 0.7,
+            'content_margin': 0.04,
+        }
+
+        if not preamble:
+            return settings
+
+        import re
+
+        # Extract theme
+        theme_match = re.search(r'\\usetheme\{([^}]+)\}', preamble)
+        if theme_match:
+            settings['theme'] = theme_match.group(1)
+
+        # Extract color theme
+        colortheme_match = re.search(r'\\usecolortheme\{([^}]+)\}', preamble)
+        if colortheme_match:
+            settings['colortheme'] = colortheme_match.group(1)
+
+        # Extract font theme
+        fonttheme_match = re.search(r'\\usefonttheme\{([^}]+)\}', preamble)
+        if fonttheme_match:
+            settings['fonttheme'] = fonttheme_match.group(1)
+
+        # Extract aspect ratio
+        aspect_match = re.search(r'\\documentclass\[aspectratio=(\d+)\]', preamble)
+        if aspect_match:
+            settings['aspect'] = aspect_match.group(1)
+
+        # Extract background color
+        bg_match = re.search(r'\\setbeamercolor\{background canvas\}\{bg=([^}]+)\}', preamble)
+        if bg_match:
+            settings['bg_color'] = bg_match.group(1)
+
+        # Extract background image
+        img_match = re.search(r'\\includegraphics\[.*?\]\{([^}]+)\}', preamble)
+        if img_match and 'background' in preamble.lower():
+            settings['bg_image'] = img_match.group(1)
+
+        # Check for progress bar
+        if '\\progressbar@progressbar' in preamble:
+            settings['progress'] = True
+        else:
+            settings['progress'] = False
+
+        # Check for navigation symbols
+        if '\\setbeamertemplate{navigation symbols}{}' in preamble:
+            settings['nav'] = False
+        else:
+            settings['nav'] = True
+
+        # Extract notes mode
+        if 'hide notes' in preamble:
+            settings['notes_mode'] = 'Slides Only'
+        elif 'show only notes' in preamble:
+            settings['notes_mode'] = 'Notes Only'
+        elif 'show notes on second screen' in preamble:
+            settings['notes_mode'] = 'Slides + Notes'
+
+        # Check for tight spacing
+        if '\\setlength{\\parskip}{0.12em}' in preamble:
+            settings['tight_spacing'] = True
+        else:
+            settings['tight_spacing'] = False
+
+        # Extract opacity from background if present
+        opacity_match = re.search(r'\\node\[opacity=([\d.]+)\]', preamble)
+        if opacity_match:
+            settings['bg_opacity'] = float(opacity_match.group(1))
+
+        return settings
+
+    def center_window(self):
+        """Center the dialog on screen"""
+        WindowManager.center_on_parent(self, self.parent)
+
+    def create_widgets(self):
+        """Create all widgets"""
+
+        # Main container
+        main_container = ctk.CTkFrame(self)
+        main_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Top toolbar with theme management
+        toolbar = ctk.CTkFrame(main_container)
+        toolbar.pack(fill="x", padx=5, pady=5)
+
+        # Preset themes dropdown
+        ctk.CTkLabel(toolbar, text="Preset Themes:", font=("Arial", 12)).pack(side="left", padx=5)
+        preset_names = ["None"] + PresetThemes.get_preset_names()
+        self.preset_var = ctk.StringVar(value="None")
+        preset_menu = ctk.CTkOptionMenu(toolbar, values=preset_names, variable=self.preset_var,
+                                        command=self.apply_preset_theme, width=180)
+        preset_menu.pack(side="left", padx=5)
+        self.create_tooltip(preset_menu, "Apply a built-in preset theme")
+
+        # Separator
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", padx=10, fill="y", pady=5)
+
+        # Save theme button
+        save_theme_btn = ctk.CTkButton(toolbar, text="💾 Save Theme", command=self.save_custom_theme,
+                                       width=120, fg_color="#28a745", hover_color="#218838")
+        save_theme_btn.pack(side="left", padx=5)
+        self.create_tooltip(save_theme_btn, "Save current settings as a custom theme")
+
+        # Load theme button
+        load_theme_btn = ctk.CTkButton(toolbar, text="📂 Load Theme", command=self.load_custom_theme,
+                                       width=120, fg_color="#17a2b8", hover_color="#138496")
+        load_theme_btn.pack(side="left", padx=5)
+        self.create_tooltip(load_theme_btn, "Load a saved custom theme")
+
+        # Delete theme button
+        delete_theme_btn = ctk.CTkButton(toolbar, text="🗑 Delete Theme", command=self.delete_custom_theme,
+                                         width=120, fg_color="#dc3545", hover_color="#c82333")
+        delete_theme_btn.pack(side="left", padx=5)
+        self.create_tooltip(delete_theme_btn, "Delete a saved custom theme")
+
+        # Spacer
+        ctk.CTkLabel(toolbar, text="").pack(side="left", fill="x", expand=True)
+
+        # Theme name display
+        self.theme_name_label = ctk.CTkLabel(toolbar, text="", font=("Arial", 10), text_color="#4ECDC4")
+        self.theme_name_label.pack(side="right", padx=10)
+
+        # Split into left (settings) and right (preview)
+        split_frame = ctk.CTkFrame(main_container)
+        split_frame.pack(fill="both", expand=True, pady=5)
+
+        # LEFT PANEL - Settings (scrollable)
+        settings_panel = ctk.CTkScrollableFrame(split_frame, width=700)
+        settings_panel.pack(side="left", fill="both", expand=True, padx=(0, 10))
+
+        # RIGHT PANEL - Preview
+        preview_panel = ctk.CTkFrame(split_frame, width=450)
+        preview_panel.pack(side="right", fill="both", expand=True)
+        preview_panel.pack_propagate(False)
+
+        self.create_visual_dashboard(preview_panel)
+
+        # ========== SETTINGS GROUPS ==========
+
+        # 1. THEME GROUP
+        theme_group = self.create_group_frame(settings_panel, "🎨 Theme Settings")
+        theme_grid = ctk.CTkFrame(theme_group)
+        theme_grid.pack(fill="x", padx=5, pady=5)
+
+        # Theme
+        ctk.CTkLabel(theme_grid, text="Theme:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        themes = ["Madrid", "Berkeley", "Copenhagen", "Frankfurt", "Ilmenau", "Malmoe",
+                  "Warsaw", "CambridgeUS", "PaloAlto", "Boadilla", "Pittsburgh", "Rochester"]
+        self.theme_var = ctk.StringVar(value=self.current_values['theme'])
+        self.theme_menu = ctk.CTkOptionMenu(theme_grid, values=themes, variable=self.theme_var, width=200,
+                                            command=self.on_setting_changed)
+        self.theme_menu.grid(row=0, column=1, padx=5, pady=5)
+        self.create_tooltip(self.theme_menu, "Choose a Beamer theme for your presentation")
+
+        # Color Theme
+        ctk.CTkLabel(theme_grid, text="Color Theme:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        colorthemes = ["default", "dove", "seahorse", "beaver", "crane", "dolphin", "lily", "orchid", "rose", "whale", "wolverine"]
+        self.colortheme_var = ctk.StringVar(value=self.current_values['colortheme'])
+        self.colortheme_menu = ctk.CTkOptionMenu(theme_grid, values=colorthemes, variable=self.colortheme_var, width=200,
+                                                 command=self.on_setting_changed)
+        self.colortheme_menu.grid(row=1, column=1, padx=5, pady=5)
+        self.create_tooltip(self.colortheme_menu, "Choose a color theme for your presentation")
+
+        # Font Theme
+        ctk.CTkLabel(theme_grid, text="Font Theme:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        fontthemes = ["default", "professionalfonts", "serif", "structurebold", "structureitalicserif", "structuresmallcapsserif"]
+        self.fonttheme_var = ctk.StringVar(value=self.current_values['fonttheme'])
+        self.fonttheme_menu = ctk.CTkOptionMenu(theme_grid, values=fontthemes, variable=self.fonttheme_var, width=200,
+                                                command=self.on_setting_changed)
+        self.fonttheme_menu.grid(row=2, column=1, padx=5, pady=5)
+        self.create_tooltip(self.fonttheme_menu, "Choose a font theme for your presentation")
+
+        # 2. ASPECT RATIO GROUP
+        aspect_group = self.create_group_frame(settings_panel, "📏 Aspect Ratio")
+        aspect_frame = ctk.CTkFrame(aspect_group)
+        aspect_frame.pack(fill="x", padx=5, pady=5)
+
+        self.aspect_var = ctk.StringVar(value=self.current_values['aspect'])
+        aspect_options = [("169", "16:9 Widescreen"), ("43", "4:3 Standard"), ("141", "14:1 Ultrawide")]
+        for i, (value, label) in enumerate(aspect_options):
+            rb = ctk.CTkRadioButton(aspect_frame, text=label, variable=self.aspect_var, value=value,
+                                    command=self.on_setting_changed)
+            rb.grid(row=i, column=0, padx=10, pady=3, sticky="w")
+            self.create_tooltip(rb, f"Set aspect ratio to {label}")
+
+        # Scaling info
+        self.scaling_info = ctk.CTkLabel(aspect_frame, text="", font=("Arial", 10), text_color="#4ECDC4")
+        self.scaling_info.grid(row=len(aspect_options), column=0, padx=10, pady=5, sticky="w")
+        self.update_scaling_info()
+
+        # 3. CONTENT SCALING GROUP
+        scaling_group = self.create_group_frame(settings_panel, "📐 Content Scaling")
+        scaling_grid = ctk.CTkFrame(scaling_group)
+        scaling_grid.pack(fill="x", padx=5, pady=5)
+
+        # Font size
+        ctk.CTkLabel(scaling_grid, text="Font Size:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        font_sizes = ["8pt", "9pt", "10pt", "11pt", "12pt", "14pt", "16pt"]
+        self.font_size_var = ctk.StringVar(value=f"{self.current_values['font_size']}pt")
+        font_menu = ctk.CTkOptionMenu(scaling_grid, values=font_sizes, variable=self.font_size_var, width=100,
+                                      command=self.on_setting_changed)
+        font_menu.grid(row=0, column=1, padx=5, pady=5)
+        self.create_tooltip(font_menu, "Base font size - scales with aspect ratio")
+
+        # Line spacing
+        ctk.CTkLabel(scaling_grid, text="Line Spacing:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        line_spacings = ["1.0", "1.1", "1.2", "1.3", "1.5", "1.8", "2.0"]
+        self.line_spacing_var = ctk.StringVar(value=f"{self.current_values.get('line_spacing', 1.2):.1f}")
+        line_menu = ctk.CTkOptionMenu(scaling_grid, values=line_spacings, variable=self.line_spacing_var, width=100,
+                                      command=self.on_setting_changed)
+        line_menu.grid(row=1, column=1, padx=5, pady=5)
+        self.create_tooltip(line_menu, "Line spacing for content text")
+
+        # Table width
+        ctk.CTkLabel(scaling_grid, text="Table Width:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        table_widths = ["70%", "75%", "80%", "85%", "90%", "94%", "100%"]
+        current_table = f"{int(self.current_values.get('table_width', 0.92) * 100)}%"
+        self.table_width_var = ctk.StringVar(value=current_table)
+        table_menu = ctk.CTkOptionMenu(scaling_grid, values=table_widths, variable=self.table_width_var, width=100,
+                                       command=self.on_setting_changed)
+        table_menu.grid(row=2, column=1, padx=5, pady=5)
+        self.create_tooltip(table_menu, "Maximum width for tables")
+
+        # Image width
+        ctk.CTkLabel(scaling_grid, text="Image Width:", font=("Arial", 12)).grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        image_widths = ["50%", "60%", "70%", "80%", "90%", "100%"]
+        current_image = f"{int(self.current_values.get('image_width', 0.7) * 100)}%"
+        self.image_width_var = ctk.StringVar(value=current_image)
+        image_menu = ctk.CTkOptionMenu(scaling_grid, values=image_widths, variable=self.image_width_var, width=100,
+                                       command=self.on_setting_changed)
+        image_menu.grid(row=3, column=1, padx=5, pady=5)
+        self.create_tooltip(image_menu, "Default width for images")
+
+        # Content margin
+        ctk.CTkLabel(scaling_grid, text="Content Margin:", font=("Arial", 12)).grid(row=4, column=0, padx=5, pady=5, sticky="e")
+        margins = ["1%", "2%", "3%", "4%", "5%", "8%", "10%"]
+        current_margin = f"{int(self.current_values.get('content_margin', 0.04) * 100)}%"
+        self.margin_var = ctk.StringVar(value=current_margin)
+        margin_menu = ctk.CTkOptionMenu(scaling_grid, values=margins, variable=self.margin_var, width=100,
+                                        command=self.on_setting_changed)
+        margin_menu.grid(row=4, column=1, padx=5, pady=5)
+        self.create_tooltip(margin_menu, "Margin around content")
+
+        # 4. HEADER & FOOTER GROUP
+        header_group = self.create_group_frame(settings_panel, "📐 Header & Footer")
+        header_grid = ctk.CTkFrame(header_group)
+        header_grid.pack(fill="x", padx=5, pady=5)
+
+        self.progress_var = ctk.BooleanVar(value=self.current_values['progress'])
+        progress_check = ctk.CTkCheckBox(header_grid, text="Show Progress Bar", variable=self.progress_var,
+                                         command=self.on_setting_changed)
+        progress_check.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        self.create_tooltip(progress_check, "Show a progress bar at the bottom of each slide")
+
+        self.nav_var = ctk.BooleanVar(value=self.current_values['nav'])
+        nav_check = ctk.CTkCheckBox(header_grid, text="Show Navigation Symbols", variable=self.nav_var,
+                                    command=self.on_setting_changed)
+        nav_check.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        self.create_tooltip(nav_check, "Show navigation symbols at the bottom of slides")
+
+        # 5. BACKGROUND GROUP
+        bg_group = self.create_group_frame(settings_panel, "🖼️ Background")
+        bg_grid = ctk.CTkFrame(bg_group)
+        bg_grid.pack(fill="x", padx=5, pady=5)
+
+        # Background color - FIXED: Use a simple StringVar without trace issues
+        ctk.CTkLabel(bg_grid, text="Background Color:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.bg_color_var = ctk.StringVar(value=self.current_values['bg_color'])
+        bg_entry = ctk.CTkEntry(bg_grid, textvariable=self.bg_color_var, width=150)
+        bg_entry.grid(row=0, column=1, padx=5, pady=5)
+        bg_entry.bind('<KeyRelease>', self._on_bg_color_changed)
+        self.create_tooltip(bg_entry, "Background color (e.g., white, #F5F5F5)")
+
+        # Background image
+        ctk.CTkLabel(bg_grid, text="Background Image:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.bg_image_var = ctk.StringVar(value=self.current_values['bg_image'])
+        bg_image_entry = ctk.CTkEntry(bg_grid, textvariable=self.bg_image_var, width=200)
+        bg_image_entry.grid(row=1, column=1, padx=5, pady=5)
+        bg_image_entry.bind('<KeyRelease>', self.on_setting_changed)
+        self.create_tooltip(bg_image_entry, "Path to background image file")
+
+        bg_browse_btn = ctk.CTkButton(bg_grid, text="Browse...", command=self.browse_bg_image, width=80)
+        bg_browse_btn.grid(row=1, column=2, padx=5, pady=5)
+        self.create_tooltip(bg_browse_btn, "Browse for an image file")
+
+        # Background opacity
+        ctk.CTkLabel(bg_grid, text="Opacity:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.bg_opacity_var = ctk.DoubleVar(value=self.current_values['bg_opacity'])
+        bg_opacity_slider = ctk.CTkSlider(bg_grid, from_=0.0, to=1.0, variable=self.bg_opacity_var, width=150,
+                                          command=self.on_setting_changed)
+        bg_opacity_slider.grid(row=2, column=1, padx=5, pady=5)
+        bg_opacity_label = ctk.CTkLabel(bg_grid, textvariable=self.bg_opacity_var, width=40)
+        bg_opacity_label.grid(row=2, column=2, padx=5, pady=5)
+        self.create_tooltip(bg_opacity_slider, "Opacity of the background image")
+
+        # 6. NOTES GROUP
+        notes_group = self.create_group_frame(settings_panel, "📝 Notes")
+        notes_grid = ctk.CTkFrame(notes_group)
+        notes_grid.pack(fill="x", padx=5, pady=5)
+
+        ctk.CTkLabel(notes_grid, text="Notes Mode:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        notes_modes = ["Slides Only", "Notes Only", "Slides + Notes"]
+        self.notes_mode_var = ctk.StringVar(value=self.current_values['notes_mode'])
+        notes_menu = ctk.CTkOptionMenu(notes_grid, values=notes_modes, variable=self.notes_mode_var, width=150,
+                                       command=self.on_setting_changed)
+        notes_menu.grid(row=0, column=1, padx=5, pady=5)
+        self.create_tooltip(notes_menu, "How to display speaker notes in the output")
+
+        # 7. SPACING GROUP
+        spacing_group = self.create_group_frame(settings_panel, "📏 Spacing")
+        spacing_grid = ctk.CTkFrame(spacing_group)
+        spacing_grid.pack(fill="x", padx=5, pady=5)
+
+        self.tight_spacing_var = ctk.BooleanVar(value=self.current_values['tight_spacing'])
+        tight_check = ctk.CTkCheckBox(spacing_grid, text="Tight Spacing (compact content)",
+                                      variable=self.tight_spacing_var,
+                                      command=self.on_setting_changed)
+        tight_check.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        self.create_tooltip(tight_check, "Reduce spacing to fit more content on slides")
+
+        # 8. STATUS
+        self.status_label = ctk.CTkLabel(main_container, text="", font=("Arial", 10), text_color="#4ECDC4")
+        self.status_label.pack(fill="x", pady=5)
+
+        # 9. BUTTONS
+        button_frame = ctk.CTkFrame(main_container)
+        button_frame.pack(fill="x", padx=5, pady=10)
+
+        self.info_label = ctk.CTkLabel(button_frame, text="", font=("Arial", 10), text_color="#888888")
+        self.info_label.pack(side="left", padx=10)
+        self.update_info_label()
+
+        ctk.CTkButton(button_frame, text="🔄 Update Preview", command=self.update_preview, width=150,
+                      fg_color="#17a2b8", hover_color="#138496").pack(side="left", padx=5)
+        self.create_tooltip(button_frame.winfo_children()[-1], "Update the visual preview")
+
+        ctk.CTkButton(button_frame, text="✅ Apply Settings", command=self._apply_settings_safe, width=150,
+                      fg_color="#28a745", hover_color="#218838").pack(side="left", padx=5)
+        self.create_tooltip(button_frame.winfo_children()[-1], "Apply these settings to your presentation")
+
+        ctk.CTkButton(button_frame, text="↩️ Reset", command=self.reset_defaults, width=120,
+                      fg_color="#ffc107", hover_color="#e0a800", text_color="black").pack(side="left", padx=5)
+        self.create_tooltip(button_frame.winfo_children()[-1], "Reset all settings to default values")
+
+        ctk.CTkButton(button_frame, text="❌ Cancel", command=self.destroy, width=120,
+                      fg_color="#dc3545", hover_color="#c82333").pack(side="right", padx=5)
+        self.create_tooltip(button_frame.winfo_children()[-1], "Cancel changes and close")
+
+    def _on_bg_color_changed(self, event):
+        """Handle background color change separately to avoid truncation"""
+        value = self.bg_color_var.get().strip()
+        # Don't modify the value, just update preview
+        self.on_setting_changed()
+
+    def create_group_frame(self, parent, title):
+        """Create a styled group frame with title"""
+        group = ctk.CTkFrame(parent)
+        group.pack(fill="x", padx=5, pady=8)
+
+        header = ctk.CTkFrame(group, fg_color="#2F3542", height=30)
+        header.pack(fill="x", padx=2, pady=(2, 5))
+        header.pack_propagate(False)
+
+        title_label = ctk.CTkLabel(header, text=title, font=("Arial", 13, "bold"), text_color="#4ECDC4")
+        title_label.pack(side="left", padx=10, pady=5)
+
+        return group
+
+    def create_visual_dashboard(self, parent):
+        """Create the visual dashboard"""
+        ctk.CTkLabel(parent, text="📊 Live Preview", font=("Arial", 16, "bold")).pack(pady=(0, 10))
+        ctk.CTkLabel(parent, text="Settings update in real-time", font=("Arial", 10),
+                    text_color="#888888").pack(pady=(0, 10))
+
+        dashboard_frame = ctk.CTkFrame(parent, fg_color="#1a1a2e", corner_radius=10)
+        dashboard_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.dashboard_canvas = ctk.CTkCanvas(dashboard_frame, bg="#1a1a2e", highlightthickness=0)
+        self.dashboard_canvas.pack(fill="both", expand=True, padx=5, pady=5)
+        self.dashboard_canvas.bind('<Configure>', self.on_dashboard_resize)
+        self.after(100, self.draw_dashboard)
+
+    def on_dashboard_resize(self, event):
+        self.draw_dashboard()
+
+    def draw_dashboard(self):
+        """Draw the slide dashboard - FIXED color handling"""
+        canvas = self.dashboard_canvas
+        canvas.delete("all")
+
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width < 10 or height < 10:
+            return
+
+        # Get aspect ratio
+        aspect = self.aspect_var.get() if hasattr(self, 'aspect_var') else "169"
+        if aspect == "43":
+            slide_ratio = 4/3
+        elif aspect == "141":
+            slide_ratio = 14/1
+        else:
+            slide_ratio = 16/9
+
+        slide_width = min(width - 40, (height - 40) * slide_ratio)
+        slide_height = slide_width / slide_ratio
+        if slide_height > height - 40:
+            slide_height = height - 40
+            slide_width = slide_height * slide_ratio
+
+        x_offset = (width - slide_width) / 2
+        y_offset = (height - slide_height) / 2
+
+        # Get scaling factors
+        factors = self.SCALING_FACTORS.get(aspect, self.SCALING_FACTORS['169'])
+        margin = factors.get('content_margin', 0.04) * slide_width
+        header_height = factors.get('header_height', 0.12) * slide_height
+        footer_height = factors.get('footer_height', 0.08) * slide_height
+
+        # ============================================================
+        # DRAW SLIDE BACKGROUND - FIXED COLOR HANDLING
+        # ============================================================
+        bg_color = self.bg_color_var.get() if hasattr(self, 'bg_color_var') else "white"
+
+        # Ensure color is valid
+        if not bg_color or bg_color.strip() == "":
+            bg_color = "white"
+
+        # Fix: If the color is being truncated, use the full value
+        # This can happen if the StringVar is being modified
+        try:
+            # Test if it's a valid Tkinter color
+            canvas.create_rectangle(x_offset, y_offset, x_offset + slide_width, y_offset + slide_height,
+                                   fill=bg_color, outline="#444444", width=2, tags="slide_bg")
+        except Exception as e:
+            # If invalid, use white
+            bg_color = "white"
+            canvas.create_rectangle(x_offset, y_offset, x_offset + slide_width, y_offset + slide_height,
+                                   fill=bg_color, outline="#444444", width=2, tags="slide_bg")
+
+        # Draw header
+        header_y = y_offset + 5
+        header_x = x_offset + margin
+        theme = self.theme_var.get() if hasattr(self, 'theme_var') else "Madrid"
+        theme_colors = {"Madrid": "#2980b9", "Berkeley": "#2c3e50", "Copenhagen": "#3498db",
+                        "Frankfurt": "#2c3e50", "Ilmenau": "#2980b9", "Malmoe": "#2c3e50",
+                        "Warsaw": "#c0392b", "CambridgeUS": "#2980b9", "PaloAlto": "#2c3e50",
+                        "Boadilla": "#27ae60", "Pittsburgh": "#2c3e50", "Rochester": "#c0392b"}
+        header_color = theme_colors.get(theme, "#2980b9")
+
+        canvas.create_rectangle(header_x, header_y, x_offset + slide_width - margin, header_y + header_height,
+                               fill=header_color, outline="", tags="header_bg")
+
+        # Header text with scaling
+        font_scale = factors.get('font_scale', 1.0)
+        header_font_size = max(10, int(font_scale * 14))
+        canvas.create_text(header_x + 20, header_y + header_height/2, text="Slide Title",
+                          fill="white", font=("Arial", header_font_size, "bold"), anchor="w", tags="header_text")
+
+        # Header label
+        self.create_region_label(canvas, "HEADER", header_x + 5, header_y - 20,
+                                 x_offset + slide_width - margin - 5, header_y + header_height, "#4ECDC4")
+
+        # Draw content
+        content_y = header_y + header_height + 10
+        content_height = slide_height - header_height - footer_height - 30
+        content_x = x_offset + margin
+
+        bullet_font_size = max(8, int(font_scale * 11))
+        line_spacing = float(self.line_spacing_var.get()) if hasattr(self, 'line_spacing_var') else 1.2
+        line_height = bullet_font_size * line_spacing
+
+        bullet_lines = ["• Main point or key concept", "• Supporting information", "• Additional details", "• Conclusion"]
+        for i, line in enumerate(bullet_lines):
+            y_pos = content_y + 15 + i * line_height
+            if y_pos < content_y + content_height - 10:
+                canvas.create_text(content_x + 10, y_pos, text=line, fill="#d4d4d4",
+                                  font=("Arial", bullet_font_size), anchor="w", tags="content_text")
+
+        # Draw table preview
+        table_width = factors.get('table_width', 0.92) * (slide_width - 2*margin)
+        table_y = content_y + content_height - 40
+        if table_width > 100:
+            canvas.create_rectangle(content_x, table_y, content_x + table_width, table_y + 25,
+                                   outline="#4ECDC4", fill="#1a1a2e", width=1, dash=(3, 3), tags="table_preview")
+            canvas.create_text(content_x + table_width/2, table_y + 12,
+                              text=f"Table ({factors.get('table_width', 0.92)*100:.0f}% width)",
+                              fill="#4ECDC4", font=("Arial", max(7, bullet_font_size-2)), tags="table_label")
+
+        # Content label
+        self.create_region_label(canvas, "CONTENT", content_x - 5, content_y - 20,
+                                 x_offset + slide_width - margin - 5, content_y + content_height, "#FFB86C")
+
+        # Draw footer
+        footer_y = content_y + content_height + 10
+        footer_x = x_offset + margin
+        canvas.create_rectangle(footer_x, footer_y, x_offset + slide_width - margin, footer_y + footer_height,
+                               fill="#2F3542", outline="", tags="footer_bg")
+        footer_font_size = max(7, int(font_scale * 9))
+        canvas.create_text(footer_x + 20, footer_y + footer_height/2, text="© airis4D Labs",
+                          fill="#888888", font=("Arial", footer_font_size), anchor="w", tags="footer_text")
+
+        # Progress bar
+        if hasattr(self, 'progress_var') and self.progress_var.get():
+            pb_width = slide_width - 2*margin - 40
+            pb_height = 4
+            pb_x = x_offset + margin + 20
+            pb_y = footer_y + footer_height - pb_height - 5
+            canvas.create_rectangle(pb_x, pb_y, pb_x + pb_width, pb_y + pb_height, fill="#444444", tags="progress_bg")
+            canvas.create_rectangle(pb_x, pb_y, pb_x + pb_width * 0.6, pb_y + pb_height, fill="#4ECDC4", tags="progress_fill")
+
+        # Footer label
+        self.create_region_label(canvas, "FOOTER", footer_x + 5, footer_y - 20,
+                                 x_offset + slide_width - margin - 5, footer_y + footer_height, "#FF6B6B")
+
+        # Aspect ratio label
+        aspect_labels = {"169": "16:9", "43": "4:3", "141": "14:1"}
+        canvas.create_text(x_offset + slide_width - 10, y_offset + slide_height + 15,
+                          text=f"Aspect: {aspect_labels.get(aspect, '16:9')}", fill="#666666",
+                          font=("Arial", 8), anchor="e", tags="aspect_label")
+
+    def create_region_label(self, canvas, text, x1, y1, x2, y2, color):
+        """Create a labeled region on the dashboard"""
+        canvas.create_rectangle(x1, y1, x2, y2, outline=color, dash=(4, 4), width=1, tags="region_border")
+        canvas.create_text(x1 + 5, y1 + 2, text=text, fill=color, font=("Arial", 8, "bold"), anchor="nw", tags="region_label")
+
+    def create_tooltip(self, widget, text):
+        """Create tooltip for widget"""
+        def show_tooltip(event):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            tooltip.attributes('-topmost', True)
+            label = tk.Label(tooltip, text=text, justify='left',
+                           background="#ffffe0", relief='solid', borderwidth=1,
+                           font=("Arial", 10))
+            label.pack()
+            widget.tooltip = tooltip
+
+        def hide_tooltip(event):
+            if hasattr(widget, 'tooltip'):
+                widget.tooltip.destroy()
+
+        widget.bind('<Enter>', show_tooltip)
+        widget.bind('<Leave>', hide_tooltip)
+
+    def update_scaling_info(self):
+        """Update the scaling info label"""
+        aspect = self.aspect_var.get() if hasattr(self, 'aspect_var') else "169"
+        factors = self.SCALING_FACTORS.get(aspect, self.SCALING_FACTORS['169'])
+        info = f"Font: {factors['font_scale']:.2f}x | Tables: {factors['table_width']*100:.0f}% | Images: {factors['image_width']*100:.0f}%"
+        if hasattr(self, 'scaling_info'):
+            self.scaling_info.configure(text=info)
+
+    def on_setting_changed(self, *args):
+        """Called when any setting is changed"""
+        self.update_scaling_info()
+        self.update_preview()
+        self.update_info_label()
+        # Clear theme name when settings change
+        self._current_theme_name = None
+        self.theme_name_label.configure(text="")
+
+    def update_info_label(self):
+        """Update the info label showing what changed"""
+        changes = self.get_changes()
+        if changes:
+            self.info_label.configure(text="Modified: " + ", ".join(changes), text_color="#FFB86C")
+        else:
+            self.info_label.configure(text="No changes - using current settings", text_color="#888888")
+
+    def get_changes(self) -> list:
+        """Get list of settings that have been changed"""
+        changes = []
+
+        if hasattr(self, 'theme_var') and self.theme_var.get() != self.current_values['theme']:
+            changes.append(f"Theme ({self.current_values['theme']} → {self.theme_var.get()})")
+        if hasattr(self, 'colortheme_var') and self.colortheme_var.get() != self.current_values['colortheme']:
+            changes.append(f"Color Theme ({self.current_values['colortheme']} → {self.colortheme_var.get()})")
+        if hasattr(self, 'fonttheme_var') and self.fonttheme_var.get() != self.current_values['fonttheme']:
+            changes.append(f"Font Theme ({self.current_values['fonttheme']} → {self.fonttheme_var.get()})")
+        if hasattr(self, 'aspect_var') and self.aspect_var.get() != self.current_values['aspect']:
+            changes.append(f"Aspect Ratio ({self.current_values['aspect']} → {self.aspect_var.get()})")
+        if hasattr(self, 'font_size_var') and self.font_size_var.get() != f"{self.current_values['font_size']}pt":
+            changes.append(f"Font Size ({self.current_values['font_size']}pt → {self.font_size_var.get()})")
+        if hasattr(self, 'line_spacing_var') and self.line_spacing_var.get() != f"{self.current_values.get('line_spacing', 1.2):.1f}":
+            changes.append(f"Line Spacing ({self.current_values.get('line_spacing', 1.2):.1f} → {self.line_spacing_var.get()})")
+        if hasattr(self, 'table_width_var') and self.table_width_var.get() != f"{int(self.current_values.get('table_width', 0.92) * 100)}%":
+            changes.append(f"Table Width ({self.current_values.get('table_width', 0.92):.0%} → {self.table_width_var.get()})")
+        if hasattr(self, 'image_width_var') and self.image_width_var.get() != f"{int(self.current_values.get('image_width', 0.7) * 100)}%":
+            changes.append(f"Image Width ({self.current_values.get('image_width', 0.7):.0%} → {self.image_width_var.get()})")
+        if hasattr(self, 'margin_var') and self.margin_var.get() != f"{int(self.current_values.get('content_margin', 0.04) * 100)}%":
+            changes.append(f"Content Margin ({self.current_values.get('content_margin', 0.04):.0%} → {self.margin_var.get()})")
+        if hasattr(self, 'bg_color_var') and self.bg_color_var.get() != self.current_values['bg_color']:
+            changes.append(f"Background Color ({self.current_values['bg_color']} → {self.bg_color_var.get()})")
+        if hasattr(self, 'bg_image_var') and self.bg_image_var.get() != self.current_values['bg_image']:
+            changes.append(f"Background Image")
+        if hasattr(self, 'bg_opacity_var') and self.bg_opacity_var.get() != self.current_values['bg_opacity']:
+            changes.append(f"Opacity ({self.current_values['bg_opacity']:.1f} → {self.bg_opacity_var.get():.1f})")
+        if hasattr(self, 'progress_var') and self.progress_var.get() != self.current_values['progress']:
+            changes.append(f"Progress Bar")
+        if hasattr(self, 'nav_var') and self.nav_var.get() != self.current_values['nav']:
+            changes.append(f"Navigation")
+        if hasattr(self, 'notes_mode_var') and self.notes_mode_var.get() != self.current_values['notes_mode']:
+            changes.append(f"Notes Mode ({self.current_values['notes_mode']} → {self.notes_mode_var.get()})")
+        if hasattr(self, 'tight_spacing_var') and self.tight_spacing_var.get() != self.current_values['tight_spacing']:
+            changes.append(f"Tight Spacing")
+
+        return changes
+
+    def update_preview(self):
+        """Update the visual dashboard preview"""
+        self.draw_dashboard()
+        self.update_info_label()
+
+    def browse_bg_image(self):
+        """Browse for background image file"""
+        filename = filedialog.askopenfilename(
+            title="Select Background Image",
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.pdf"), ("All files", "*.*")]
+        )
+        if filename:
+            self.bg_image_var.set(filename)
+            self.on_setting_changed()
+
+    def reset_defaults(self):
+        """Reset all settings to default values"""
+        if WindowManager.show_message(self, "Reset Settings", "Reset all theme settings to default values?", "yesno"):
+            self.theme_var.set("Madrid")
+            self.colortheme_var.set("default")
+            self.fonttheme_var.set("default")
+            self.aspect_var.set("169")
+            self.font_size_var.set("11pt")
+            self.line_spacing_var.set("1.2")
+            self.table_width_var.set("92%")
+            self.image_width_var.set("70%")
+            self.margin_var.set("4%")
+            self.bg_color_var.set("white")
+            self.bg_image_var.set("")
+            self.bg_opacity_var.set(0.3)
+            self.tight_spacing_var.set(True)
+            self.progress_var.set(True)
+            self.nav_var.set(True)
+            self.notes_mode_var.set("Slides + Notes")
+            self._current_theme_name = None
+            self.theme_name_label.configure(text="")
+            self.update_preview()
+            self.status_message("Settings reset to default values")
+
+    def status_message(self, message):
+        """Show a status message"""
+        self.status_label.configure(text=message, text_color="#4ECDC4")
+        self.after(3000, lambda: self.status_label.configure(text=""))
+
+    def load_current_settings(self):
+        """Load current settings into the UI"""
+        pass
+
+    # ============================================================================
+    # THEME MANAGEMENT METHODS
+    # ============================================================================
+
+    def get_current_settings(self) -> dict:
+        """Get all current settings as a dictionary"""
+        return {
+            'theme': self.theme_var.get() if hasattr(self, 'theme_var') else 'Madrid',
+            'colortheme': self.colortheme_var.get() if hasattr(self, 'colortheme_var') else 'default',
+            'fonttheme': self.fonttheme_var.get() if hasattr(self, 'fonttheme_var') else 'default',
+            'aspect': self.aspect_var.get() if hasattr(self, 'aspect_var') else '169',
+            'bg_color': self.bg_color_var.get() if hasattr(self, 'bg_color_var') else 'white',
+            'bg_image': self.bg_image_var.get() if hasattr(self, 'bg_image_var') else '',
+            'bg_opacity': self.bg_opacity_var.get() if hasattr(self, 'bg_opacity_var') else 0.3,
+            'progress': self.progress_var.get() if hasattr(self, 'progress_var') else True,
+            'nav': self.nav_var.get() if hasattr(self, 'nav_var') else True,
+            'notes_mode': self.notes_mode_var.get() if hasattr(self, 'notes_mode_var') else 'Slides + Notes',
+            'tight_spacing': self.tight_spacing_var.get() if hasattr(self, 'tight_spacing_var') else True,
+            'font_size': int(self.font_size_var.get().replace('pt', '')) if hasattr(self, 'font_size_var') else 11,
+            'line_spacing': float(self.line_spacing_var.get()) if hasattr(self, 'line_spacing_var') else 1.2,
+            'table_width': float(self.table_width_var.get().replace('%', '')) / 100 if hasattr(self, 'table_width_var') else 0.92,
+            'image_width': float(self.image_width_var.get().replace('%', '')) / 100 if hasattr(self, 'image_width_var') else 0.7,
+            'content_margin': float(self.margin_var.get().replace('%', '')) / 100 if hasattr(self, 'margin_var') else 0.04,
+        }
+
+    def refresh_theme_list(self):
+        """Refresh the list of saved themes"""
+        self._saved_themes = ThemeManager.list_themes()
+
+    def apply_preset_theme(self, preset_name):
+        """Apply a preset theme"""
+        if preset_name == "None":
+            return
+
+        preset = PresetThemes.get_preset(preset_name)
+        if not preset:
+            return
+
+        # Apply preset settings
+        if 'theme' in preset:
+            self.theme_var.set(preset['theme'])
+        if 'colortheme' in preset:
+            self.colortheme_var.set(preset['colortheme'])
+        if 'fonttheme' in preset:
+            self.fonttheme_var.set(preset['fonttheme'])
+        if 'aspect' in preset:
+            self.aspect_var.set(preset['aspect'])
+        if 'bg_color' in preset:
+            self.bg_color_var.set(preset['bg_color'])
+        if 'bg_opacity' in preset:
+            self.bg_opacity_var.set(preset['bg_opacity'])
+        if 'progress' in preset:
+            self.progress_var.set(preset['progress'])
+        if 'nav' in preset:
+            self.nav_var.set(preset['nav'])
+        if 'notes_mode' in preset:
+            self.notes_mode_var.set(preset['notes_mode'])
+        if 'font_size' in preset:
+            self.font_size_var.set(f"{preset['font_size']}pt")
+        if 'line_spacing' in preset:
+            self.line_spacing_var.set(f"{preset['line_spacing']:.1f}")
+        if 'table_width' in preset:
+            self.table_width_var.set(f"{int(preset['table_width'] * 100)}%")
+        if 'image_width' in preset:
+            self.image_width_var.set(f"{int(preset['image_width'] * 100)}%")
+        if 'content_margin' in preset:
+            self.margin_var.set(f"{int(preset['content_margin'] * 100)}%")
+
+        self._current_theme_name = preset_name
+        self.theme_name_label.configure(text=f"Preset: {preset_name}")
+        self.update_preview()
+        self.status_message(f"Applied preset theme: {preset_name}")
+
+    def save_custom_theme(self):
+        """Save current settings as a custom theme"""
+        theme_name = simpledialog.askstring(
+            "Save Theme",
+            "Enter a name for this theme:",
+            parent=self,
+            initialvalue=self._current_theme_name or ""
+        )
+
+        if not theme_name:
+            return
+
+        settings = self.get_current_settings()
+
+        # Get the current preamble
+        preamble = self.current_preamble
+
+        # Save the theme
+        try:
+            theme_path = ThemeManager.save_theme(theme_name, settings, preamble)
+            self._current_theme_name = theme_name
+            self.theme_name_label.configure(text=f"Saved: {theme_name}")
+            self.refresh_theme_list()
+            WindowManager.show_message(
+                self,
+                "Theme Saved",
+                f"Theme '{theme_name}' saved successfully!\n\n"
+                f"Location: {theme_path}",
+                "info"
+            )
+        except Exception as e:
+            WindowManager.show_message(
+                self,
+                "Error",
+                f"Error saving theme:\n{str(e)}",
+                "error"
+            )
+
+    def load_custom_theme(self):
+        """Load a saved custom theme"""
+        themes = ThemeManager.list_themes()
+
+        if not themes:
+            WindowManager.show_message(
+                self,
+                "No Themes",
+                "No saved themes found.\n\n"
+                "Save a theme first using 'Save Theme'.",
+                "info"
+            )
+            return
+
+        # Create selection dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Load Theme")
+        dialog.geometry("500x400")
+        dialog.transient(self)
+        dialog.grab_set()
+        WindowManager.ensure_on_top(dialog, self)
+        WindowManager.center_on_parent(dialog, self)
+
+        # List themes
+        list_frame = ctk.CTkScrollableFrame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        for theme in themes:
+            theme_frame = ctk.CTkFrame(list_frame)
+            theme_frame.pack(fill="x", padx=5, pady=3)
+
+            name_label = ctk.CTkLabel(theme_frame, text=theme['name'], font=("Arial", 13, "bold"))
+            name_label.pack(side="left", padx=10)
+
+            # Show when it was created
+            created = theme.get('created', 'Unknown')
+            if created != 'Unknown':
+                try:
+                    dt = datetime.fromisoformat(created)
+                    created_str = dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    created_str = created
+            else:
+                created_str = "Unknown"
+
+            date_label = ctk.CTkLabel(theme_frame, text=f"Created: {created_str}", font=("Arial", 10), text_color="#888888")
+            date_label.pack(side="right", padx=10)
+
+            load_btn = ctk.CTkButton(theme_frame, text="Load", width=60,
+                                     command=lambda t=theme['name']: self._load_theme_and_close(dialog, t))
+            load_btn.pack(side="right", padx=5)
+
+        # Cancel button
+        cancel_btn = ctk.CTkButton(dialog, text="Cancel", command=dialog.destroy, width=100,
+                                   fg_color="#dc3545", hover_color="#c82333")
+        cancel_btn.pack(pady=10)
+
+    def _load_theme_and_close(self, dialog, theme_name):
+        """Load a theme and close the dialog"""
+        theme_data = ThemeManager.load_theme(theme_name)
+        if not theme_data:
+            dialog.destroy()
+            WindowManager.show_message(self, "Error", f"Theme '{theme_name}' not found.", "error")
+            return
+
+        settings = theme_data.get('settings', {})
+
+        # Apply settings
+        if 'theme' in settings:
+            self.theme_var.set(settings['theme'])
+        if 'colortheme' in settings:
+            self.colortheme_var.set(settings['colortheme'])
+        if 'fonttheme' in settings:
+            self.fonttheme_var.set(settings['fonttheme'])
+        if 'aspect' in settings:
+            self.aspect_var.set(settings['aspect'])
+        if 'bg_color' in settings:
+            self.bg_color_var.set(settings['bg_color'])
+        if 'bg_image' in settings:
+            self.bg_image_var.set(settings.get('bg_image', ''))
+        if 'bg_opacity' in settings:
+            self.bg_opacity_var.set(settings['bg_opacity'])
+        if 'progress' in settings:
+            self.progress_var.set(settings['progress'])
+        if 'nav' in settings:
+            self.nav_var.set(settings['nav'])
+        if 'notes_mode' in settings:
+            self.notes_mode_var.set(settings['notes_mode'])
+        if 'font_size' in settings:
+            self.font_size_var.set(f"{settings['font_size']}pt")
+        if 'line_spacing' in settings:
+            self.line_spacing_var.set(f"{settings['line_spacing']:.1f}")
+        if 'table_width' in settings:
+            self.table_width_var.set(f"{int(settings['table_width'] * 100)}%")
+        if 'image_width' in settings:
+            self.image_width_var.set(f"{int(settings['image_width'] * 100)}%")
+        if 'content_margin' in settings:
+            self.margin_var.set(f"{int(settings['content_margin'] * 100)}%")
+
+        # Store the preamble if available
+        if 'preamble' in theme_data and theme_data['preamble']:
+            self.current_preamble = theme_data['preamble']
+
+        self._current_theme_name = theme_name
+        self.theme_name_label.configure(text=f"Loaded: {theme_name}")
+        dialog.destroy()
+        self.update_preview()
+        self.status_message(f"Loaded theme: {theme_name}")
+
+    def delete_custom_theme(self):
+        """Delete a saved custom theme"""
+        themes = ThemeManager.list_themes()
+
+        if not themes:
+            WindowManager.show_message(
+                self,
+                "No Themes",
+                "No saved themes to delete.",
+                "info"
+            )
+            return
+
+        # Create selection dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Delete Theme")
+        dialog.geometry("500x400")
+        dialog.transient(self)
+        dialog.grab_set()
+        WindowManager.ensure_on_top(dialog, self)
+        WindowManager.center_on_parent(dialog, self)
+
+        # List themes
+        list_frame = ctk.CTkScrollableFrame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        for theme in themes:
+            theme_frame = ctk.CTkFrame(list_frame)
+            theme_frame.pack(fill="x", padx=5, pady=3)
+
+            name_label = ctk.CTkLabel(theme_frame, text=theme['name'], font=("Arial", 13, "bold"))
+            name_label.pack(side="left", padx=10)
+
+            delete_btn = ctk.CTkButton(theme_frame, text="🗑 Delete", width=80,
+                                       fg_color="#dc3545", hover_color="#c82333",
+                                       command=lambda t=theme['name']: self._delete_theme_and_close(dialog, t))
+            delete_btn.pack(side="right", padx=5)
+
+        # Cancel button
+        cancel_btn = ctk.CTkButton(dialog, text="Cancel", command=dialog.destroy, width=100,
+                                   fg_color="#6c757d", hover_color="#5a6268")
+        cancel_btn.pack(pady=10)
+
+    def _delete_theme_and_close(self, dialog, theme_name):
+        """Delete a theme and close the dialog"""
+        if WindowManager.show_message(
+            self,
+            "Confirm Delete",
+            f"Delete theme '{theme_name}'?\n\nThis action cannot be undone.",
+            "yesno"
+        ):
+            if ThemeManager.delete_theme(theme_name):
+                dialog.destroy()
+                self.refresh_theme_list()
+                if self._current_theme_name == theme_name:
+                    self._current_theme_name = None
+                    self.theme_name_label.configure(text="")
+                self.status_message(f"Deleted theme: {theme_name}")
+                WindowManager.show_message(self, "Deleted", f"Theme '{theme_name}' deleted.", "info")
+            else:
+                WindowManager.show_message(self, "Error", f"Could not delete theme '{theme_name}'.", "error")
+
+    # ============================================================================
+    # SAFE APPLY SETTINGS - FIXED VERSION
+    # ============================================================================
+
+    def _apply_settings_safe(self):
+        """Apply settings with proper error handling and regex escaping"""
+        try:
+            # Ensure bg_color is not truncated
+            if hasattr(self, 'bg_color_var'):
+                current_bg = self.bg_color_var.get()
+                # If it's truncated (like "bla" instead of "black"), fix it
+                if current_bg in ['bla', 'bl', 'b', 'wh', 'whi', 'whit']:
+                    # Restore from current_values if possible
+                    self.bg_color_var.set(self.current_values.get('bg_color', 'white'))
+            self.apply_settings()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            WindowManager.show_message(
+                self,
+                "Error",
+                f"Error applying settings:\n{str(e)}\n\n"
+                "Check the terminal for details.",
+                "error"
+            )
+
+    def apply_settings(self):
+        """Apply only the settings that the user changed - ALL REGEX FIXED"""
+        if self._is_applying:
+            return
+
+        changes = self.get_changes()
+        if not changes:
+            WindowManager.show_message(self, "No Changes", "No settings were changed.", "info")
+            return
+
+        change_summary = "\n".join([f"  • {change}" for change in changes])
+        if not WindowManager.show_message(
+            self,
+            "Apply Changes",
+            f"The following settings will be changed:\n\n{change_summary}\n\nApply these changes?",
+            "yesno"
+        ):
+            return
+
+        self._is_applying = True
+
+        try:
+            # Get the current preamble
+            preamble = self.current_preamble
+
+            # Show progress
+            progress_dialog = WindowManager.create_progress_dialog(
+                self,
+                "Applying Settings",
+                "Updating theme settings..."
+            )
+
+            total = len(changes)
+            for i, change in enumerate(changes):
+                progress = (i + 1) / total * 100
+                WindowManager.update_progress_dialog(
+                    progress_dialog,
+                    progress,
+                    f"Applying: {change[:50]}..."
+                )
+
+                if "Theme" in change and not "Color" in change and not "Font" in change:
+                    preamble = self._apply_theme_change(preamble, self.theme_var.get())
+                elif "Color Theme" in change:
+                    preamble = self._apply_colortheme_change(preamble, self.colortheme_var.get())
+                elif "Font Theme" in change:
+                    preamble = self._apply_fonttheme_change(preamble, self.fonttheme_var.get())
+                elif "Aspect Ratio" in change:
+                    preamble = self._apply_aspect_change(preamble, self.aspect_var.get())
+                elif "Background Color" in change:
+                    # Get the full color value, not truncated
+                    bg_value = self.bg_color_var.get().strip()
+                    # If it's truncated, fix it
+                    if bg_value in ['bla', 'bl', 'b', 'wh', 'whi', 'whit', 'wh']:
+                        bg_value = self.current_values.get('bg_color', 'white')
+                        self.bg_color_var.set(bg_value)
+                    preamble = self._apply_bgcolor_change_safe(preamble, bg_value)
+                elif "Background Image" in change:
+                    preamble = self._apply_bgimage_change(preamble, self.bg_image_var.get())
+                elif "Opacity" in change:
+                    preamble = self._apply_opacity_change(preamble, self.bg_opacity_var.get())
+                elif "Progress Bar" in change:
+                    preamble = self._apply_progress_change(preamble, self.progress_var.get())
+                elif "Navigation" in change:
+                    preamble = self._apply_nav_change(preamble, self.nav_var.get())
+                elif "Notes Mode" in change:
+                    preamble = self._apply_notes_change(preamble, self.notes_mode_var.get())
+                elif "Tight Spacing" in change:
+                    preamble = self._apply_tight_spacing_change(preamble, self.tight_spacing_var.get())
+
+            # Close progress dialog
+            WindowManager.close_progress_dialog(progress_dialog)
+
+            # Store the result and close
+            self.result = preamble
+            self._is_applying = False
+            WindowManager.show_message(self, "Success", "Theme settings applied successfully!", "info")
+            self.destroy()
+
+        except Exception as e:
+            self._is_applying = False
+            import traceback
+            traceback.print_exc()
+            WindowManager.show_message(self, "Error", f"Error applying settings:\n{str(e)}", "error")
+
+    # ============================================================================
+    # COMPLETE FIXED APPLY METHODS - Replace all of these in your class
+    # ============================================================================
+
+    def _apply_bgcolor_change_safe(self, preamble, value):
+        """Apply background color change - COMPLETELY FIXED"""
+        import re
+
+        # Ensure value is valid
+        if not value or value in ['bla', 'bl', 'b', 'wh', 'whi', 'whit', 'wh']:
+            value = 'white'
+
+        # Use a simple string replacement approach instead of regex
+        # This avoids all regex escaping issues
+
+        # Look for the exact pattern in the preamble
+        lines = preamble.split('\n')
+        modified = False
+
+        for i, line in enumerate(lines):
+            # Check for background canvas
+            if '\\setbeamercolor{background canvas}' in line and 'bg=' in line:
+                # Replace the bg value
+                import re
+                lines[i] = re.sub(r'bg=[^}]*', f'bg={value}', line)
+                modified = True
+            # Check for background (without canvas)
+            elif '\\setbeamercolor{background}' in line and 'bg=' in line:
+                lines[i] = re.sub(r'bg=[^}]*', f'bg={value}', line)
+                modified = True
+
+        if modified:
+            return '\n'.join(lines)
+
+        # If no background was found, add it
+        for i, line in enumerate(lines):
+            if '\\begin{document}' in line:
+                lines.insert(i, f'\\setbeamercolor{{background canvas}}{{bg={value}}}')
+                modified = True
+                break
+
+        if modified:
+            return '\n'.join(lines)
+
+        # Fallback: just append
+        return preamble + f'\n\\setbeamercolor{{background canvas}}{{bg={value}}}\n'
+
+
+    def _apply_theme_change(self, preamble, value):
+        """Apply theme change - COMPLETELY FIXED"""
+        import re
+        lines = preamble.split('\n')
+
+        for i, line in enumerate(lines):
+            if line.strip().startswith('\\usetheme{'):
+                lines[i] = f'\\usetheme{{{value}}}'
+                return '\n'.join(lines)
+
+        # Not found, add it
+        for i, line in enumerate(lines):
+            if '\\begin{document}' in line:
+                lines.insert(i, f'\\usetheme{{{value}}}')
+                return '\n'.join(lines)
+
+        return preamble
+
+
+    def _apply_colortheme_change(self, preamble, value):
+        """Apply color theme change - COMPLETELY FIXED"""
+        lines = preamble.split('\n')
+
+        for i, line in enumerate(lines):
+            if line.strip().startswith('\\usecolortheme{'):
+                if value == 'default':
+                    lines[i] = ''
+                else:
+                    lines[i] = f'\\usecolortheme{{{value}}}'
+                return '\n'.join(lines)
+
+        # Not found
+        if value != 'default':
+            for i, line in enumerate(lines):
+                if '\\begin{document}' in line:
+                    lines.insert(i, f'\\usecolortheme{{{value}}}')
+                    return '\n'.join(lines)
+
+        return preamble
+
+
+    def _apply_fonttheme_change(self, preamble, value):
+        """Apply font theme change - COMPLETELY FIXED"""
+        lines = preamble.split('\n')
+
+        for i, line in enumerate(lines):
+            if line.strip().startswith('\\usefonttheme{'):
+                if value == 'default':
+                    lines[i] = ''
+                else:
+                    lines[i] = f'\\usefonttheme{{{value}}}'
+                return '\n'.join(lines)
+
+        # Not found
+        if value != 'default':
+            for i, line in enumerate(lines):
+                if '\\begin{document}' in line:
+                    lines.insert(i, f'\\usefonttheme{{{value}}}')
+                    return '\n'.join(lines)
+
+        return preamble
+
+
+    def _apply_aspect_change(self, preamble, value):
+        """Apply aspect ratio change - COMPLETELY FIXED"""
+        import re
+        lines = preamble.split('\n')
+
+        for i, line in enumerate(lines):
+            if '\\documentclass' in line and 'beamer' in line:
+                if 'aspectratio=' in line:
+                    # Replace existing aspectratio
+                    lines[i] = re.sub(r'aspectratio=\d+', f'aspectratio={value}', line)
+                else:
+                    # Add aspectratio
+                    if '[' in line and ']' in line:
+                        lines[i] = line.replace(']', f',aspectratio={value}]')
+                    else:
+                        lines[i] = line.replace('{beamer}', f'[aspectratio={value}]{{beamer}}')
+                return '\n'.join(lines)
+
+        return preamble
+
+
+    def _apply_bgimage_change(self, preamble, value):
+        """Apply background image change - COMPLETELY FIXED"""
+        if not value:
+            return preamble
+
+        # Build the template with proper escaping
+        bg_template = (
+            '% Background image\n'
+            '\\setbeamertemplate{background}{\n'
+            '\\begin{tikzpicture}[remember picture,overlay]\n'
+            f'\\node[opacity=0.3] at (current page.center) {{\n'
+            f'    \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{{{value}}}\n'
+            '}};\n'
+            '\\end{tikzpicture}\n'
+            '}'
+        )
+
+        # Check if background template already exists
+        if '% Background image' in preamble:
+            lines = preamble.split('\n')
+            new_lines = []
+            skip = False
+            for line in lines:
+                if '% Background image' in line:
+                    skip = True
+                    new_lines.append(bg_template)
+                    continue
+                if skip and '}' in line and '\\setbeamertemplate{background}' in line:
+                    skip = False
+                    continue
+                if not skip:
+                    new_lines.append(line)
+            return '\n'.join(new_lines)
+
+        # Add before \begin{document}
+        lines = preamble.split('\n')
+        for i, line in enumerate(lines):
+            if '\\begin{document}' in line:
+                lines.insert(i, bg_template)
+                return '\n'.join(lines)
+
+        return preamble + '\n' + bg_template
+
+
+    def _apply_opacity_change(self, preamble, value):
+        """Apply opacity change - COMPLETELY FIXED"""
+        import re
+        lines = preamble.split('\n')
+
+        for i, line in enumerate(lines):
+            if '\\node[opacity=' in line:
+                lines[i] = re.sub(r'opacity=[\d.]+', f'opacity={value}', line)
+                return '\n'.join(lines)
+
+        return preamble
+
+
+    def _apply_progress_change(self, preamble, value):
+        """Apply progress bar change - COMPLETELY FIXED"""
+        if not value:
+            # Remove progress bar
+            lines = preamble.split('\n')
+            new_lines = []
+            skip = False
+            for line in lines:
+                if '% Progress bar' in line:
+                    skip = True
+                    continue
+                if skip and '\\makeatother' in line:
+                    skip = False
+                    continue
+                if not skip:
+                    new_lines.append(line)
+            return '\n'.join(new_lines)
+        return preamble
+
+
+    def _apply_nav_change(self, preamble, value):
+        """Apply navigation change - COMPLETELY FIXED"""
+        import re
+        lines = preamble.split('\n')
+
+        if not value:
+            # Hide navigation symbols
+            for i, line in enumerate(lines):
+                if '\\setbeamertemplate{navigation symbols}' in line:
+                    lines[i] = '\\setbeamertemplate{navigation symbols}{}'
+                    return '\n'.join(lines)
+            # Not found, add it
+            for i, line in enumerate(lines):
+                if '\\begin{document}' in line:
+                    lines.insert(i, '\\setbeamertemplate{navigation symbols}{}')
+                    return '\n'.join(lines)
+        else:
+            # Show navigation symbols - remove the hide line
+            new_lines = [line for line in lines if '\\setbeamertemplate{navigation symbols}{}' not in line]
+            return '\n'.join(new_lines)
+
+        return preamble
+
+
+    def _apply_notes_change(self, preamble, value):
+        """Apply notes mode change - COMPLETELY FIXED"""
+        notes_map = {
+            "Slides Only": "hide notes",
+            "Notes Only": "show only notes",
+            "Slides + Notes": "show notes on second screen=right"
+        }
+        notes_option = notes_map.get(value, "show notes on second screen=right")
+
+        lines = preamble.split('\n')
+
+        for i, line in enumerate(lines):
+            if '\\setbeameroption{' in line:
+                lines[i] = f'\\setbeameroption{{{notes_option}}}'
+                return '\n'.join(lines)
+
+        # Not found, add it
+        for i, line in enumerate(lines):
+            if '\\begin{document}' in line:
+                # Check if pgfpages is loaded
+                has_pgfpages = any('\\usepackage{pgfpages}' in l for l in lines)
+                if not has_pgfpages:
+                    lines.insert(i, '\\usepackage{pgfpages}')
+                    lines.insert(i+1, f'\\setbeameroption{{{notes_option}}}')
+                else:
+                    lines.insert(i, f'\\setbeameroption{{{notes_option}}}')
+                return '\n'.join(lines)
+
+        return preamble
+
+
+    def _apply_tight_spacing_change(self, preamble, value):
+        """Apply tight spacing change - COMPLETELY FIXED"""
+        if not value:
+            # Remove tight spacing
+            lines = preamble.split('\n')
+            new_lines = []
+            skip = False
+            for line in lines:
+                if '% Tight spacing' in line:
+                    skip = True
+                    continue
+                if skip and '\\setlength{\\topsep}' in line:
+                    skip = False
+                    continue
+                if not skip:
+                    new_lines.append(line)
+            return '\n'.join(new_lines)
+        else:
+            # Add tight spacing
+            spacing_template = [
+                '% Tight spacing',
+                '\\setlength{\\parskip}{0.12em}',
+                '\\setlength{\\itemsep}{0.04em}',
+                '\\setlength{\\topsep}{0.04em}',
+                ''
+            ]
+            lines = preamble.split('\n')
+            for i, line in enumerate(lines):
+                if '\\begin{document}' in line:
+                    for j, sl in enumerate(spacing_template):
+                        lines.insert(i + j, sl)
+                    return '\n'.join(lines)
+            return preamble + '\n' + '\n'.join(spacing_template)
+
+
+
+
+class PreambleConflictResolver:
+    """Handle conflicts when merging preambles with user choice"""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.conflicts = []
+        self.resolved = {}
+
+    def detect_conflicts(self, default_defs: dict, imported_defs: dict) -> list:
+        """
+        Detect conflicts between two sets of extracted preamble definitions.
+        Both sets should be from the _extract_preamble_definitions method.
+        """
+        conflicts = []
+
+        # Check for conflicts in each category
+
+        # 1. Color conflicts
+        for color_name in set(default_defs['colors'].keys()) & set(imported_defs['colors'].keys()):
+            default_val = default_defs['colors'][color_name]
+            imported_val = imported_defs['colors'][color_name]
+            if default_val != imported_val:
+                conflicts.append({
+                    'name': color_name,
+                    'category': 'color',
+                    'default': {'definition': default_val, 'raw': f"\\definecolor{{{color_name}}}{{{default_val[0]}}}{{{default_val[1]}}}"},
+                    'imported': {'definition': imported_val, 'raw': f"\\definecolor{{{color_name}}}{{{imported_val[0]}}}{{{imported_val[1]}}}"},
+                    'resolution': None
+                })
+
+        # 2. Package conflicts (different options for same package)
+        for pkg in set(default_defs['packages']) & set(imported_defs['packages']):
+            default_opts = default_defs['package_options'].get(pkg, '')
+            imported_opts = imported_defs['package_options'].get(pkg, '')
+            if default_opts != imported_opts:
+                conflicts.append({
+                    'name': pkg,
+                    'category': 'package',
+                    'default': {
+                        'definition': f"\\usepackage[{default_opts}]{{{pkg}}}" if default_opts else f"\\usepackage{{{pkg}}}",
+                        'raw': f"Package: {pkg} with options [{default_opts}]" if default_opts else f"Package: {pkg} (no options)"
+                    },
+                    'imported': {
+                        'definition': f"\\usepackage[{imported_opts}]{{{pkg}}}" if imported_opts else f"\\usepackage{{{pkg}}}",
+                        'raw': f"Package: {pkg} with options [{imported_opts}]" if imported_opts else f"Package: {pkg} (no options)"
+                    },
+                    'resolution': None
+                })
+
+        # 3. Setting conflicts (theme, colortheme, fonttheme, etc.)
+        setting_keys = ['theme', 'colortheme', 'fonttheme']
+        for key in setting_keys:
+            default_val = default_defs.get(key, '')
+            imported_val = imported_defs.get(key, '')
+            if default_val and imported_val and default_val != imported_val:
+                conflicts.append({
+                    'name': key,
+                    'category': 'setting',
+                    'default': {'definition': default_val, 'raw': f"{key}: {default_val}"},
+                    'imported': {'definition': imported_val, 'raw': f"{key}: {imported_val}"},
+                    'resolution': None
+                })
+
+        # 4. Template/Setting conflicts (more complex)
+        # Compare setbeamertemplate, setbeamercolor, setbeamerfont
+        for setting_type in ['templates', 'beamercolors', 'beamerfonts']:
+            default_items = default_defs.get(setting_type, [])
+            imported_items = imported_defs.get(setting_type, [])
+
+            # Convert to dict for easier comparison
+            default_dict = {}
+            for item in default_items:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    default_dict[item[0]] = item[1] if len(item) == 2 else item
+
+            imported_dict = {}
+            for item in imported_items:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    imported_dict[item[0]] = item[1] if len(item) == 2 else item
+
+            for name in set(default_dict.keys()) & set(imported_dict.keys()):
+                if default_dict[name] != imported_dict[name]:
+                    conflicts.append({
+                        'name': f"{setting_type}_{name}",
+                        'category': setting_type,
+                        'default': {'definition': default_dict[name], 'raw': f"{name}: {str(default_dict[name])[:50]}..."},
+                        'imported': {'definition': imported_dict[name], 'raw': f"{name}: {str(imported_dict[name])[:50]}..."},
+                        'resolution': None
+                    })
+
+        # 5. Custom command conflicts (most critical - this is where \split, \pip, \tb conflict)
+        for cmd_name in set(default_defs['custom_commands'].keys()) & set(imported_defs['custom_commands'].keys()):
+            default_cmd = default_defs['custom_commands'][cmd_name]
+            imported_cmd = imported_defs['custom_commands'][cmd_name]
+            if default_cmd != imported_cmd:
+                # Show the actual command definition
+                conflicts.append({
+                    'name': cmd_name,
+                    'category': 'custom_command',
+                    'default': {
+                        'definition': default_cmd,
+                        'raw': default_cmd[:100] + ('...' if len(default_cmd) > 100 else '')
+                    },
+                    'imported': {
+                        'definition': imported_cmd,
+                        'raw': imported_cmd[:100] + ('...' if len(imported_cmd) > 100 else '')
+                    },
+                    'resolution': None
+                })
+
+        # 6. Check for \split, \pip, \tb specifically (known Beamer conflicts)
+        for cmd in ['split', 'pip', 'tb', 'ff', 'wm', 'hl', 'bg', 'ol', 'corner', 'mosaic']:
+            if cmd in default_defs['custom_commands'] and cmd in imported_defs['custom_commands']:
+                # Already caught above, but ensure they're marked
+                pass
+
+        return conflicts
+
+    def show_conflict_dialog(self, conflict: dict) -> str:
+        """Show dialog for a single conflict and return user's choice"""
+        import customtkinter as ctk
+        import tkinter as tk
+
+        dialog = ctk.CTkToplevel(self.parent)
+        dialog.title(f"Preamble Conflict: {conflict['name']}")
+        dialog.geometry("750x500")
+        dialog.transient(self.parent)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 750) // 2
+        y = (dialog.winfo_screenheight() - 500) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Main frame
+        main_frame = ctk.CTkFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Category label
+        category_colors = {
+            'color': '#4ECDC4',
+            'package': '#45B7D1',
+            'setting': '#FFB86C',
+            'templates': '#BD93F9',
+            'beamercolors': '#FF6B6B',
+            'beamerfonts': '#50FA7B',
+            'custom_command': '#FF8C00'
+        }
+        color = category_colors.get(conflict['category'], '#FFFFFF')
+
+        # Title
+        ctk.CTkLabel(
+            main_frame,
+            text=f"⚠ Conflict Detected: {conflict['name']}",
+            font=("Arial", 16, "bold"),
+            text_color="#FFB86C"
+        ).pack(pady=10)
+
+        ctk.CTkLabel(
+            main_frame,
+            text=f"Category: {conflict['category'].replace('_', ' ').title()}",
+            font=("Arial", 12),
+            text_color=color
+        ).pack(pady=5)
+
+        ctk.CTkLabel(
+            main_frame,
+            text="This definition exists in both the default and imported preamble with different values.",
+            font=("Arial", 12),
+            wraplength=700
+        ).pack(pady=5)
+
+        # Split into two columns for definitions
+        compare_frame = ctk.CTkFrame(main_frame)
+        compare_frame.pack(fill="both", expand=True, padx=5, pady=10)
+
+        # Default definition
+        default_frame = ctk.CTkFrame(compare_frame)
+        default_frame.pack(side="left", fill="both", expand=True, padx=5)
+
+        ctk.CTkLabel(
+            default_frame,
+            text="📋 Default Preamble",
+            font=("Arial", 12, "bold"),
+            text_color="#4ECDC4"
+        ).pack(pady=5)
+
+        default_text = ctk.CTkTextbox(default_frame, height=120, font=("Courier", 10))
+        default_text.pack(fill="both", expand=True, padx=5, pady=5)
+        default_text.insert("1.0", conflict['default']['raw'])
+        default_text.configure(state="disabled")
+
+        # Imported definition
+        imported_frame = ctk.CTkFrame(compare_frame)
+        imported_frame.pack(side="right", fill="both", expand=True, padx=5)
+
+        ctk.CTkLabel(
+            imported_frame,
+            text="📥 Imported Preamble",
+            font=("Arial", 12, "bold"),
+            text_color="#FFB86C"
+        ).pack(pady=5)
+
+        imported_text = ctk.CTkTextbox(imported_frame, height=120, font=("Courier", 10))
+        imported_text.pack(fill="both", expand=True, padx=5, pady=5)
+        imported_text.insert("1.0", conflict['imported']['raw'])
+        imported_text.configure(state="disabled")
+
+        # Resolution options
+        options_frame = ctk.CTkFrame(main_frame)
+        options_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(
+            options_frame,
+            text="Choose how to resolve this conflict:",
+            font=("Arial", 12, "bold")
+        ).pack(pady=5)
+
+        result_var = tk.StringVar(value="default")
+
+        # Radio buttons with explanations based on category
+        if conflict['category'] == 'custom_command':
+            ctk.CTkRadioButton(
+                options_frame,
+                text="1. Use Default Definition (keep existing \\" + conflict['name'] + ")",
+                variable=result_var,
+                value="default"
+            ).pack(anchor="w", padx=20, pady=2)
+
+            ctk.CTkRadioButton(
+                options_frame,
+                text="2. Use Imported Definition (overwrite with new version)",
+                variable=result_var,
+                value="imported"
+            ).pack(anchor="w", padx=20, pady=2)
+
+            ctk.CTkRadioButton(
+                options_frame,
+                text="3. Remove Both Definitions (skip this command entirely)",
+                variable=result_var,
+                value="remove"
+            ).pack(anchor="w", padx=20, pady=2)
+        else:
+            ctk.CTkRadioButton(
+                options_frame,
+                text="1. Keep Default Value",
+                variable=result_var,
+                value="default"
+            ).pack(anchor="w", padx=20, pady=2)
+
+            ctk.CTkRadioButton(
+                options_frame,
+                text="2. Use Imported Value",
+                variable=result_var,
+                value="imported"
+            ).pack(anchor="w", padx=20, pady=2)
+
+        # Buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=5, pady=10)
+
+        def apply_and_close():
+            conflict['resolution'] = result_var.get()
+            dialog.destroy()
+
+        def apply_to_all():
+            """Apply the same resolution to all remaining conflicts"""
+            conflict['resolution'] = result_var.get()
+            for c in self.conflicts:
+                if c['resolution'] is None:
+                    c['resolution'] = result_var.get()
+            dialog.destroy()
+
+        ctk.CTkButton(
+            button_frame,
+            text="Apply to This Conflict",
+            command=apply_and_close,
+            width=150,
+            fg_color="#28a745"
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Apply to All Conflicts",
+            command=apply_to_all,
+            width=150,
+            fg_color="#17a2b8"
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Cancel Merge",
+            command=lambda: dialog.destroy(),
+            width=120,
+            fg_color="#dc3545"
+        ).pack(side="right", padx=5)
+
+        # Wait for dialog
+        self.parent.wait_window(dialog)
+        return conflict['resolution']
+
+    def resolve_conflicts(self, default_defs: dict, imported_defs: dict) -> dict:
+        """
+        Detect and resolve conflicts between two preamble definitions.
+        Returns a resolution map for each conflict.
+        """
+        self.conflicts = self.detect_conflicts(default_defs, imported_defs)
+
+        if not self.conflicts:
+            return {}
+
+        # Show conflicts one by one
+        for conflict in self.conflicts:
+            if conflict['resolution'] is None:
+                self.show_conflict_dialog(conflict)
+
+        # Build resolution map
+        resolutions = {}
+        for conflict in self.conflicts:
+            if conflict['resolution'] is not None:
+                resolutions[conflict['name']] = {
+                    'category': conflict['category'],
+                    'resolution': conflict['resolution'],
+                    'default': conflict['default'],
+                    'imported': conflict['imported']
+                }
+
+        return resolutions
+
+class PackageConflictDetector:
+    """
+    Detects conflicts between LaTeX packages and custom command definitions.
+    Automatically resolves conflicts by removing conflicting packages or
+    renaming custom commands.
+    """
+
+    # Known package command conflicts
+    PACKAGE_CONFLICTS = {
+        'soul': {
+            'commands': ['hl', 'ul', 'uline', 'st', 'so', 'caps', 'textul', 'textst', 'textso'],
+            'description': 'Text highlighting and formatting',
+            'conflict_resolution': 'remove_package',  # or 'rename_command'
+            'rename_to': {
+                'hl': 'highlighttext',  # If we want to rename instead of removing
+                'ul': 'underlinetext',
+                'st': 'strikethroughtext',
+            }
+        },
+        'tcolorbox': {
+            'commands': ['tcb', 'tcbox', 'tcolorbox', 'tcbitem', 'tcbset'],
+            'description': 'Colored boxes with many styling options',
+            'conflict_resolution': 'keep_package',  # tcolorbox is usually needed
+            'rename_to': {}
+        },
+        'caption': {
+            'commands': ['caption', 'captionof', 'captionsetup'],
+            'description': 'Figure and table captions',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'subcaption': {
+            'commands': ['subcaption', 'subcaptionbox', 'subfigure', 'subtable'],
+            'description': 'Sub-figure and sub-table captions',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'listings': {
+            'commands': ['lstlisting', 'lstset', 'lstinputlisting', 'lstlistoflistings'],
+            'description': 'Code listings with syntax highlighting',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'hyperref': {
+            'commands': ['href', 'url', 'hyperlink', 'hypertarget', 'label', 'ref', 'pageref'],
+            'description': 'Hyperlinks and cross-referencing',
+            'conflict_resolution': 'keep_package',  # Critical package
+            'rename_to': {}
+        },
+        'xcolor': {
+            'commands': ['textcolor', 'colorbox', 'fcolorbox', 'color', 'pagecolor'],
+            'description': 'Color support',
+            'conflict_resolution': 'keep_package',  # Critical package
+            'rename_to': {}
+        },
+        'amsmath': {
+            'commands': ['equation', 'align', 'gather', 'multline', 'split', 'cases'],
+            'description': 'Enhanced math support',
+            'conflict_resolution': 'keep_package',  # Critical package
+            'rename_to': {}
+        },
+        'amssymb': {
+            'commands': ['mathbb', 'mathcal', 'mathfrak', 'mathscr', 'square', 'blacksquare'],
+            'description': 'Additional math symbols',
+            'conflict_resolution': 'keep_package',  # Critical package
+            'rename_to': {}
+        },
+        'graphicx': {
+            'commands': ['includegraphics', 'graphicspath', 'rotatebox', 'scalebox'],
+            'description': 'Graphics inclusion',
+            'conflict_resolution': 'keep_package',  # Critical package
+            'rename_to': {}
+        },
+        'booktabs': {
+            'commands': ['toprule', 'midrule', 'bottomrule', 'cmidrule', 'addlinespace'],
+            'description': 'Publication quality tables',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'multirow': {
+            'commands': ['multirow', 'multirowcell'],
+            'description': 'Multi-row table cells',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'array': {
+            'commands': ['newcolumntype', 'extrarowheight', 'firsthline', 'lasthline'],
+            'description': 'Enhanced table arrays',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'pgfplots': {
+            'commands': ['addplot', 'axis', 'pgfplotsset', 'legend', 'addlegendentry'],
+            'description': 'Scientific plotting',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'tikz': {
+            'commands': ['tikzpicture', 'node', 'draw', 'fill', 'path', 'scope', 'matrix'],
+            'description': 'TikZ graphics',
+            'conflict_resolution': 'keep_package',  # Critical package
+            'rename_to': {}
+        },
+        'siunitx': {
+            'commands': ['si', 'SI', 'num', 'qty', 'unit', 'sisetup'],
+            'description': 'SI units and numbers',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'textcomp': {
+            'commands': ['textmu', 'textendash', 'textcopyright', 'textregistered'],
+            'description': 'Text symbols and special characters',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'fontawesome5': {
+            'commands': ['faIcon', 'faicon', 'faTwitter', 'faGithub', 'faEnvelope'],
+            'description': 'Font Awesome icons',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'pifont': {
+            'commands': ['ding', 'dingfill', 'dingautolist'],
+            'description': 'Pi font symbols',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'enumerate': {
+            'commands': ['begin{enumerate}', 'end{enumerate}'],
+            'description': 'Enhanced enumerate environments',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'adjustbox': {
+            'commands': ['adjustbox', 'adjincludegraphics', 'trimbox', 'clipbox'],
+            'description': 'Adjusting and trimming boxes',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+        'pgfpages': {
+            'commands': ['setbeameroption', 'pgfpagesuselayout'],
+            'description': 'Page layout for Beamer notes',
+            'conflict_resolution': 'keep_package',
+            'rename_to': {}
+        },
+    }
+
+    # Commands that are critical and should never be removed
+    CRITICAL_COMMANDS = {
+        'includegraphics', 'textcolor', 'color', 'href', 'url',
+        'begin', 'end', 'documentclass', 'usepackage', 'newcommand',
+        'renewcommand', 'def', 'let', 'ifcsname', 'endcsname', 'fi',
+        'begin{frame}', 'end{frame}', 'frametitle', 'title', 'author',
+        'institute', 'date', 'maketitle', 'titlepage'
+    }
+
+    @classmethod
+    def detect_conflicts(cls, preamble: str, custom_commands: dict) -> dict:
+        """
+        Detect conflicts between loaded packages and custom commands.
+
+        Args:
+            preamble: The full preamble string
+            custom_commands: Dictionary of custom command definitions
+
+        Returns:
+            dict: Conflict report with package names and conflicting commands
+        """
+        conflicts = {}
+
+        # Find which packages are loaded
+        loaded_packages = cls._extract_packages(preamble)
+
+        for pkg_name, pkg_info in cls.PACKAGE_CONFLICTS.items():
+            if pkg_name not in loaded_packages:
+                continue
+
+            conflicting_commands = []
+            for cmd in pkg_info['commands']:
+                # Check if this command is defined as a custom command
+                if cmd in custom_commands:
+                    conflicting_commands.append(cmd)
+                # Also check if it's defined without being in the dict
+                elif f'\\newcommand{{\\{cmd}}}' in preamble or f'\\def\\{cmd}' in preamble:
+                    if cmd not in cls.CRITICAL_COMMANDS:
+                        conflicting_commands.append(cmd)
+
+            if conflicting_commands:
+                conflicts[pkg_name] = {
+                    'package_info': pkg_info,
+                    'conflicting_commands': conflicting_commands,
+                    'loaded': True
+                }
+
+        return conflicts
+
+    @classmethod
+    def _extract_packages(cls, preamble: str) -> set:
+        """Extract all loaded package names from preamble."""
+        import re
+        packages = set()
+
+        # Match \usepackage{package}
+        pattern = r'\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}'
+        for match in re.findall(pattern, preamble):
+            for pkg in match.split(','):
+                packages.add(pkg.strip())
+
+        # Match \RequirePackage{package}
+        pattern2 = r'\\RequirePackage(?:\[[^\]]*\])?\{([^}]+)\}'
+        for match in re.findall(pattern2, preamble):
+            for pkg in match.split(','):
+                packages.add(pkg.strip())
+
+        return packages
+
+    @classmethod
+    def resolve_conflicts(cls, preamble: str, custom_commands: dict,
+                          parent=None, auto_resolve: bool = False) -> tuple:
+        """
+        Resolve conflicts between packages and custom commands.
+
+        Args:
+            preamble: The full preamble string
+            custom_commands: Dictionary of custom command definitions
+            parent: Parent widget for GUI dialogs
+            auto_resolve: If True, automatically resolve without asking
+
+        Returns:
+            tuple: (resolved_preamble, resolution_report)
+        """
+        import re
+
+        conflicts = cls.detect_conflicts(preamble, custom_commands)
+        resolution_report = {}
+
+        if not conflicts:
+            return preamble, resolution_report
+
+        print(f"\n⚠ Found {len(conflicts)} package conflicts:")
+
+        for pkg_name, conflict_info in conflicts.items():
+            pkg_info = conflict_info['package_info']
+            conflicting_cmds = conflict_info['conflicting_commands']
+
+            print(f"\n  📦 Package: {pkg_name}")
+            print(f"     Description: {pkg_info['description']}")
+            print(f"     Conflicting commands: {', '.join(conflicting_cmds)}")
+
+            resolution = pkg_info.get('conflict_resolution', 'remove_package')
+
+            if auto_resolve:
+                # Auto-resolve based on package settings
+                choice = resolution
+            else:
+                # Ask user for resolution
+                choice = cls._show_resolution_dialog(parent, pkg_name, pkg_info, conflicting_cmds)
+
+            resolution_report[pkg_name] = {
+                'choice': choice,
+                'conflicting_commands': conflicting_cmds
+            }
+
+            if choice == 'remove_package':
+                # Remove the package from preamble
+                pkg_pattern = r'\\usepackage(?:\[[^\]]*\])?\{' + re.escape(pkg_name) + r'\}'
+                preamble = re.sub(pkg_pattern, f'% {pkg_name}  % Removed: conflicts with custom commands', preamble)
+                print(f"     ✓ Removed package: {pkg_name}")
+
+                # Also remove any \IfFileExists loading
+                if_pattern = r'\\IfFileExists\{' + re.escape(pkg_name) + r'\.sty\}\{\\usepackage\{' + re.escape(pkg_name) + r'\}\}\{\}'
+                preamble = re.sub(if_pattern, f'% {pkg_name}  % Removed: conflicts with custom commands', preamble)
+
+            elif choice == 'rename_command':
+                # Rename the conflicting custom commands
+                rename_map = pkg_info.get('rename_to', {})
+                for cmd in conflicting_cmds:
+                    if cmd in rename_map:
+                        new_name = rename_map[cmd]
+                        # Find and replace the command definition
+                        cmd_pattern = r'\\newcommand\{\\' + re.escape(cmd) + r'\}(?:\[[^\]]*\])?\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'
+                        match = re.search(cmd_pattern, preamble, re.DOTALL)
+                        if match:
+                            old_def = match.group(0)
+                            content = match.group(1)
+                            new_def = f"\\newcommand{{\\{new_name}}}{{{content}}}"
+                            preamble = preamble.replace(old_def, new_def)
+                            print(f"     ✓ Renamed \\{cmd} to \\{new_name}")
+
+                        # Also update usage in the document body (if we have it)
+                        # This would require the full document content
+
+            elif choice == 'keep_both':
+                print(f"     ⚠ Keeping both - may cause errors")
+            else:
+                # Default: remove package
+                print(f"     ✓ Removed package: {pkg_name}")
+                pkg_pattern = r'\\usepackage(?:\[[^\]]*\])?\{' + re.escape(pkg_name) + r'\}'
+                preamble = re.sub(pkg_pattern, f'% {pkg_name}  % Removed: conflicts with custom commands', preamble)
+
+        return preamble, resolution_report
+
+    @classmethod
+    def _show_resolution_dialog(cls, parent, pkg_name, pkg_info, conflicting_cmds):
+        """Show a GUI dialog for conflict resolution."""
+        import customtkinter as ctk
+        import tkinter as tk
+
+        result = {'choice': 'remove_package'}
+
+        dialog = ctk.CTkToplevel(parent)
+        dialog.title(f"Package Conflict: {pkg_name}")
+        dialog.geometry("600x400")
+        dialog.transient(parent)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 600) // 2
+        y = (dialog.winfo_screenheight() - 400) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Main frame
+        main_frame = ctk.CTkFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Title
+        ctk.CTkLabel(
+            main_frame,
+            text=f"⚠ Package Conflict: {pkg_name}",
+            font=("Arial", 16, "bold"),
+            text_color="#FFB86C"
+        ).pack(pady=10)
+
+        # Package info
+        ctk.CTkLabel(
+            main_frame,
+            text=pkg_info['description'],
+            font=("Arial", 12),
+            text_color="#4ECDC4"
+        ).pack(pady=5)
+
+        # Conflicting commands
+        cmd_text = f"Conflicting commands: {', '.join(conflicting_cmds)}"
+        ctk.CTkLabel(
+            main_frame,
+            text=cmd_text,
+            font=("Arial", 12),
+            text_color="#FF6B6B"
+        ).pack(pady=5)
+
+        # Explanation
+        ctk.CTkLabel(
+            main_frame,
+            text="This package defines commands that conflict with your custom command definitions.",
+            font=("Arial", 12),
+            wraplength=550
+        ).pack(pady=10)
+
+        # Options
+        options_frame = ctk.CTkFrame(main_frame)
+        options_frame.pack(fill="x", padx=5, pady=10)
+
+        choice_var = tk.StringVar(value="remove_package")
+
+        ctk.CTkRadioButton(
+            options_frame,
+            text="Remove the package (recommended if you don't need it)",
+            variable=choice_var,
+            value="remove_package"
+        ).pack(anchor="w", padx=20, pady=2)
+
+        ctk.CTkRadioButton(
+            options_frame,
+            text="Rename conflicting custom commands",
+            variable=choice_var,
+            value="rename_command"
+        ).pack(anchor="w", padx=20, pady=2)
+
+        ctk.CTkRadioButton(
+            options_frame,
+            text="Keep both (may cause compilation errors)",
+            variable=choice_var,
+            value="keep_both"
+        ).pack(anchor="w", padx=20, pady=2)
+
+        # Buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=5, pady=10)
+
+        def apply_choice():
+            result['choice'] = choice_var.get()
+            dialog.destroy()
+
+        ctk.CTkButton(
+            button_frame,
+            text="Apply",
+            command=apply_choice,
+            width=120,
+            fg_color="#28a745"
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Apply to All",
+            command=lambda: setattr(result, 'choice', 'apply_all') or dialog.destroy(),
+            width=150,
+            fg_color="#17a2b8"
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            command=dialog.destroy,
+            width=100,
+            fg_color="#dc3545"
+        ).pack(side="right", padx=5)
+
+        parent.wait_window(dialog)
+        return result['choice']
 
 class DynamicToolbar:
     """Manages dynamic toolbar with overflow handling"""
@@ -4951,6 +7635,455 @@ class PreambleEditor(ctk.CTkToplevel):
         editor.wait_window()
         return editor.preamble if hasattr(editor, 'preamble') else None
 
+class ThemeStyleDialog(ctk.CTkToplevel):
+    """Dialog for customizing presentation theme and style"""
+
+    def __init__(self, parent, current_preamble=None):
+        super().__init__(parent)
+        self.title("Theme & Style Settings")
+        self.geometry("800x700")
+        self.parent = parent
+        self.result = None
+
+        # Store current preamble for reference
+        self.current_preamble = current_preamble or ""
+
+        # Center dialog
+        self.transient(parent)
+        self.grab_set()
+        self.center_window()
+
+        self.create_widgets()
+        self.load_current_settings()
+
+    def center_window(self):
+        """Center the dialog on screen"""
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f'+{x}+{y}')
+
+    def create_widgets(self):
+        """Create the theme and style widgets"""
+        # Main container with scroll
+        main_frame = ctk.CTkScrollableFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # ========== THEME SECTION ==========
+        theme_frame = ctk.CTkFrame(main_frame)
+        theme_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(theme_frame, text="Presentation Theme", font=("Arial", 16, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        theme_grid = ctk.CTkFrame(theme_frame)
+        theme_grid.pack(fill="x", padx=5, pady=5)
+
+        # Theme dropdown
+        ctk.CTkLabel(theme_grid, text="Theme:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.theme_var = ctk.StringVar(value="Madrid")
+        themes = ["Madrid", "Berkeley", "Copenhagen", "Frankfurt", "Ilmenau", "Malmoe", "Warsaw", "CambridgeUS", "PaloAlto", "Boadilla", "Pittsburgh", "Rochester"]
+        self.theme_menu = ctk.CTkOptionMenu(theme_grid, values=themes, variable=self.theme_var, width=200)
+        self.theme_menu.grid(row=0, column=1, padx=5, pady=5)
+        self.create_tooltip(self.theme_menu, "Choose a Beamer theme for your presentation")
+
+        # Color theme dropdown
+        ctk.CTkLabel(theme_grid, text="Color Theme:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.colortheme_var = ctk.StringVar(value="owl")
+        colorthemes = ["default", "dove", "seahorse", "beaver", "crane", "dolphin", "lily", "orchid", "rose", "whale", "wolverine"]
+        self.colortheme_menu = ctk.CTkOptionMenu(theme_grid, values=colorthemes, variable=self.colortheme_var, width=200)
+        self.colortheme_menu.grid(row=1, column=1, padx=5, pady=5)
+        self.create_tooltip(self.colortheme_menu, "Choose a color theme for your presentation")
+
+        # Font theme dropdown
+        ctk.CTkLabel(theme_grid, text="Font Theme:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.fonttheme_var = ctk.StringVar(value="default")
+        fontthemes = ["default", "professionalfonts", "serif", "structurebold", "structureitalicserif", "structuresmallcapsserif"]
+        self.fonttheme_menu = ctk.CTkOptionMenu(theme_grid, values=fontthemes, variable=self.fonttheme_var, width=200)
+        self.fonttheme_menu.grid(row=2, column=1, padx=5, pady=5)
+        self.create_tooltip(self.fonttheme_menu, "Choose a font theme for your presentation")
+
+        # ========== BACKGROUND SECTION ==========
+        bg_frame = ctk.CTkFrame(main_frame)
+        bg_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(bg_frame, text="Background Settings", font=("Arial", 16, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        bg_grid = ctk.CTkFrame(bg_frame)
+        bg_grid.pack(fill="x", padx=5, pady=5)
+
+        # Background color
+        ctk.CTkLabel(bg_grid, text="Background Color:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.bg_color_var = ctk.StringVar(value="black")
+        bg_color_entry = ctk.CTkEntry(bg_grid, textvariable=self.bg_color_var, width=150)
+        bg_color_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.create_tooltip(bg_color_entry, "Background color (e.g., black, white, #FF0000)")
+
+        # Background color picker button
+        bg_picker_btn = ctk.CTkButton(
+            bg_grid,
+            text="🎨 Pick Color",
+            command=self.pick_bg_color,
+            width=100,
+            fg_color="#3498db"
+        )
+        bg_picker_btn.grid(row=0, column=2, padx=5, pady=5)
+        self.create_tooltip(bg_picker_btn, "Open color picker to choose background color")
+
+        # Background image
+        ctk.CTkLabel(bg_grid, text="Background Image:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.bg_image_var = ctk.StringVar(value="")
+        bg_image_entry = ctk.CTkEntry(bg_grid, textvariable=self.bg_image_var, width=200)
+        bg_image_entry.grid(row=1, column=1, padx=5, pady=5, columnspan=2)
+        self.create_tooltip(bg_image_entry, "Path to background image (optional)")
+
+        # Browse for background image
+        bg_browse_btn = ctk.CTkButton(
+            bg_grid,
+            text="Browse...",
+            command=self.browse_bg_image,
+            width=80
+        )
+        bg_browse_btn.grid(row=1, column=3, padx=5, pady=5)
+
+        # ========== COLOR PALETTE SECTION ==========
+        colors_frame = ctk.CTkFrame(main_frame)
+        colors_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(colors_frame, text="Custom Colors", font=("Arial", 16, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        colors_grid = ctk.CTkFrame(colors_frame)
+        colors_grid.pack(fill="x", padx=5, pady=5)
+
+        # Predefined color buttons
+        color_names = [
+            ("Blue", "airis4d_blue", "#2980b9"),
+            ("Green", "airis4d_green", "#27ae60"),
+            ("Orange", "airis4d_orange", "#f39c12"),
+            ("Red", "airis4d_red", "#e74c3c"),
+            ("Purple", "airis4d_purple", "#9b59b6"),
+            ("Teal", "airis4d_teal", "#1abc9c"),
+            ("Gray", "airis4d_gray", "#95a5a6"),
+            ("Gold", "gold", "#f1c40f")
+        ]
+
+        # Create color buttons in a grid
+        for i, (name, color_id, hex_color) in enumerate(color_names):
+            row = i // 4
+            col = i % 4
+            btn = ctk.CTkButton(
+                colors_grid,
+                text=name,
+                command=lambda c=color_id, h=hex_color: self.add_color_definition(c, h),
+                width=120,
+                fg_color=hex_color,
+                hover_color=hex_color
+            )
+            btn.grid(row=row, column=col, padx=5, pady=5)
+            self.create_tooltip(btn, f"Add {name} color definition to preamble")
+
+        # ========== LAYOUT OPTIONS ==========
+        layout_frame = ctk.CTkFrame(main_frame)
+        layout_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(layout_frame, text="Layout Options", font=("Arial", 16, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        layout_grid = ctk.CTkFrame(layout_frame)
+        layout_grid.pack(fill="x", padx=5, pady=5)
+
+        # Aspect ratio
+        ctk.CTkLabel(layout_grid, text="Aspect Ratio:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.aspect_var = ctk.StringVar(value="169")
+        aspect_menu = ctk.CTkOptionMenu(
+            layout_grid,
+            values=["169", "43", "141"],
+            variable=self.aspect_var,
+            width=100
+        )
+        aspect_menu.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        self.create_tooltip(aspect_menu, "Slide aspect ratio (16:9, 4:3, 14:1)")
+
+        # Spacing option
+        self.tight_spacing_var = ctk.BooleanVar(value=True)
+        tight_check = ctk.CTkCheckBox(
+            layout_grid,
+            text="Tight Spacing (compact content)",
+            variable=self.tight_spacing_var
+        )
+        tight_check.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        self.create_tooltip(tight_check, "Reduce spacing to fit more content on slides")
+
+        # Progress bar
+        self.progress_var = ctk.BooleanVar(value=True)
+        progress_check = ctk.CTkCheckBox(
+            layout_grid,
+            text="Show Progress Bar",
+            variable=self.progress_var
+        )
+        progress_check.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+        self.create_tooltip(progress_check, "Show a progress bar at the bottom of each slide")
+
+        # Notes mode
+        ctk.CTkLabel(layout_grid, text="Notes Mode:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        self.notes_mode_var = ctk.StringVar(value="both")
+        notes_menu = ctk.CTkOptionMenu(
+            layout_grid,
+            values=["Slides Only", "Notes Only", "Slides + Notes"],
+            variable=self.notes_mode_var,
+            width=150
+        )
+        notes_menu.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+        self.create_tooltip(notes_menu, "How to display speaker notes")
+
+        # ========== PREVIEW ==========
+        preview_frame = ctk.CTkFrame(main_frame)
+        preview_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(preview_frame, text="Preview", font=("Arial", 16, "bold")).pack(anchor="w", padx=5, pady=5)
+
+        self.preview_text = ctk.CTkTextbox(preview_frame, height=150, font=("Courier", 10))
+        self.preview_text.pack(fill="x", padx=5, pady=5)
+        self.update_preview()
+
+        # ========== BUTTONS ==========
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Apply Settings",
+            command=self.apply_settings,
+            width=150,
+            fg_color="#28a745"
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Update Preview",
+            command=self.update_preview,
+            width=150,
+            fg_color="#17a2b8"
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            command=self.destroy,
+            width=100,
+            fg_color="#dc3545"
+        ).pack(side="right", padx=5)
+
+    def create_tooltip(self, widget, text):
+        """Create tooltip for widget"""
+        def show_tooltip(event):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            label = tk.Label(tooltip, text=text, justify='left',
+                           background="#ffffe0", relief='solid', borderwidth=1,
+                           font=("Arial", 10))
+            label.pack()
+            widget.tooltip = tooltip
+
+        def hide_tooltip(event):
+            if hasattr(widget, 'tooltip'):
+                widget.tooltip.destroy()
+
+        widget.bind('<Enter>', show_tooltip)
+        widget.bind('<Leave>', hide_tooltip)
+
+    def load_current_settings(self):
+        """Load settings from current preamble"""
+        preamble = self.current_preamble
+        if not preamble:
+            return
+
+        import re
+
+        # Extract theme
+        theme_match = re.search(r'\\usetheme\{([^}]+)\}', preamble)
+        if theme_match:
+            self.theme_var.set(theme_match.group(1))
+
+        # Extract color theme
+        colortheme_match = re.search(r'\\usecolortheme\{([^}]+)\}', preamble)
+        if colortheme_match:
+            self.colortheme_var.set(colortheme_match.group(1))
+
+        # Extract font theme
+        fonttheme_match = re.search(r'\\usefonttheme\{([^}]+)\}', preamble)
+        if fonttheme_match:
+            self.fonttheme_var.set(fonttheme_match.group(1))
+
+        # Extract background color
+        bg_match = re.search(r'\\setbeamercolor\{background canvas\}\{bg=([^}]+)\}', preamble)
+        if bg_match:
+            self.bg_color_var.set(bg_match.group(1))
+
+        # Extract aspect ratio
+        aspect_match = re.search(r'\\documentclass\[aspectratio=(\d+)\]', preamble)
+        if aspect_match:
+            self.aspect_var.set(aspect_match.group(1))
+
+    def pick_bg_color(self):
+        """Open color picker for background color"""
+        result = ColorPickerDialog.pick_color(self)
+        if result:
+            self.bg_color_var.set(result['name'])
+
+    def browse_bg_image(self):
+        """Browse for background image file"""
+        filename = filedialog.askopenfilename(
+            title="Select Background Image",
+            filetypes=[
+                ("Image files", "*.png *.jpg *.jpeg *.gif *.pdf"),
+                ("All files", "*.*")
+            ]
+        )
+        if filename:
+            self.bg_image_var.set(filename)
+
+    def add_color_definition(self, color_id, hex_color):
+        """Add a color definition to the preview"""
+        current = self.preview_text.get('1.0', 'end-1c')
+        color_def = f"\\definecolor{{{color_id}}}{{HTML}}{{{hex_color.lstrip('#')}}}"
+        if color_def not in current:
+            self.preview_text.insert('end', f"{color_def}\n")
+
+    def update_preview(self):
+        """Update the preview text with current settings"""
+        preamble = self.generate_preamble()
+        self.preview_text.delete('1.0', 'end')
+        self.preview_text.insert('1.0', preamble)
+
+    def generate_preamble(self) -> str:
+        """Generate the full preamble based on current settings"""
+        theme = self.theme_var.get()
+        colortheme = self.colortheme_var.get()
+        fonttheme = self.fonttheme_var.get()
+        bg_color = self.bg_color_var.get()
+        bg_image = self.bg_image_var.get()
+        aspect = self.aspect_var.get()
+        tight_spacing = self.tight_spacing_var.get()
+        show_progress = self.progress_var.get()
+        notes_mode = self.notes_mode_var.get()
+
+        # Notes mode mapping
+        notes_map = {
+            "Slides Only": "hide notes",
+            "Notes Only": "show only notes",
+            "Slides + Notes": "show notes on second screen=right"
+        }
+        notes_option = notes_map.get(notes_mode, "show notes on second screen=right")
+
+        # Build preamble
+        lines = []
+        lines.append(f"\\documentclass[aspectratio={aspect}]{{beamer}}")
+        lines.append("")
+        lines.append("% Essential packages")
+        lines.append("\\usepackage{graphicx}")
+        lines.append("\\usepackage{xcolor}")
+        lines.append("\\usepackage{amsmath}")
+        lines.append("\\usepackage{amssymb}")
+        lines.append("\\usepackage{tikz}")
+        lines.append("\\usepackage{booktabs}")
+        lines.append("\\usepackage{hyperref}")
+        lines.append("")
+        lines.append(f"\\usetheme{{{theme}}}")
+        if colortheme != "default":
+            lines.append(f"\\usecolortheme{{{colortheme}}}")
+        if fonttheme != "default":
+            lines.append(f"\\usefonttheme{{{fonttheme}}}")
+        lines.append("")
+
+        # Background settings
+        if bg_image:
+            lines.append("% Background image")
+            lines.append("\\setbeamertemplate{background}{")
+            lines.append("\\begin{tikzpicture}[remember picture,overlay]")
+            lines.append(f"\\node at (current page.center) {{\\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{{{bg_image}}}}}")
+            lines.append("\\end{tikzpicture}")
+            lines.append("}")
+            lines.append("")
+
+        if bg_color:
+            lines.append(f"\\setbeamercolor{{background canvas}}{{bg={bg_color}}}")
+            lines.append("")
+
+        # Color definitions
+        lines.append("% Custom color palette")
+        lines.append("\\definecolor{airis4d_blue}{RGB}{41,128,185}")
+        lines.append("\\definecolor{airis4d_green}{RGB}{39,174,96}")
+        lines.append("\\definecolor{airis4d_orange}{RGB}{243,156,18}")
+        lines.append("\\definecolor{airis4d_red}{RGB}{231,76,60}")
+        lines.append("\\definecolor{airis4d_purple}{RGB}{155,89,182}")
+        lines.append("\\definecolor{airis4d_teal}{RGB}{26,188,156}")
+        lines.append("\\definecolor{airis4d_gray}{RGB}{149,165,166}")
+        lines.append("")
+
+        # Tight spacing
+        if tight_spacing:
+            lines.append("% Tight spacing for compact content")
+            lines.append("\\setlength{\\parskip}{0.12em}")
+            lines.append("\\setlength{\\itemsep}{0.04em}")
+            lines.append("\\setlength{\\topsep}{0.04em}")
+            lines.append("")
+
+        # Progress bar
+        if show_progress:
+            lines.append("% Progress bar")
+            lines.append("\\makeatletter")
+            lines.append("\\def\\progressbar@progressbar{}")
+            lines.append("\\newcount\\progressbar@tmpcounta")
+            lines.append("\\newdimen\\progressbar@pbht")
+            lines.append("\\newdimen\\progressbar@pbwd")
+            lines.append("\\progressbar@pbwd=\\paperwidth")
+            lines.append("\\progressbar@pbht=2pt")
+            lines.append("\\def\\progressbar@progressbar{")
+            lines.append("\\begin{tikzpicture}[very thin]")
+            lines.append("\\ifnum\\insertframenumber>0")
+            lines.append("\\pgfmathparse{\\insertframenumber/\\inserttotalframenumber}")
+            lines.append("\\edef\\progress@ratio{\\pgfmathresult}")
+            lines.append("\\shade[top color=blue!50,bottom color=blue]")
+            lines.append("(0pt, 0pt) rectangle (\\progress@ratio\\progressbar@pbwd, \\progressbar@pbht)")
+            lines.append("\\fi")
+            lines.append("\\end{tikzpicture}%")
+            lines.append("}")
+            lines.append("\\setbeamertemplate{frametitle}{")
+            lines.append("\\nointerlineskip")
+            lines.append("\\vskip1ex")
+            lines.append("\\begin{beamercolorbox}[wd=\\paperwidth,ht=4ex,dp=2ex]{frametitle}")
+            lines.append("\\begin{minipage}[t]{\\dimexpr\\paperwidth-4em}")
+            lines.append("\\centering")
+            lines.append("\\vspace{2pt}")
+            lines.append("\\insertframetitle")
+            lines.append("\\vspace{2pt}")
+            lines.append("\\end{minipage}")
+            lines.append("\\end{beamercolorbox}")
+            lines.append("\\vskip.5ex")
+            lines.append("\\progressbar@progressbar")
+            lines.append("}")
+            lines.append("\\makeatother")
+            lines.append("")
+
+        # Notes
+        lines.append("% Notes configuration")
+        lines.append("\\usepackage{pgfpages}")
+        lines.append(f"\\setbeameroption{{{notes_option}}}")
+        lines.append("\\setbeamertemplate{note page}{\\pagecolor{yellow!5}\\insertnote}")
+        lines.append("")
+
+        lines.append("\\begin{document}")
+
+        return "\n".join(lines)
+
+    def apply_settings(self):
+        """Apply the settings and close the dialog"""
+        self.result = self.generate_preamble()
+        self.destroy()
+
+
 #------------------------------------------------------------------------------------------
 class NotesToggleFrame(ctk.CTkFrame):
     """Frame containing notes display options with tooltips"""
@@ -5810,7 +8943,15 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
 
         self.file_path = file_path
         self.is_txt_file = is_txt_file
-        self.tex_file_path = file_path.replace('.txt', '.tex') if is_txt_file else file_path
+        if is_txt_file:
+            # Handle both string and Path objects
+            if isinstance(file_path, Path):
+                self.tex_file_path = file_path.with_suffix('.tex')
+            else:
+                self.tex_file_path = file_path.replace('.txt', '.tex')
+        else:
+            self.tex_file_path = file_path
+
         self.error_line_num = error_line_num
         self.slide_num = slide_num
         self.error_message = error_message
@@ -7464,6 +10605,7 @@ class MenuBar(ctk.CTkFrame):
 
         tools_menu.add_command(label="Presentation Settings...", command=self.editor.show_settings_dialog)
         tools_menu.add_command(label="Edit Preamble...", command=self.editor.edit_preamble)
+        tools_menu.add_command(label="Theme & Style...", command=self.editor.edit_theme_style)  # NEW
         tools_menu.add_separator()
 
         # Generation
@@ -7617,6 +10759,9 @@ class BeamerSlideEditor(ctk.CTk):
         self.__author__ = "Ninan Sajeeth Philip"
         self.__license__ = "Creative Commons"
         self.logo_ascii = AIRIS4D_ASCII_LOGO
+
+        self._is_loading = False
+        self._is_merging = False  # Already exists, make sure it's initialized
 
         self.add_tikz_color_helper()
 
@@ -9645,8 +12790,13 @@ class BeamerSlideEditor(ctk.CTk):
 
         return text.strip()
 
+
+    # ============================================================
+    # FIX: Improved load_tex_file with better error handling
+    # ============================================================
+
     def load_tex_file(self) -> None:
-        """Load and convert a Beamer .tex file to IDE format with error handling"""
+        """Load and convert a Beamer .tex file to IDE format with conflict resolution"""
         tex_file = filedialog.askopenfilename(
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
             title="Select Beamer TeX File to Load"
@@ -9656,6 +12806,9 @@ class BeamerSlideEditor(ctk.CTk):
             return
 
         try:
+            self.write(f"\n📄 Loading TeX file: {os.path.basename(tex_file)}\n", "cyan")
+            self.write("="*60 + "\n", "cyan")
+
             # Use the static method
             result = BeamerSlideEditor.convert_beamer_tex_to_simple_text(tex_file)
 
@@ -9665,39 +12818,47 @@ class BeamerSlideEditor(ctk.CTk):
                 text_file = result
                 errors = []
 
-            if not text_file:
-                messagebox.showerror("Error", "Failed to convert TeX file")
+            if not text_file or not os.path.exists(text_file):
+                error_msg = "Failed to convert TeX file"
+                self.write(f"✗ {error_msg}\n", "red")
+                if errors:
+                    self.write("\nError details:\n", "red")
+                    for err in errors:
+                        if isinstance(err, dict):
+                            self.write(f"  • Line {err.get('line', '?')}: {err.get('message', str(err))}\n", "red")
+                        else:
+                            self.write(f"  • {err}\n", "red")
+                messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.")
                 return
 
-            # Now load the converted text file
+            # ========== LOAD THE FILE (this will trigger merge_preamble_with_file) ==========
             self.load_file(text_file)
 
             self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
+            self.write(f"  Loaded {len(self.slides)} slides\n", "green")
 
             # Show errors if any
             if errors:
                 self.write(f"\n⚠ Found {len(errors)} issue(s) during conversion:\n", "yellow")
                 for err in errors:
-                    self.write(f"   Line {err['line']}: {err['message']}\n", "yellow")
-
-                # Ask if user wants to fix errors
-                if messagebox.askyesno("Issues Found",
-                                       f"Found {len(errors)} issue(s) during conversion.\n\n"
-                                       "Would you like to open the error editor to fix them?"):
-                    # Open the error editor for the first error
-                    first_error = errors[0]
-                    self.open_error_editor(text_file, first_error['line'], first_error['message'])
+                    if isinstance(err, dict):
+                        self.write(f"   Line {err.get('line', '?')}: {err.get('message', str(err))}\n", "yellow")
+                    else:
+                        self.write(f"   {err}\n", "yellow")
 
             # Ask if user wants to generate PDF
-            if messagebox.askyesno("Success",
-                                 f"TeX file converted successfully!\n\n"
-                                 f"Would you like to generate PDF now?"):
+            if self.slides and messagebox.askyesno("Success",
+                                                   f"TeX file converted successfully!\n\n"
+                                                   f"Loaded {len(self.slides)} slides.\n\n"
+                                                   "Would you like to generate PDF now?"):
                 self.generate_pdf()
 
         except Exception as e:
-            error_msg = f"Error loading TeX file:\n{str(e)}"
+            error_msg = f"Error loading TeX file: {str(e)}"
             self.write(f"✗ {error_msg}\n", "red")
-            messagebox.showerror("Error", error_msg)
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.")
 
     def extract_preamble_info_safe(self, content: str) -> dict:
         """Extract preamble information with safer regex patterns"""
@@ -12230,6 +15391,8 @@ Created by {self.__author__}
         tools_menu.add_command(label="Spell Check Settings...", command=self.show_spellcheck_settings)
         tools_menu.add_separator()
 
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Convert Old Format to New", command=self.convert_old_to_new_format)
         # Color Tools
         tools_menu.add_command(label="TikZ Color Helper...", command=self.show_tikz_color_helper)
 
@@ -14905,15 +18068,34 @@ Created by {self.__author__}
             return ""  # Return empty string for \None directive
         return line
 
+    # Modify the convert_to_tex method to validate before processing
+
     def convert_to_tex(self):
-        """Convert text to TeX using BeamerSlideGenerator's process_input_file"""
+        """Convert text to TeX with validation before processing"""
         if not self.current_file:
             messagebox.showwarning("Warning", "Please save your file first!")
-            return
+            return False
 
         try:
-            # First, save the current slide data to the internal structure
+            # ========== STEP 1: VALIDATE THE TXT FILE ==========
+            is_valid, errors, warnings = self.validate_txt_file(self.current_file)
+
+            if not is_valid:
+                response = messagebox.askyesno(
+                    "Validation Errors",
+                    f"Found {len(errors)} error(s) in the TXT file:\n\n" +
+                    "\n".join(errors[:5]) +
+                    (f"\n... and {len(errors)-5} more" if len(errors) > 5 else "") +
+                    "\n\nDo you want to continue anyway?\n" +
+                    "(The TeX file may not compile)"
+                )
+                if not response:
+                    self.write("✗ Conversion cancelled due to validation errors\n", "red")
+                    return False
+
+            # ========== STEP 2: SAVE CURRENT STATE ==========
             self.save_current_slide()
+            self.save_file()
 
             base_filename = os.path.splitext(self.current_file)[0]
             tex_file = base_filename + '.tex'
@@ -14924,11 +18106,15 @@ Created by {self.__author__}
             self.write("CONVERTING TO TEX\n", "cyan")
             self.write("="*60 + "\n", "cyan")
 
-            # ========== SAVE THE TXT FILE FIRST ==========
-            self.write("\nSaving current state to TXT file...\n", "white")
-            self.save_file()
+            # ========== STEP 3: DISPLAY VALIDATION RESULTS ==========
+            if warnings:
+                self.write(f"\n⚠ {len(warnings)} warning(s) detected during validation:\n", "yellow")
+                for warn in warnings[:5]:
+                    self.write(f"  • {warn}\n", "yellow")
+                if len(warnings) > 5:
+                    self.write(f"  • ... and {len(warnings)-5} more\n", "yellow")
 
-            # ========== USE PROCESS_INPUT_FILE FOR CONVERSION ==========
+            # ========== STEP 4: CONVERT ==========
             self.write("\nConverting to TeX using BeamerSlideGenerator...\n", "white")
 
             from BeamerSlideGenerator import process_input_file
@@ -14939,11 +18125,10 @@ Created by {self.__author__}
                 self.write(f"  Processed {processed} slides, {failed} failed\n", "green")
 
                 if errors:
-                    self.write(f"\n⚠ Issues encountered:\n", "yellow")
+                    self.write(f"\n⚠ Issues encountered during conversion:\n", "yellow")
                     for err in errors:
                         self.write(f"  • {err}\n", "yellow")
 
-                # Show summary
                 self.write("\n" + "="*60 + "\n", "green")
                 self.write("✓ CONVERSION COMPLETE\n", "green")
                 self.write("="*60 + "\n", "green")
@@ -14975,6 +18160,7 @@ Created by {self.__author__}
             traceback.print_exc()
             messagebox.showerror("Error", f"Error converting to TeX:\n{str(e)}")
             return False
+
 
     def _update_txt_file_with_preamble(self, txt_file: str, combined_preamble: str) -> bool:
         """
@@ -15073,20 +18259,27 @@ Created by {self.__author__}
             traceback.print_exc()
             return False
 
+    # In the section where slides are written to the TXT file
     def _generate_slide_content_only(self) -> str:
-        """
-        Generate only the slide content (without preamble) for the TXT file.
-        Preserves the native format with \title, \begin{Content}, \begin{Notes}.
-        """
-        import re
-
+        """Generate only the slide content (without preamble) for the TXT file."""
         content_lines = []
         content_lines.append("\\begin{document}\n")
 
         for idx, slide in enumerate(self.slides):
-            # Skip fully masked slides or mark them
+            # Check if this is a title page
+            content = slide.get('content', [])
+            is_title_page = any('\\titlepage' in line for line in content) or any('\\begin{frame}[plain]' in line for line in content)
+
+            if is_title_page:
+                # Write title page as a proper frame
+                content_lines.append("% --- Title Page Slide ---")
+                for line in content:
+                    content_lines.append(line)
+                content_lines.append("")
+                continue
+
+            # Skip fully masked slides
             if slide.get('_fully_masked', False):
-                # Add a comment indicating masked slide
                 title = slide.get('title', 'Masked Slide')
                 clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
                 content_lines.append(f"% \\title {clean_title}")
@@ -15099,7 +18292,7 @@ Created by {self.__author__}
                 content_lines.append("")
                 continue
 
-            # Title - clean any [DELETED] prefix
+            # Normal slide
             title = slide.get('title', 'Untitled')
             clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
             content_lines.append(f"\\title {clean_title}")
@@ -15137,7 +18330,6 @@ Created by {self.__author__}
                         content_lines.append(f"% {note}")
                     else:
                         content_lines.append(note)
-            # Add a placeholder if no notes
             if not slide.get('notes', []):
                 content_lines.append("% No notes for this slide")
             content_lines.append("\\end{Notes}")
@@ -19670,7 +22862,7 @@ Created by {self.__author__}
         open_google_image_search(query)
 
     def generate_tex_content(self) -> str:
-        """Generate complete tex file content with proper notes handling"""
+        """Generate complete tex file content with proper notes handling and LaTeX support"""
         # Get base content
         if hasattr(self, 'custom_preamble'):
             content = self.custom_preamble
@@ -19686,10 +22878,14 @@ Created by {self.__author__}
 
         # Modify preamble for notes configuration
         content = self.modify_preamble_for_notes(content)
-        print(content)
+
         # Add slides with appropriate notes handling
         for slide in self.slides:
-            content += f"\\begin{frame}\n"
+            # Skip fully masked slides
+            if slide.get('_fully_masked', False):
+                continue
+
+            content += f"\\begin{{frame}}\n"
             content += f"\\frametitle{{{slide['title']}}}\n"
 
             if slide['media']:
@@ -19701,24 +22897,61 @@ Created by {self.__author__}
 
             content += "\\end{frame}\n"
 
-            # Add notes if not in slides_only mode
+            # Add notes with LaTeX support if not in slides_only mode
             if self.notes_mode.get() != "slides_only" and 'notes' in slide and slide['notes']:
-                content += "\\note{\n\\begin{itemize}\n"
-                for note in slide['notes']:
-                    if note.strip():
-                        note = note.lstrip('•- ').strip()
-                        content += f"\\item {note}\n"
-                content += "\\end{itemize}\n}\n"
-            note=""
+                notes_lines = slide['notes']
+
+                # Check if notes already have LaTeX formatting
+                notes_text = '\n'.join(notes_lines)
+                has_latex = any(cmd in notes_text for cmd in [
+                    '\\large', '\\small', '\\Huge', '\\textcolor', '\\textbf',
+                    '\\textit', '\\begin{itemize}', '\\begin{enumerate}',
+                    '\\item', '\\vspace', '\\hspace', '\\alert', '\\emph',
+                    '\\color', '\\textcolor', '\\cite', '\\url', '\\href'
+                ])
+
+                content += "\\note{\n"
+
+                if has_latex:
+                    # Preserve LaTeX commands in notes
+                    for note in notes_lines:
+                        if note.strip():
+                            content += f"{note}\n"
+                else:
+                    # Process plain text notes
+                    # Check if notes have bullet points
+                    has_bullets = any(note.strip().startswith(('-', '•')) for note in notes_lines)
+
+                    if has_bullets:
+                        content += "\\begin{itemize}\n"
+                        for note in notes_lines:
+                            stripped = note.strip()
+                            if stripped.startswith(('-', '•')):
+                                # Remove bullet prefix and add as item
+                                item_text = re.sub(r'^[-•]\s*', '', stripped)
+                                content += f"\\item {item_text}\n"
+                            elif stripped:
+                                content += f"{stripped}\n"
+                        content += "\\end{itemize}\n"
+                    else:
+                        # Plain text notes
+                        for note in notes_lines:
+                            if note.strip():
+                                # Remove any leading bullet symbols
+                                note_text = re.sub(r'^[-•]\s*', '', note.strip())
+                                content += f"{note_text}\n"
+
+                content += "}\n"
+
             content += "\n"
 
         content += "\\end{document}\n"
         return content
 
     def modify_preamble_for_notes(self, tex_content: str) -> str:
-        """Modify the preamble based on current notes mode"""
+        """Modify the preamble based on current notes mode with LaTeX support"""
         mode = self.notes_mode.get()
-        print(mode)
+
         # Define the notes configuration based on mode
         notes_configs = {
             "slides": "\\setbeameroption{hide notes}",
@@ -19727,6 +22960,7 @@ Created by {self.__author__}
         }
 
         # First, remove any existing notes configurations
+        import re
         tex_content = re.sub(r'%.*\\setbeameroption{[^}]*}.*\n', '', tex_content)
         tex_content = re.sub(r'\\setbeameroption{[^}]*}', '', tex_content)
 
@@ -19737,29 +22971,42 @@ Created by {self.__author__}
             package_line = ""
 
         # Get the appropriate notes configuration
-        notes_config = notes_configs[mode]
+        notes_config = notes_configs.get(mode, notes_configs["both"])
+
+        # Add note page template with proper formatting
+        note_template = """
+    % Note page template with LaTeX support
+    \\setbeamertemplate{note page}{%
+        \\pagecolor{yellow!5}
+        \\vspace{0.5cm}
+        \\begin{minipage}{\\textwidth}
+            \\insertnote
+        \\end{minipage}
+    }"""
 
         # Add the configuration just before \begin{document}
         doc_pos = tex_content.find("\\begin{document}")
         if doc_pos != -1:
-            insert_text = f"{package_line}% Notes configuration\n{notes_config}\n\\setbeamertemplate{{note page}}{{\\pagecolor{{yellow!5}}\\insertnote}}\n\n"
+            insert_text = f"{package_line}% Notes configuration\n{notes_config}\n{note_template}\n\n"
             tex_content = tex_content[:doc_pos] + insert_text + tex_content[doc_pos:]
 
         return tex_content
 
-    # ============================================================
-    # MODIFICATION 2: Modify load_file to preserve preamble
-    # ============================================================
 
     def load_file(self, filename: str) -> None:
-        """Load presentation from file with enhanced preamble extraction and preservation"""
+        """Load presentation from file with enhanced preamble extraction and merging"""
         try:
+            # Prevent recursive loading
+            if getattr(self, '_is_loading', False):
+                logger.info("Skipping recursive load_file call")
+                return
+
+            self._is_loading = True
+
             import re
             logger.info(f"Loading file: {filename}")
 
-            # CRITICAL: Set current_file BEFORE any other operations
             self.current_file = filename
-            # Update working directory
             global working_folder
             working_folder = os.path.dirname(filename) or '.'
             os.chdir(working_folder)
@@ -19773,90 +23020,107 @@ Created by {self.__author__}
             self.current_slide_index = -1
 
             # ========== EXTRACT AND PRESERVE PREAMBLE FROM FILE ==========
-            # Extract the complete preamble from the file content
             preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
             if preamble_match:
-                preamble_text = preamble_match.group(1).strip()
-                self.preamble_from_file = preamble_text
+                file_preamble = preamble_match.group(1).strip()
+                self.preamble_from_file = file_preamble
 
-                # Check if this is a combined preamble (contains extracted definitions)
-                if "% ====== PREAMBLE DEFINITIONS (Auto-extracted) =====" in preamble_text:
-                    self.preamble_origin = 'combined'
-                    self.write(f"✓ Loaded combined preamble from file\n", "green")
+                # ========== MERGE WITH DEFAULT PREAMBLE ==========
+                self.write("\n" + "="*60 + "\n", "cyan")
+                self.write("MERGE PREAMBLE WITH FILE\n", "cyan")
+                self.write("="*60 + "\n", "cyan")
+
+                # ============================================================
+                # CRITICAL FIX: Temporarily clear _is_loading flag so dialogs can appear
+                # ============================================================
+                self._is_loading = False
+
+                try:
+                    merged_preamble = self.merge_preamble_with_file(filename)
+                finally:
+                    # Restore the loading flag after merge completes
+                    self._is_loading = True
+
+                # ============================================================
+                # Update the file with merged preamble
+                # ============================================================
+                doc_pos = content.find('\\begin{document}')
+                if doc_pos != -1:
+                    document_body = content[doc_pos:]
+                    new_content = merged_preamble + "\n\n" + document_body
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    self.write(f"✓ Updated {os.path.basename(filename)} with merged preamble\n", "green")
+                    content = new_content
+                    self.preamble_from_file = merged_preamble
+                    self.preamble_origin = 'merged'
+                    self.custom_preamble = merged_preamble
+                    self.using_custom_preamble = True
                 else:
-                    self.preamble_origin = 'file'
-                    self.write(f"✓ Loaded preamble from file\n", "green")
-
-                # Store as custom preamble for use in the editor
-                self.custom_preamble = preamble_text
-                self.using_custom_preamble = True
+                    self.write("⚠ Could not find \\begin{document} in file, adding it\n", "yellow")
+                    new_content = merged_preamble + "\n\n\\begin{document}\n\n" + content
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    self.write(f"✓ Added preamble and \\begin{document} to {os.path.basename(filename)}\n", "green")
+                    content = new_content
+                    self.preamble_from_file = merged_preamble
+                    self.preamble_origin = 'merged'
+                    self.custom_preamble = merged_preamble
+                    self.using_custom_preamble = True
             else:
-                # No preamble found, use default
                 self.preamble_from_file = None
                 self.preamble_origin = 'default'
                 self.using_custom_preamble = False
                 self.write(f"ℹ No preamble found in file, using default\n", "cyan")
 
-            # ========== EXTRACT PREAMBLE INFORMATION ==========
-            # Extract and preserve preamble info for reconstruction
-            self.preamble_info = self._extract_preamble_info(content)
-            self.color_definitions = self._extract_color_definitions(content)
-            self.custom_packages = self._extract_custom_packages(content)
-
-            # ========== EXTRACT COLOR DEFINITIONS ==========
-            extracted_colors = {}
-            definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
-            for name, model, value in re.findall(definecolor_pattern, content):
-                extracted_colors[name.strip()] = (model.strip(), value.strip())
-
-            colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
-            for name, source in re.findall(colorlet_pattern, content):
-                extracted_colors[name.strip()] = ('colorlet', source.strip())
-
-            # Store extracted colors for later use
-            self._extracted_colors = extracted_colors
-
-            # ========== EXTRACT PACKAGES ==========
-            extracted_packages = set()
-            usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
-            for options, pkg_list in re.findall(usepackage_pattern, content):
-                for pkg in pkg_list.split(','):
-                    extracted_packages.add(pkg.strip())
-
-            # ========== DETECT MISSING PACKAGES ==========
-            missing_packages = set()
-            # Scan the entire content for package patterns
-            missing_packages.update(self.detect_missing_packages_from_content(content))
-
-            # Store missing packages
-            self._missing_packages = missing_packages
-
-            # ========== LOG EXTRACTED DEFINITIONS ==========
-            if extracted_colors:
-                logger.info(f"Found custom colors: {', '.join(extracted_colors.keys())}")
-                self.write(f"  ✓ Extracted {len(extracted_colors)} color definitions\n", "green")
-            if extracted_packages:
-                logger.info(f"Found custom packages: {', '.join(extracted_packages)}")
-                self.write(f"  ✓ Found {len(extracted_packages)} package imports\n", "green")
-            if missing_packages:
-                logger.info(f"Detected missing packages: {', '.join(missing_packages)}")
-                self.write(f"  ⚠ Detected {len(missing_packages)} missing packages to add\n", "yellow")
-
-            # Extract presentation info from preamble
+            # ============================================================
+            # Extract presentation metadata from the (possibly updated) content
+            # ============================================================
             for key in ['title', 'subtitle', 'author', 'institute', 'date']:
                 pattern = rf"\\{key}{{([^}}]*)}}"
                 match = re.search(pattern, content)
                 if match:
                     self.presentation_info[key] = match.group(1).strip()
+                    logger.info(f"Extracted {key}: {self.presentation_info[key]}")
 
-            # ========== DETECT FILE FORMAT - IMPROVED ==========
+            # ============================================================
+            # REMOVE EMPTY SLIDES FROM CONTENT BEFORE PARSING
+            # ============================================================
+            self.write("\n🔧 Cleaning up empty slides...\n", "cyan")
+
+            # Pattern for empty slides: \title with nothing after it, or \title with \None and no content
+            empty_slide_patterns = [
+                # Pattern 1: \title with no content (just \title and newline)
+                r'\\title\s*\n\s*\\begin{Content}\s*\\None\s*%?\s*\[?[^\]]*\]?\s*\\end{Content}\s*\\begin{Notes}\s*%?\s*\[?[^\]]*\]?\s*\\end{Notes}',
+                # Pattern 2: \title with empty title
+                r'\\title\s*\n\s*\\begin{Content}\s*\\None\s*%?\s*.*?\\end{Content}\s*\\begin{Notes}\s*%?\s*.*?\\end{Notes}',
+                # Pattern 3: Just \title with nothing after
+                r'\\title\s*$',
+                # Pattern 4: \title with only comments
+                r'\\title\s*\n\s*%[^\n]*\n\s*\\begin{Content}\s*\\None\s*\\end{Content}',
+            ]
+
+            original_content = content
+            for pattern in empty_slide_patterns:
+                content = re.sub(pattern, '', content, flags=re.DOTALL | re.MULTILINE)
+
+            # Clean up extra newlines
+            content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
+            content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)  # Double pass to be thorough
+
+            if content != original_content:
+                self.write("  ✓ Removed empty slides from content\n", "green")
+                # Update the file with cleaned content
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                self.write(f"  ✓ Updated {os.path.basename(filename)} (removed empty slides)\n", "green")
+
+            # ============================================================
+            # DETECT FILE FORMAT
+            # ============================================================
             has_old_format = '\\title' in content and '\\begin{Content}' in content
             has_new_format = '\\begin{frame}' in content
 
-            logger.info(f"File format detection - old: {has_old_format}, new: {has_new_format}")
-
-            # ========== PRIORITIZE OLD FORMAT IF DETECTED ==========
-            # The old format is more reliable because it's our native format
             if has_old_format:
                 logger.info("Using old format parser (title/content)")
                 slides_raw = self._parse_old_format_enhanced(content)
@@ -19867,85 +23131,190 @@ Created by {self.__author__}
                 logger.warning("No recognized format detected")
                 slides_raw = []
 
-            logger.info(f"Found {len(slides_raw)} slide blocks")
-
             if not slides_raw:
                 logger.error("No slides were loaded!")
-                messagebox.showerror("Error", "No slides could be loaded from the file!\n\n"
-                                   "The file may be empty or in an unsupported format.")
+                messagebox.showerror("Error", "No slides could be loaded from the file!")
+                self._is_loading = False
                 return
 
-            # Process each slide
+            # ============================================================
+            # PROCESS SLIDES - FILTER OUT EMPTY ONES AND HANDLE TITLE PAGES
+            # ============================================================
+            processed_slides = []
+            has_title_page = False
+
             for slide_idx, slide_data in enumerate(slides_raw):
-                # Process each slide
-                if isinstance(slide_data, dict) and 'lines' in slide_data:
-                    # Old format with lines
-                    slide = self._process_old_format_slide_enhanced(slide_data, slide_idx)
-                elif isinstance(slide_data, dict):
-                    # New format or already processed
-                    slide = slide_data
+                # Check if this is an empty slide
+                is_empty = False
+                is_title_page = False
+
+                if isinstance(slide_data, dict):
+                    # Check if this is a title page
+                    if slide_data.get('is_title_page', False):
+                        is_title_page = True
+                        # Convert to proper title page format
+                        slide = {
+                            'title': 'Title Page',
+                            'media': '',
+                            'content': ['\\begin{frame}[plain]', '\\titlepage', '\\end{frame}'],
+                            'notes': [],
+                            '_hidden_content_indices': [],
+                            '_hidden_note_indices': [],
+                            '_media_masked': False,
+                            '_fully_masked': False,
+                            '_is_title_page': True
+                        }
+                        processed_slides.append(slide)
+                        has_title_page = True
+                        self.write("  ✓ Found and converted title page\n", "green")
+                        continue
+
+                    # Check for empty title
+                    title = slide_data.get('title', '')
+                    if not title or not title.strip() or title == "Untitled" or title == "Slide":
+                        # Check if there's any content
+                        content_lines = slide_data.get('content', [])
+                        notes_lines = slide_data.get('notes', [])
+                        media = slide_data.get('media', '')
+
+                        # Check if content is empty or only \None
+                        has_content = False
+                        for line in content_lines:
+                            if line and line.strip() and line.strip() != "\\None" and not line.strip().startswith('%'):
+                                has_content = True
+                                break
+
+                        # Check if notes have content
+                        has_notes = False
+                        for line in notes_lines:
+                            if line and line.strip() and not line.strip().startswith('%'):
+                                has_notes = True
+                                break
+
+                        # Check if media has content
+                        has_media = media and media.strip() and media.strip() != "\\None"
+
+                        if not has_content and not has_notes and not has_media:
+                            is_empty = True
+                            self.write(f"  ℹ Skipping empty slide: '{title}'\n", "yellow")
                 else:
-                    # Fallback
-                    slide = {
-                        'title': f"Slide {slide_idx + 1}",
+                    # Not a dict - might be a raw slide string, check if empty
+                    if isinstance(slide_data, str):
+                        if not slide_data.strip() or slide_data.strip() == "\\title":
+                            is_empty = True
+
+                if not is_empty and not is_title_page:
+                    if isinstance(slide_data, dict) and 'lines' in slide_data:
+                        slide = self._process_old_format_slide_enhanced(slide_data, slide_idx)
+                    elif isinstance(slide_data, dict):
+                        slide = slide_data
+                    else:
+                        # For string slides, wrap them
+                        slide = {
+                            'title': f"Slide {slide_idx + 1}",
+                            'media': '',
+                            'content': [str(slide_data)] if slide_data else [],
+                            'notes': [],
+                            '_hidden_content_indices': [],
+                            '_hidden_note_indices': [],
+                            '_media_masked': False,
+                            '_fully_masked': False
+                        }
+
+                    # Check if this slide contains \titlepage command (shouldn't happen after parser fix)
+                    content = slide.get('content', [])
+                    if any('\\titlepage' in line for line in content):
+                        # Convert to proper title page
+                        slide = {
+                            'title': 'Title Page',
+                            'media': '',
+                            'content': ['\\begin{frame}[plain]', '\\titlepage', '\\end{frame}'],
+                            'notes': [],
+                            '_hidden_content_indices': [],
+                            '_hidden_note_indices': [],
+                            '_media_masked': False,
+                            '_fully_masked': False,
+                            '_is_title_page': True
+                        }
+                        has_title_page = True
+                        self.write("  ✓ Converted slide with \\titlepage to proper title page\n", "green")
+
+                    processed_slides.append(slide)
+
+            self.slides = processed_slides
+
+            # ============================================================
+            # ENSURE TITLE PAGE EXISTS
+            # ============================================================
+            if not has_title_page and self.slides:
+                # Check if any slide has title page content
+                for slide in self.slides:
+                    content = slide.get('content', [])
+                    if any('\\titlepage' in line for line in content):
+                        has_title_page = True
+                        break
+
+                if not has_title_page:
+                    # Create a title page
+                    title_page = {
+                        'title': 'Title Page',
                         'media': '',
-                        'content': [],
+                        'content': ['\\begin{frame}[plain]', '\\titlepage', '\\end{frame}'],
                         'notes': [],
                         '_hidden_content_indices': [],
                         '_hidden_note_indices': [],
                         '_media_masked': False,
-                        '_fully_masked': False
+                        '_fully_masked': False,
+                        '_is_title_page': True
                     }
+                    self.slides.insert(0, title_page)
+                    self.write("  ✓ Added title page slide\n", "green")
+                    # Update current slide index if needed
+                    if self.current_slide_index >= 0:
+                        self.current_slide_index += 1
 
-                self.slides.append(slide)
-                logger.info(f"Slide {len(self.slides)}: '{slide.get('title', 'Untitled')[:50]}' "
-                           f"(content_lines={len(slide.get('content', []))})")
+            # ============================================================
+            # ADD A DEFAULT SLIDE IF NONE WERE LOADED
+            # ============================================================
+            if not self.slides:
+                self.write("  ℹ No valid slides found, creating a default slide\n", "yellow")
+                self.slides = [{
+                    'title': 'New Slide',
+                    'media': '',
+                    'content': ['- Add your content here'],
+                    'notes': ['• Add your notes here'],
+                    '_hidden_content_indices': [],
+                    '_hidden_note_indices': [],
+                    '_media_masked': False,
+                    '_fully_masked': False
+                }]
 
+            # ============================================================
+            # LOAD FIRST SLIDE
+            # ============================================================
             if self.slides:
                 self.current_slide_index = 0
                 self.load_slide(0)
             else:
                 logger.error("No slides were loaded!")
                 messagebox.showerror("Error", "No slides could be loaded from the file!")
+                self._is_loading = False
                 return
 
+            # ============================================================
+            # UPDATE UI
+            # ============================================================
             self.update_slide_list()
+            self.write(f"✓ Loaded {len(self.slides)} slides from {os.path.basename(filename)}\n", "green")
 
-            # Show loading summary with extracted definitions
-            summary_parts = [f"✓ Loaded {len(self.slides)} slides"]
-            if extracted_colors:
-                color_names = ', '.join(list(extracted_colors.keys())[:5])
-                if len(extracted_colors) > 5:
-                    color_names += f" +{len(extracted_colors)-5} more"
-                summary_parts.append(f"🎨 {len(extracted_colors)} colors: {color_names}")
-            if extracted_packages:
-                summary_parts.append(f"📦 {len(extracted_packages)} packages")
-            if missing_packages:
-                pkg_names = ', '.join(list(missing_packages)[:5])
-                if len(missing_packages) > 5:
-                    pkg_names += f" +{len(missing_packages)-5} more"
-                summary_parts.append(f"⚠ {len(missing_packages)} packages to add: {pkg_names}")
-
-            # Add preamble origin info
-            if self.preamble_origin == 'combined':
-                summary_parts.append("🔗 Combined preamble")
-            elif self.preamble_origin == 'file':
-                summary_parts.append("📄 File preamble")
-            else:
-                summary_parts.append("⚙️ Default preamble")
-
-            self.write(" | ".join(summary_parts) + "\n", "green")
-
-            # If there are missing packages, prompt user
-            if missing_packages:
-                self.write(f"\n💡 Tip: The following packages may need to be added: {', '.join(missing_packages)}\n", "cyan")
-                self.write("  They will be automatically included when you generate PDF.\n", "cyan")
+            self._is_loading = False
 
         except Exception as e:
             error_msg = f"Error loading file: {str(e)}"
             logger.error(error_msg, exc_info=True)
             self.write(f"✗ {error_msg}\n", "red")
             messagebox.showerror("Error", f"Error loading file:\n{str(e)}")
+            self._is_loading = False
 
     # ============================================================
     # MODIFICATION 3: Modify save_file to use preamble from file
@@ -20191,8 +23560,7 @@ Created by {self.__author__}
     def merge_preamble(self) -> None:
         """
         Merge definitions from the current preamble (from file or TeX import)
-        into the default preamble. This updates the default preamble with
-        custom color definitions, package imports, and other settings.
+        into the default preamble with conflict resolution.
         """
         try:
             # Determine source preamble
@@ -20214,189 +23582,30 @@ Created by {self.__author__}
             # Generate the default preamble
             default_preamble = self.get_default_preamble()
 
-            # Extract definitions from source preamble
-            import re
+            # --- NEW: Check for conflicts ---
+            resolver = PreambleConflictResolver(self)
+            conflicts = resolver.detect_conflicts(default_preamble, source_preamble)
 
-            # Extract color definitions
-            colors = []
-            definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
-            for name, model, value in re.findall(definecolor_pattern, source_preamble):
-                colors.append((name.strip(), model.strip(), value.strip()))
+            if conflicts:
+                self.write(f"\n⚠ Found {len(conflicts)} conflict(s) between preambles:\n", "yellow")
+                for c in conflicts:
+                    self.write(f"  • \\{c['name']} - conflicting definitions\n", "yellow")
 
-            colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
-            for name, source in re.findall(colorlet_pattern, source_preamble):
-                colors.append((name.strip(), 'colorlet', source.strip()))
+                # Show conflict resolution dialog
+                merged_preamble = resolver.resolve_conflicts(default_preamble, source_preamble)
 
-            # Extract package imports
-            packages = []
-            usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
-            for options, pkg_list in re.findall(usepackage_pattern, source_preamble):
-                for pkg in pkg_list.split(','):
-                    pkg = pkg.strip()
-                    if pkg:
-                        packages.append((pkg, options if options else ''))
-
-            # Extract theme
-            theme_match = re.search(r'\\usetheme\{([^}]+)\}', source_preamble)
-            theme = theme_match.group(1) if theme_match else None
-
-            # Extract color theme
-            colortheme_match = re.search(r'\\usecolortheme\{([^}]+)\}', source_preamble)
-            colortheme = colortheme_match.group(1) if colortheme_match else None
-
-            # Extract font theme
-            fonttheme_match = re.search(r'\\usefonttheme\{([^}]+)\}', source_preamble)
-            fonttheme = fonttheme_match.group(1) if fonttheme_match else None
-
-            # Extract other settings
-            settings = []
-            setbeamercolor_pattern = r'\\setbeamercolor\{([^}]+)\}\{([^}]+)\}'
-            for name, value in re.findall(setbeamercolor_pattern, source_preamble):
-                settings.append(('setbeamercolor', name, value))
-
-            setbeamerfont_pattern = r'\\setbeamerfont\{([^}]+)\}\{([^}]+)\}'
-            for name, value in re.findall(setbeamerfont_pattern, source_preamble):
-                settings.append(('setbeamerfont', name, value))
-
-            # Build the merged preamble
-            merged_parts = []
-
-            # Start with documentclass
-            docclass_match = re.search(r'\\documentclass(?:\[[^\]]*\])?\{[^}]+\}', default_preamble)
-            if docclass_match:
-                merged_parts.append(docclass_match.group(0))
+                # Check if user cancelled (all conflicts unresolved)
+                if any(c['resolution'] is None for c in conflicts):
+                    self.write("⚠ Merge cancelled by user\n", "yellow")
+                    return
             else:
-                merged_parts.append("\\documentclass[aspectratio=169]{beamer}")
+                # No conflicts, merge normally
+                self.write("✓ No conflicts detected, merging preambles...\n", "green")
+                merged_preamble = self._merge_preamble_without_conflicts(default_preamble, source_preamble)
 
-            merged_parts.append("")
-
-            # Add theme if found
-            if theme:
-                merged_parts.append(f"\\usetheme{{{theme}}}")
-            if colortheme:
-                merged_parts.append(f"\\usecolortheme{{{colortheme}}}")
-            if fonttheme:
-                merged_parts.append(f"\\usefonttheme{{{fonttheme}}}")
-            if theme or colortheme or fonttheme:
-                merged_parts.append("")
-
-            # Add packages from source (excluding duplicates)
-            added_packages = set()
-            for pkg, options in packages:
-                if pkg not in added_packages:
-                    if options:
-                        merged_parts.append(f"\\usepackage[{options}]{{{pkg}}}")
-                    else:
-                        merged_parts.append(f"\\usepackage{{{pkg}}}")
-                    added_packages.add(pkg)
-
-            # Add essential packages if missing
-            essential = ['graphicx', 'xcolor', 'amsmath', 'amssymb']
-            for pkg in essential:
-                if pkg not in added_packages:
-                    merged_parts.append(f"\\usepackage{{{pkg}}}")
-                    added_packages.add(pkg)
-
-            merged_parts.append("")
-
-            # Add color definitions
-            if colors:
-                merged_parts.append("% Color definitions")
-                for name, model, value in colors:
-                    if model == 'colorlet':
-                        merged_parts.append(f"\\colorlet{{{name}}}{{{value}}}")
-                    else:
-                        merged_parts.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
-                merged_parts.append("")
-
-            # Add settings
-            for setting_type, name, value in settings:
-                merged_parts.append(f"\\{setting_type}{{{name}}}{{{value}}}")
-
-            # Add siunitx config if needed
-            if 'siunitx' in added_packages:
-                merged_parts.append("\\sisetup{")
-                merged_parts.append("    per-mode = symbol,")
-                merged_parts.append("    output-decimal-marker = {.},")
-                merged_parts.append("    group-separator = {,}")
-                merged_parts.append("}")
-                merged_parts.append("")
-
-            # Add logo if present
-            logo_match = re.search(r'\\logo\{[^}]+\}', source_preamble)
-            if logo_match:
-                merged_parts.append(logo_match.group(0))
-                merged_parts.append("")
-
-            # Add \begin{document}
-            merged_parts.append("\\begin{document}")
-
-            merged_preamble = "\n".join(merged_parts)
-
+            # ... rest of the existing merge_preamble code ...
             # Show preview and ask for confirmation
-            preview_dialog = ctk.CTkToplevel(self)
-            preview_dialog.title("Merge Preamble Preview")
-            preview_dialog.geometry("700x500")
-            preview_dialog.transient(self)
-            preview_dialog.grab_set()
-
-            # Center dialog
-            preview_dialog.update_idletasks()
-            x = (preview_dialog.winfo_screenwidth() - 700) // 2
-            y = (preview_dialog.winfo_screenheight() - 500) // 2
-            preview_dialog.geometry(f"+{x}+{y}")
-
-            # Text widget for preview
-            text_widget = ctk.CTkTextbox(preview_dialog, font=("Courier", 10))
-            text_widget.pack(fill="both", expand=True, padx=10, pady=10)
-            text_widget.insert("1.0", merged_preamble)
-            text_widget.configure(state="disabled")
-
-            # Buttons
-            button_frame = ctk.CTkFrame(preview_dialog)
-            button_frame.pack(fill="x", padx=10, pady=10)
-
-            def apply_merge():
-                """Apply the merged preamble"""
-                self.custom_preamble = merged_preamble
-                self.using_custom_preamble = True
-                self.preamble_origin = 'merged'
-                self.preamble_from_file = merged_preamble
-                preview_dialog.destroy()
-                self.write("✓ Preamble merged successfully\n", "green")
-                messagebox.showinfo("Success", "Preamble merged successfully!")
-
-            def cancel_merge():
-                preview_dialog.destroy()
-
-            ctk.CTkButton(
-                button_frame,
-                text="Apply Merge",
-                command=apply_merge,
-                width=120,
-                fg_color="#28a745"
-            ).pack(side="left", padx=5)
-
-            ctk.CTkButton(
-                button_frame,
-                text="Cancel",
-                command=cancel_merge,
-                width=120,
-                fg_color="#dc3545"
-            ).pack(side="right", padx=5)
-
-            # Show summary in terminal
-            self.write(f"\n📋 Preamble Merge Summary:\n", "cyan")
-            self.write(f"  • Source: {source_name}\n", "white")
-            self.write(f"  • Colors: {len(colors)}\n", "white")
-            self.write(f"  • Packages: {len(packages)}\n", "white")
-            if theme:
-                self.write(f"  • Theme: {theme}\n", "white")
-            if colortheme:
-                self.write(f"  • Color Theme: {colortheme}\n", "white")
-            if fonttheme:
-                self.write(f"  • Font Theme: {fonttheme}\n", "white")
-            self.write(f"  • Settings: {len(settings)}\n", "white")
+            self._show_merge_preview(merged_preamble, source_name, len(conflicts))
 
         except Exception as e:
             error_msg = f"Error merging preamble: {str(e)}"
@@ -20404,6 +23613,123 @@ Created by {self.__author__}
             messagebox.showerror("Error", error_msg)
             import traceback
             traceback.print_exc()
+
+    def _merge_preamble_without_conflicts(self, default_preamble: str, source_preamble: str) -> str:
+        """
+        Merge two preambles without conflicts (simple merge).
+        """
+        import re
+
+        # Extract definitions from source preamble
+        colors = []
+        definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for name, model, value in re.findall(definecolor_pattern, source_preamble):
+            colors.append((name.strip(), model.strip(), value.strip()))
+
+        colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+        for name, source in re.findall(colorlet_pattern, source_preamble):
+            colors.append((name.strip(), 'colorlet', source.strip()))
+
+        packages = []
+        usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        for options, pkg_list in re.findall(usepackage_pattern, source_preamble):
+            for pkg in pkg_list.split(','):
+                pkg = pkg.strip()
+                if pkg:
+                    packages.append((pkg, options if options else ''))
+
+        # Build merged preamble
+        merged_parts = [default_preamble]
+
+        # Add new packages (not already in default)
+        added_packages = set()
+        # Extract existing packages from default
+        existing_packages = set(re.findall(r'\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}', default_preamble))
+        for pkg_list in existing_packages:
+            for pkg in pkg_list.split(','):
+                added_packages.add(pkg.strip())
+
+        for pkg, options in packages:
+            if pkg not in added_packages:
+                if options:
+                    merged_parts.append(f"\\usepackage[{options}]{{{pkg}}}")
+                else:
+                    merged_parts.append(f"\\usepackage{{{pkg}}}")
+                added_packages.add(pkg)
+
+        # Add colors
+        if colors:
+            merged_parts.append("\n% Color definitions")
+            for name, model, value in colors:
+                if model == 'colorlet':
+                    merged_parts.append(f"\\colorlet{{{name}}}{{{value}}}")
+                else:
+                    merged_parts.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
+
+        merged_preamble = "\n".join(merged_parts)
+        return merged_preamble
+
+    def _show_merge_preview(self, merged_preamble: str, source_name: str, conflict_count: int):
+        """Show a preview of the merged preamble with conflict resolution summary"""
+        preview_dialog = ctk.CTkToplevel(self)
+        preview_dialog.title("Merge Preamble Preview")
+        preview_dialog.geometry("700x500")
+        preview_dialog.transient(self)
+        preview_dialog.grab_set()
+
+        # Center dialog
+        preview_dialog.update_idletasks()
+        x = (preview_dialog.winfo_screenwidth() - 700) // 2
+        y = (preview_dialog.winfo_screenheight() - 500) // 2
+        preview_dialog.geometry(f"+{x}+{y}")
+
+        # Summary frame
+        summary_frame = ctk.CTkFrame(preview_dialog)
+        summary_frame.pack(fill="x", padx=10, pady=10)
+
+        summary_text = f"Source: {source_name}\nConflicts Resolved: {conflict_count}\n"
+        if conflict_count > 0:
+            summary_text += "✅ All conflicts resolved using your choices"
+        ctk.CTkLabel(summary_frame, text=summary_text, font=("Arial", 12)).pack(anchor="w", padx=5)
+
+        # Text widget for preview
+        text_widget = ctk.CTkTextbox(preview_dialog, font=("Courier", 10))
+        text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+        text_widget.insert("1.0", merged_preamble)
+        text_widget.configure(state="disabled")
+
+        # Buttons
+        button_frame = ctk.CTkFrame(preview_dialog)
+        button_frame.pack(fill="x", padx=10, pady=10)
+
+        def apply_merge():
+            """Apply the merged preamble"""
+            self.custom_preamble = merged_preamble
+            self.using_custom_preamble = True
+            self.preamble_origin = 'merged'
+            self.preamble_from_file = merged_preamble
+            preview_dialog.destroy()
+            self.write("✓ Preamble merged successfully\n", "green")
+            messagebox.showinfo("Success", f"Preamble merged successfully!\nResolved {conflict_count} conflicts.")
+
+        def cancel_merge():
+            preview_dialog.destroy()
+
+        ctk.CTkButton(
+            button_frame,
+            text="Apply Merge",
+            command=apply_merge,
+            width=120,
+            fg_color="#28a745"
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            button_frame,
+            text="Cancel",
+            command=cancel_merge,
+            width=120,
+            fg_color="#dc3545"
+        ).pack(side="right", padx=5)
 
     # ============================================================
     # MODIFICATION 6: Add reset_to_default_preamble method
@@ -20454,6 +23780,913 @@ Created by {self.__author__}
             self.write("✓ Custom preamble saved and will be used for all future PDF generation\n", "green")
             self.write("  To reset to default, use the 'Reset to Default' button in the editor\n", "cyan")
 
+    def _get_safe_current_preamble(self) -> str:
+        """
+        Get the current preamble safely, with fallbacks.
+        """
+        # Check multiple sources in priority order
+        if hasattr(self, 'custom_preamble') and self.custom_preamble and self.using_custom_preamble:
+            return self.custom_preamble
+        elif self.preamble_from_file:
+            return self.preamble_from_file
+        else:
+            return self.get_custom_preamble()
+
+
+    def _extract_safe_preamble_definitions(self, preamble: str) -> dict:
+        """
+        Extract ALL definitions from preamble with validation.
+        Skips malformed or dangerous definitions.
+        """
+        import re
+
+        definitions = {
+            'packages': [],
+            'package_options': {},
+            'colors': {},
+            'colorlets': {},
+            'tikzlibraries': [],
+            'pgfplotsset': [],
+            'beamercolors': [],
+            'beamerfonts': [],
+            'beamertemplates': [],
+            'beamersizes': [],
+            'custom_commands': [],
+            'def_commands': [],
+            'let_commands': [],
+            'theme': '',
+            'colortheme': '',
+            'fonttheme': '',
+            'sisetup': '',
+            'hypersetup': '',
+            'arraystretch': '',
+            'parskip': '',
+            'itemsep': '',
+            'topsep': '',
+            'footline': '',
+            'logo': '',
+            'title': '',
+            'subtitle': '',
+            'author': '',
+            'institute': '',
+            'date': '',
+            'shortinstitute': '',
+            'note_page': '',
+            'navigation_symbols': '',
+            'critical_fixes': [],
+            'progress_bar': '',
+            'spacing_settings': [],
+            'frame_helpers': [],
+        }
+
+        # ============================================================
+        # Safe package extraction
+        # ============================================================
+        usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        for options, pkg_list in re.findall(usepackage_pattern, preamble):
+            for pkg in pkg_list.split(','):
+                pkg = pkg.strip()
+                if pkg and not pkg.startswith('%'):
+                    definitions['packages'].append(pkg)
+                    if options:
+                        definitions['package_options'][pkg] = options
+
+        # ============================================================
+        # Safe color extraction - skip malformed colors
+        # ============================================================
+        definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for name, model, value in re.findall(definecolor_pattern, preamble):
+            if name and model and value and not name.startswith('%'):
+                if model.upper() in ['RGB', 'HTML', 'CMYK', 'GRAY']:
+                    definitions['colors'][name.strip()] = (model.strip(), value.strip())
+
+        colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+        for name, source in re.findall(colorlet_pattern, preamble):
+            if name and source and not name.startswith('%'):
+                definitions['colorlets'][name.strip()] = source.strip()
+
+        # ============================================================
+        # Safe TikZ library extraction
+        # ============================================================
+        tikzlib_pattern = r'\\usetikzlibrary\s*\{([^}]+)\}'
+        for libs in re.findall(tikzlib_pattern, preamble):
+            for lib in libs.split(','):
+                lib = lib.strip()
+                if lib and not lib.startswith('%'):
+                    definitions['tikzlibraries'].append(lib)
+
+        # ============================================================
+        # Safe pgfplots extraction
+        # ============================================================
+        pgfplotsset_pattern = r'\\pgfplotsset\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        for settings in re.findall(pgfplotsset_pattern, preamble, re.DOTALL):
+            if settings and settings.strip():
+                if any(key in settings for key in ['compat', 'xlabel', 'ylabel', 'grid', 'legend']):
+                    definitions['pgfplotsset'].append(settings.strip())
+
+        # ============================================================
+        # Safe beamer color extraction - validate braces
+        # ============================================================
+        beamercolor_pattern = r'\\setbeamercolor\s*\{([^}]*)\}\s*\{([^}]*)\}'
+        for name, value in re.findall(beamercolor_pattern, preamble):
+            if name and value and not name.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamercolors'].append((name.strip(), value.strip()))
+
+        # ============================================================
+        # Safe beamer font extraction
+        # ============================================================
+        beamerfont_pattern = r'\\setbeamerfont\s*\{([^}]*)\}\s*\{([^}]*)\}'
+        for name, value in re.findall(beamerfont_pattern, preamble):
+            if name and value and not name.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamerfonts'].append((name.strip(), value.strip()))
+
+        # ============================================================
+        # Safe beamer template extraction
+        # ============================================================
+        beamertemplate_pattern = r'\\setbeamertemplate\s*\{([^}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        for name, value in re.findall(beamertemplate_pattern, preamble, re.DOTALL):
+            if name and value and not name.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamertemplates'].append((name.strip(), value.strip()))
+
+        # ============================================================
+        # Safe beamer size extraction
+        # ============================================================
+        beamersize_pattern = r'\\setbeamersize\s*\{([^}]*)\}'
+        for value in re.findall(beamersize_pattern, preamble):
+            if value and value.strip() and not value.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamersizes'].append(value.strip())
+
+        # ============================================================
+        # Safe custom command extraction - CRITICAL: Preserve layout commands
+        # ============================================================
+        layout_commands = ['split', 'pip', 'tb', 'hl', 'ff', 'wm', 'bg', 'ol', 'corner', 'mosaic', 'insertshortinstitute']
+
+        # Check for guarded commands - using non-f-string regex compilation for safety
+        for cmd in layout_commands:
+            # Build pattern without f-string to avoid escaping issues
+            # Pattern: \ifcsname cmd\endcsname\else\newcommand{\cmd}...\fi
+            guarded_pattern = r'\\ifcsname\s*' + re.escape(cmd) + r'\s*\\endcsname\s*\\else\s*(\\newcommand\{\\' + re.escape(cmd) + r'\}(?:\[[^\]]*\])?\{[^}]*\})\s*\\fi'
+            match = re.search(guarded_pattern, preamble, re.DOTALL)
+            if match:
+                definitions['custom_commands'].append(match.group(1).strip())
+                continue
+
+            # Look for unguarded but correct definition
+            # Pattern: \newcommand{\cmd}... or \newcommand{\cmd}[2]...
+            unguarded_pattern = r'\\newcommand\{\\' + re.escape(cmd) + r'\}(?:\[[^\]]*\])?\{[^}]*\}'
+            match = re.search(unguarded_pattern, preamble, re.DOTALL)
+            if match:
+                cmd_def = match.group(0)
+                # Check if it has the correct number of parameters
+                if cmd in ['ff', 'wm', 'bg', 'ol']:
+                    if '[1]' in cmd_def:
+                        definitions['custom_commands'].append(cmd_def.strip())
+                elif cmd == 'insertshortinstitute':
+                    # Check for \def\insertshortinstitute
+                    if '\\def\\insertshortinstitute' in cmd_def:
+                        definitions['custom_commands'].append(cmd_def.strip())
+                else:
+                    if '[2]' in cmd_def:
+                        definitions['custom_commands'].append(cmd_def.strip())
+
+        # ============================================================
+        # Safe extraction of arraystretch - validate value
+        # ============================================================
+        arraystretch_pattern = r'\\renewcommand\{\\arraystretch\}\{([^}]*)\}'
+        matches = re.findall(arraystretch_pattern, preamble)
+        for value in matches:
+            if value and value.strip():
+                try:
+                    val = float(value.strip())
+                    if 0.5 <= val <= 2.0:
+                        definitions['arraystretch'] = value.strip()
+                        break
+                except ValueError:
+                    pass
+
+        # ============================================================
+        # Safe extraction of spacing settings
+        # ============================================================
+        parskip_pattern = r'\\setlength\{\\parskip\}\{([^}]*)\}'
+        matches = re.findall(parskip_pattern, preamble)
+        for value in matches:
+            if value and value.strip():
+                if any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
+                    definitions['parskip'] = value.strip()
+                    break
+
+        # ============================================================
+        # Extract critical LaTeX fixes
+        # ============================================================
+        critical_fixes = []
+        for fix in ['\\overfullrule=0pt', '\\sloppy', '\\tolerance=9999',
+                    '\\emergencystretch=3em', '\\hfuzz=2pt', '\\raggedright']:
+            if fix in preamble:
+                critical_fixes.append(fix)
+        definitions['critical_fixes'] = critical_fixes
+
+        # ============================================================
+        # Extract themes - skip if malformed
+        # ============================================================
+        theme_match = re.search(r'\\usetheme\s*\{([^}]+)\}', preamble)
+        if theme_match and not theme_match.group(1).startswith('%'):
+            definitions['theme'] = theme_match.group(1).strip()
+
+        colortheme_match = re.search(r'\\usecolortheme\s*\{([^}]+)\}', preamble)
+        if colortheme_match and not colortheme_match.group(1).startswith('%'):
+            definitions['colortheme'] = colortheme_match.group(1).strip()
+
+        fonttheme_match = re.search(r'\\usefonttheme\s*\{([^}]+)\}', preamble)
+        if fonttheme_match and not fonttheme_match.group(1).startswith('%'):
+            definitions['fonttheme'] = fonttheme_match.group(1).strip()
+
+        # ============================================================
+        # Extract title, author, etc.
+        # ============================================================
+        title_match = re.search(r'\\title\s*\{([^}]*)\}', preamble)
+        if title_match:
+            definitions['title'] = title_match.group(1).strip()
+
+        subtitle_match = re.search(r'\\subtitle\s*\{([^}]*)\}', preamble)
+        if subtitle_match:
+            definitions['subtitle'] = subtitle_match.group(1).strip()
+
+        author_match = re.search(r'\\author\s*\{([^}]*)\}', preamble)
+        if author_match:
+            definitions['author'] = author_match.group(1).strip()
+
+        institute_match = re.search(r'\\institute\s*\{([^}]*)\}', preamble)
+        if institute_match:
+            definitions['institute'] = institute_match.group(1).strip()
+
+        date_match = re.search(r'\\date\s*\{([^}]*)\}', preamble)
+        if date_match:
+            definitions['date'] = date_match.group(1).strip()
+
+        # ============================================================
+        # Extract logo
+        # ============================================================
+        logo_match = re.search(r'\\logo\s*\{([^}]*)\}', preamble)
+        if logo_match:
+            definitions['logo'] = logo_match.group(1).strip()
+
+        return definitions
+
+
+    def _merge_preamble_definitions_safe(self, existing: dict, new: dict) -> dict:
+        """
+        Safely merge definitions, preserving existing settings and only adding new ones.
+        Conflicts are resolved in favor of existing settings (user preferences).
+        """
+        merged = {
+            # Packages: combine both, deduplicate
+            'packages': list(set(existing['packages'] + new['packages'])),
+            'package_options': {**existing['package_options'], **new['package_options']},
+
+            # Colors: keep existing, add new
+            'colors': {**new['colors'], **existing['colors']},  # Existing override new
+            'colorlets': {**new['colorlets'], **existing['colorlets']},
+
+            # TikZ: combine
+            'tikzlibraries': list(set(existing['tikzlibraries'] + new['tikzlibraries'])),
+            'pgfplotsset': existing['pgfplotsset'] + new['pgfplotsset'],
+
+            # Beamer settings: keep existing, add new
+            'beamercolors': existing['beamercolors'] + new['beamercolors'],
+            'beamerfonts': existing['beamerfonts'] + new['beamerfonts'],
+            'beamertemplates': existing['beamertemplates'] + new['beamertemplates'],
+            'beamersizes': existing['beamersizes'] + new['beamersizes'],
+
+            # Custom commands: keep existing, add new if not already present
+            'custom_commands': self._merge_custom_commands(existing['custom_commands'], new['custom_commands']),
+            'def_commands': existing['def_commands'] + new['def_commands'],
+            'let_commands': existing['let_commands'] + new['let_commands'],
+
+            # Themes: keep existing if present, otherwise use new
+            'theme': existing['theme'] or new['theme'],
+            'colortheme': existing['colortheme'] or new['colortheme'],
+            'fonttheme': existing['fonttheme'] or new['fonttheme'],
+
+            # Settings: keep existing if present
+            'sisetup': existing['sisetup'] or new['sisetup'],
+            'hypersetup': existing['hypersetup'] or new['hypersetup'],
+            'arraystretch': existing['arraystretch'] or new['arraystretch'],
+            'parskip': existing['parskip'] or new['parskip'],
+            'itemsep': existing['itemsep'] or new['itemsep'],
+            'topsep': existing['topsep'] or new['topsep'],
+            'footline': existing['footline'] or new['footline'],
+            'logo': existing['logo'] or new['logo'],
+
+            # Metadata: keep existing if present
+            'title': existing['title'] or new['title'],
+            'subtitle': existing['subtitle'] or new['subtitle'],
+            'author': existing['author'] or new['author'],
+            'institute': existing['institute'] or new['institute'],
+            'date': existing['date'] or new['date'],
+            'shortinstitute': existing['shortinstitute'] or new['shortinstitute'],
+            'note_page': existing['note_page'] or new['note_page'],
+            'navigation_symbols': existing['navigation_symbols'] or new['navigation_symbols'],
+
+            'critical_fixes': existing['critical_fixes'] + new['critical_fixes'],
+        }
+
+        return merged
+
+
+    def _merge_custom_commands(self, existing: list, new: list) -> list:
+        """
+        Merge custom commands, keeping existing definitions.
+        If a command is defined in both, keep the existing one.
+        """
+        # Extract command names from definitions
+        import re
+
+        def get_cmd_name(cmd_def):
+            match = re.search(r'\\(?:re)?newcommand\{\\([^}]+)\}', cmd_def)
+            if match:
+                return match.group(1)
+            match = re.search(r'\\def\\([a-zA-Z]+)', cmd_def)
+            if match:
+                return match.group(1)
+            match = re.search(r'\\let\\([a-zA-Z]+)', cmd_def)
+            if match:
+                return match.group(1)
+            return None
+
+        # Build map of existing commands
+        existing_map = {}
+        for cmd in existing:
+            name = get_cmd_name(cmd)
+            if name:
+                existing_map[name] = cmd
+
+        # Only add new commands that don't conflict
+        result = existing.copy()
+        for cmd in new:
+            name = get_cmd_name(cmd)
+            if name and name not in existing_map:
+                result.append(cmd)
+
+        return result
+
+
+    def _generate_safe_merged_preamble(self, merged_defs: dict, existing_defs: dict) -> str:
+        """
+        Generate the final merged preamble with all safety checks.
+        """
+        lines = []
+
+        # ============================================================
+        # Documentclass
+        # ============================================================
+        lines.append("\\documentclass[aspectratio=169]{beamer}")
+
+        # ============================================================
+        # Critical LaTeX fixes
+        # ============================================================
+        if merged_defs.get('critical_fixes'):
+            lines.append("")
+            lines.append("% ====== CRITICAL FIXES ======")
+            for fix in merged_defs['critical_fixes']:
+                lines.append(fix)
+            lines.append("% ===========================")
+
+        # ============================================================
+        # Essential packages
+        # ============================================================
+        essential_packages = ['hyperref', 'graphicx', 'amsmath', 'tikz', 'pgfplots',
+                              'xstring', 'animate', 'multimedia', 'xifthen', 'xcolor',
+                              'booktabs', 'adjustbox', 'environ', 'array', 'multirow',
+                              'textcomp', 'pgfpages']
+
+        lines.append("")
+        lines.append("% Essential packages")
+        for pkg in essential_packages:
+            if pkg in merged_defs['packages']:
+                opts = merged_defs['package_options'].get(pkg, '')
+                if opts:
+                    lines.append(f"\\usepackage[{opts}]{{{pkg}}}")
+                else:
+                    lines.append(f"\\usepackage{{{pkg}}}")
+
+        # ============================================================
+        # Additional packages (skip obsolete)
+        # ============================================================
+        obsolete_packages = ['grffile', 'capt-of', 'kvoptions', 'soul']
+        lines.append("")
+        lines.append("% --- Additional Packages ---")
+        seen_packages = set(essential_packages)
+        for pkg in merged_defs['packages']:
+            if pkg not in seen_packages and pkg not in obsolete_packages:
+                opts = merged_defs['package_options'].get(pkg, '')
+                if opts:
+                    lines.append(f"\\usepackage[{opts}]{{{pkg}}}")
+                else:
+                    lines.append(f"\\usepackage{{{pkg}}}")
+                seen_packages.add(pkg)
+
+        # ============================================================
+        # TikZ libraries
+        # ============================================================
+        if merged_defs['tikzlibraries']:
+            lines.append("")
+            lines.append("% TikZ libraries")
+            unique_libs = sorted(set(merged_defs['tikzlibraries']))
+            lines.append(f"\\usetikzlibrary{{{', '.join(unique_libs)}}}")
+
+        # ============================================================
+        # Pgfplots settings
+        # ============================================================
+        if merged_defs['pgfplotsset']:
+            lines.append("")
+            lines.append("% Pgfplots settings")
+            seen_settings = set()
+            for setting in merged_defs['pgfplotsset']:
+                if setting and setting not in seen_settings:
+                    lines.append(f"\\pgfplotsset{{{setting}}}")
+                    seen_settings.add(setting)
+            if not any('compat' in s for s in seen_settings):
+                lines.append("\\pgfplotsset{compat=1.18}")
+
+        # ============================================================
+        # Color definitions
+        # ============================================================
+        if merged_defs['colors']:
+            lines.append("")
+            lines.append("% Color definitions")
+            for name, (model, value) in merged_defs['colors'].items():
+                lines.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
+
+        if merged_defs['colorlets']:
+            for name, source in merged_defs['colorlets'].items():
+                lines.append(f"\\colorlet{{{name}}}{{{source}}}")
+
+        # ============================================================
+        # Beamer colors, fonts, templates
+        # ============================================================
+        if merged_defs['beamercolors']:
+            lines.append("")
+            lines.append("% Beamer colors")
+            for name, value in merged_defs['beamercolors']:
+                lines.append(f"\\setbeamercolor{{{name}}}{{{value}}}")
+
+        if merged_defs['beamerfonts']:
+            lines.append("")
+            lines.append("% Beamer fonts")
+            for name, value in merged_defs['beamerfonts']:
+                lines.append(f"\\setbeamerfont{{{name}}}{{{value}}}")
+
+        if merged_defs['beamertemplates']:
+            lines.append("")
+            lines.append("% Beamer templates")
+            for name, value in merged_defs['beamertemplates']:
+                lines.append(f"\\setbeamertemplate{{{name}}}{{{value}}}")
+
+        if merged_defs['beamersizes']:
+            lines.append("")
+            lines.append("% Beamer sizes")
+            for value in merged_defs['beamersizes']:
+                lines.append(f"\\setbeamersize{{{value}}}")
+
+        # ============================================================
+        # Themes
+        # ============================================================
+        if merged_defs['theme'] and not merged_defs['theme'].startswith('%'):
+            lines.append("")
+            lines.append("% Theme setup")
+            lines.append(f"\\usetheme{{{merged_defs['theme']}}}")
+        if merged_defs['colortheme'] and not merged_defs['colortheme'].startswith('%'):
+            lines.append(f"\\usecolortheme{{{merged_defs['colortheme']}}}")
+        if merged_defs['fonttheme'] and not merged_defs['fonttheme'].startswith('%'):
+            lines.append(f"\\usefonttheme{{{merged_defs['fonttheme']}}}")
+
+        # ============================================================
+        # Spacing settings
+        # ============================================================
+        if merged_defs['parskip'] or merged_defs['itemsep'] or merged_defs['topsep']:
+            lines.append("")
+            lines.append("% Spacing settings")
+            if merged_defs['parskip']:
+                lines.append(f"\\setlength{{\\parskip}}{{{merged_defs['parskip']}}}")
+            if merged_defs['itemsep']:
+                lines.append(f"\\setlength{{\\itemsep}}{{{merged_defs['itemsep']}}}")
+            if merged_defs['topsep']:
+                lines.append(f"\\setlength{{\\topsep}}{{{merged_defs['topsep']}}}")
+
+        # ============================================================
+        # Array stretch (safe)
+        # ============================================================
+        if merged_defs['arraystretch']:
+            try:
+                val = float(merged_defs['arraystretch'])
+                if 0.5 <= val <= 2.0:
+                    lines.append("")
+                    lines.append("% Array stretch")
+                    lines.append(f"\\renewcommand{{\\arraystretch}}{{{merged_defs['arraystretch']}}}")
+            except ValueError:
+                pass  # Skip invalid values
+
+        # ============================================================
+        # Title, author, institute, date
+        # ============================================================
+        lines.append("")
+        lines.append("% Title page information")
+        if merged_defs['title']:
+            lines.append(f"\\title{{{merged_defs['title']}}}")
+        if merged_defs['subtitle']:
+            lines.append(f"\\subtitle{{{merged_defs['subtitle']}}}")
+        if merged_defs['author']:
+            lines.append(f"\\author{{{merged_defs['author']}}}")
+        if merged_defs['institute']:
+            lines.append(f"\\institute{{{merged_defs['institute']}}}")
+        if merged_defs['date']:
+            lines.append(f"\\date{{{merged_defs['date']}}}")
+
+        # ============================================================
+        # Layout commands (always include with guards)
+        # ============================================================
+        lines.append("")
+        lines.append("% ========== LAYOUT COMMANDS ==========")
+        layout_commands = [
+            ('split', r"""\newcommand{\split}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.45\textwidth}
+                \begin{center}
+                    \includegraphics[width=\textwidth,keepaspectratio]{#1}
+                \end{center}
+            \end{column}
+            \begin{column}{0.5\textwidth}
+                #2
+            \end{column}
+        \end{columns}
+    }"""),
+            ('pip', r"""\newcommand{\pip}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.68\textwidth}
+                #2
+            \end{column}
+            \begin{column}{0.28\textwidth}
+                \vspace{1em}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+        \end{columns}
+    }"""),
+            ('tb', r"""\newcommand{\tb}[2]{%
+        \begin{center}
+            \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+        \end{center}
+        \vspace{0.5em}
+        #2
+    }"""),
+            ('hl', r"""\newcommand{\hl}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.6\textwidth}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+            \begin{column}{0.36\textwidth}
+                \colorbox{yellow!20}{%
+                    \begin{minipage}{\textwidth}
+                        #2
+                    \end{minipage}%
+                }
+            \end{column}
+        \end{columns}
+    }"""),
+            ('ff', r"""\newcommand{\ff}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+        \begin{center}
+            \vfill
+            \textcolor{white}{\textbf{Full Frame Image}}
+            \vfill
+        \end{center}
+    }"""),
+            ('wm', r"""\newcommand{\wm}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.15] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }"""),
+            ('bg', r"""\newcommand{\bg}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.3] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }"""),
+            ('ol', r"""\newcommand{\ol}[1]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node at (current page.center) {%
+                \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }"""),
+            ('corner', r"""\newcommand{\corner}[2]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[anchor=south east] at (current page.south east) {%
+                \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+        #2
+    }"""),
+            ('mosaic', r"""\newcommand{\mosaic}[2]{%
+        \begingroup
+        \def\mosaic@params{#1}%
+        \def\mosaic@images{#2}%
+        \pgfmathsetmacro{\mosaic@rows}{{\mosaic@params}[0]}%
+        \pgfmathsetmacro{\mosaic@cols}{{\mosaic@params}[2]}%
+        \begin{center}
+        \begin{tabular}{*{\mosaic@cols}{c}}
+        \hline
+        \mosaic@process
+        \hline
+        \end{tabular}
+        \end{center}
+        \endgroup
+    }
+    \def\mosaic@process{%
+        \mosaic@process@helper\mosaic@images,\@empty
+    }
+    \def\mosaic@process@helper#1,#2\@empty{%
+        \ifx\@empty#2\@empty
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
+        \else
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1} &
+            \def\mosaic@remaining{#2}%
+            \mosaic@process@next
+        \fi
+    }
+    \def\mosaic@process@next{%
+        \mosaic@process@helper\mosaic@remaining,\@empty
+    }"""),
+            ('insertshortinstitute', r"\def\insertshortinstitute{airis4D}"),
+        ]
+
+        # Check if any custom commands already exist and skip duplicates
+        existing_cmd_names = set()
+        import re
+        for cmd in merged_defs['custom_commands']:
+            match = re.search(r'\\(?:re)?newcommand\{\\([^}]+)\}', cmd)
+            if match:
+                existing_cmd_names.add(match.group(1))
+
+        for cmd_name, cmd_def in layout_commands:
+            if cmd_name in existing_cmd_names:
+                continue
+            lines.append(f"\\ifcsname {cmd_name}\\endcsname\\else")
+            lines.append(cmd_def)
+            lines.append("\\fi")
+
+        # ============================================================
+        # Progress bar (always include)
+        # ============================================================
+        lines.append("")
+        lines.append("% Progress bar - always defined")
+        lines.append("\\makeatletter")
+        lines.append("\\def\\progressbar@progressbar{}")
+        lines.append("\\newcount\\progressbar@tmpcounta")
+        lines.append("\\newcount\\progressbar@tmpcountb")
+        lines.append("\\newdimen\\progressbar@pbht")
+        lines.append("\\newdimen\\progressbar@pbwd")
+        lines.append("\\newdimen\\progressbar@tmpdim")
+        lines.append("")
+        lines.append("\\progressbar@pbwd=\\paperwidth")
+        lines.append("\\progressbar@pbht=2pt")
+        lines.append("")
+        lines.append("\\def\\progressbar@progressbar{")
+        lines.append("   \\begin{tikzpicture}[very thin]")
+        lines.append("       \\ifnum\\insertframenumber>0")
+        lines.append("           \\pgfmathparse{\\insertframenumber/\\inserttotalframenumber}")
+        lines.append("           \\edef\\progress@ratio{\\pgfmathresult}")
+        lines.append("           \\shade[top color=myblue!50,bottom color=myblue]")
+        lines.append("               (0pt, 0pt) rectangle (\\progress@ratio\\progressbar@pbwd, \\progressbar@pbht)")
+        lines.append("       \\fi")
+        lines.append("   \\end{tikzpicture}%")
+        lines.append("}")
+        lines.append("\\makeatother")
+
+        # ============================================================
+        # Tight spacing (safe defaults)
+        # ============================================================
+        lines.append("")
+        lines.append("% ========== TIGHTER SPACING FOR DENSE CONTENT ==========")
+        lines.append("\\setlength{\\parskip}{0.12em}")
+        lines.append("\\setlength{\\itemsep}{0.04em}")
+        lines.append("\\setlength{\\topsep}{0.04em}")
+        lines.append("\\setlength{\\partopsep}{0pt}")
+        lines.append("\\setlength{\\abovedisplayskip}{0pt}")
+        lines.append("\\setlength{\\belowdisplayskip}{0pt}")
+        lines.append("\\setlength{\\abovedisplayshortskip}{0pt}")
+        lines.append("\\setlength{\\belowdisplayshortskip}{0pt}")
+
+        # ============================================================
+        # Frame mode helper macros
+        # ============================================================
+        lines.append("")
+        lines.append("% ========== FRAME MODE HELPER MACROS ==========")
+        lines.append("\\ifcsname shrinkframe\\endcsname\\else")
+        lines.append("\\newenvironment{shrinkframe}[1][]{%")
+        lines.append("    \\begin{frame}[#1, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%")
+        lines.append("}{%")
+        lines.append("    \\end{frame}%")
+        lines.append("}")
+        lines.append("\\fi")
+        lines.append("")
+        lines.append("\\ifcsname breakframe\\endcsname\\else")
+        lines.append("\\newenvironment{breakframe}[1][]{%")
+        lines.append("    \\begin{frame}[#1, allowframebreaks]%")
+        lines.append("}{%")
+        lines.append("    \\end{frame}%")
+        lines.append("}")
+        lines.append("\\fi")
+        lines.append("")
+        lines.append("\\ifcsname smartframe\\endcsname\\else")
+        lines.append("\\newenvironment{smartframe}[1][]{%")
+        lines.append("    \\begin{frame}[#1, allowframebreaks, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%")
+        lines.append("}{%")
+        lines.append("    \\end{frame}%")
+        lines.append("}")
+        lines.append("\\fi")
+
+        # Begin document
+        lines.append("")
+        lines.append("\\begin{document}")
+
+        return "\n".join(lines)
+
+
+    def _apply_preamble_to_file(self, file_path: str, new_preamble: str) -> bool:
+        """
+        Apply the new preamble to the file while preserving the document body.
+        Returns True if successful.
+        """
+        try:
+            import re
+
+            # Read the file
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Find the document body
+            doc_match = re.search(r'(\\begin{document}.*?\\end{document})', content, re.DOTALL)
+
+            if doc_match:
+                # Preserve the document body
+                document_body = doc_match.group(1)
+                # Build new content
+                new_content = new_preamble + "\n\n" + document_body
+            else:
+                # No document body found - try to find \begin{document}
+                begin_match = re.search(r'(\\begin{document})', content)
+                if begin_match:
+                    document_body = content[begin_match.start():]
+                    new_content = new_preamble + "\n\n" + document_body
+                else:
+                    # No document at all - create one
+                    new_content = new_preamble + "\n\n\\begin{document}\n\n\\end{document}\n"
+
+            # Write the file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            # Update the stored preamble
+            self.custom_preamble = new_preamble
+            self.using_custom_preamble = True
+            self.preamble_origin = 'theme_style'
+            self.preamble_from_file = new_preamble
+
+            return True
+
+        except Exception as e:
+            self.write(f"Error applying preamble to file: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    # ============================================================
+    # MODIFICATION 2: Style changes modify the default preamble
+    # ============================================================
+
+    # Modify the edit_theme_style method in BeamerSlideEditor class
+    def edit_theme_style(self):
+        """Open the enhanced Theme & Style dialog with live preview and change tracking."""
+        # Get the current preamble
+        current_preamble = self._get_safe_current_preamble()
+
+        # Open the enhanced dialog
+        dialog = EnhancedThemeStyleDialog(self, current_preamble)
+        self.wait_window(dialog)
+
+        # If user applied changes, update the preamble
+        if dialog.result is not None:
+            new_preamble = dialog.result
+
+            # Apply the new preamble to the file
+            if self.current_file and os.path.exists(self.current_file):
+                success = self._apply_preamble_to_file(self.current_file, new_preamble)
+                if success:
+                    self.write("✓ Theme and style changes applied successfully\n", "green")
+                    self.load_file(self.current_file)
+                    messagebox.showinfo("Success",
+                        "Theme and style settings applied successfully!\n\n"
+                        "Only the settings you changed were modified.\n"
+                        "All other customizations were preserved.")
+                else:
+                    self.write("✗ Failed to apply theme changes\n", "red")
+                    messagebox.showerror("Error", "Failed to apply theme changes.")
+            else:
+                # No file loaded - store in memory
+                self.custom_preamble = new_preamble
+                self.using_custom_preamble = True
+                self.preamble_origin = 'theme_style'
+                self.preamble_from_file = new_preamble
+                self.write("✓ Theme and style changes applied in memory\n", "green")
+
+    def edit_theme_style_Old(self):
+        """
+        Open the Theme & Style dialog and update the custom preamble.
+        Preserves ALL existing settings and only modifies what the user changes.
+        Uses a safe merge strategy that removes conflicting definitions before adding new ones.
+        """
+        # ============================================================
+        # STEP 1: Get the current preamble (with all existing settings)
+        # ============================================================
+        current_preamble = self._get_safe_current_preamble()
+
+        # ============================================================
+        # STEP 2: Extract ALL existing definitions from the current preamble
+        # ============================================================
+        existing_defs = self._extract_safe_preamble_definitions(current_preamble)
+
+        # ============================================================
+        # STEP 3: Open the dialog with the current preamble
+        # ============================================================
+        dialog = ThemeStyleDialog(self, current_preamble)
+        self.wait_window(dialog)
+
+        # If user cancelled or didn't apply, return
+        if dialog.result is None:
+            self.write("Theme style changes cancelled\n", "yellow")
+            return
+
+        # ============================================================
+        # STEP 4: Extract definitions from the dialog result
+        # ============================================================
+        new_preamble = dialog.result
+        new_defs = self._extract_safe_preamble_definitions(new_preamble)
+
+        # ============================================================
+        # STEP 5: Safely merge definitions (preserve existing, only add new)
+        # ============================================================
+        merged_defs = self._merge_preamble_definitions_safe(existing_defs, new_defs)
+
+        # ============================================================
+        # STEP 6: Generate the merged preamble with conflict resolution
+        # ============================================================
+        final_preamble = self._generate_safe_merged_preamble(merged_defs, existing_defs)
+
+        # ============================================================
+        # STEP 7: Apply the changes to the file
+        # ============================================================
+        if self.current_file and os.path.exists(self.current_file):
+            success = self._apply_preamble_to_file(self.current_file, final_preamble)
+            if success:
+                self.write("✓ Theme and style changes applied successfully\n", "green")
+                # Reload the file to reflect changes
+                self.load_file(self.current_file)
+                messagebox.showinfo("Success",
+                    "Theme and style settings applied successfully!\n\n"
+                    "All existing settings (custom commands, colors, spacing) have been preserved.\n"
+                    "Only the settings you changed have been updated.")
+            else:
+                self.write("✗ Failed to apply theme changes to file\n", "red")
+                messagebox.showerror("Error", "Failed to apply theme changes.\nPlease check the terminal for details.")
+        else:
+            # No file loaded - just store in memory
+            self.custom_preamble = final_preamble
+            self.using_custom_preamble = True
+            self.preamble_origin = 'theme_style'
+            self.preamble_from_file = final_preamble
+            self.write("✓ Theme and style changes applied in memory\n", "green")
+            messagebox.showinfo("Success",
+                "Theme and style settings applied in memory!\n\n"
+                "Save your presentation to persist these changes.")
+
+
     # ============================================================
     # MODIFICATION 8: Modify PreambleEditor to add merge and reset options
     # ============================================================
@@ -20467,6 +24700,17 @@ Created by {self.__author__}
         # Initialize dynamic toolbar managers
         self.upper_dynamic_toolbar = DynamicToolbar(self.toolbar)
         self.lower_dynamic_toolbar = DynamicToolbar(self.toolbar)
+        # Convert Old Format button
+        convert_btn = ctk.CTkButton(
+            self.toolbar,
+            text="🔄 Convert Old Format",
+            command=self.convert_old_to_new_format,
+            width=140,
+            fg_color="#FF6B35",
+            hover_color="#E55A2B"
+        )
+        convert_btn.pack(side="left", padx=5)
+        self.create_tooltip(convert_btn, "Convert old format (\\title + Content) to new format (\\begin{frame}) with LaTeX support")
 
         # ========== UPPER ROW - File and presentation operations ==========
         upper_row = ctk.CTkFrame(self.toolbar)
@@ -20600,6 +24844,7 @@ Created by {self.__author__}
         # ALL original right buttons preserved
         right_buttons = [
             ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble", 80),
+            ("Theme & Style", self.edit_theme_style, "Customize theme and style", 80),  # NEW
             ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings", 80),
             ("Get Source", self.get_source_from_tex, "Extract source from TEX file", 70),
             ("Export to Overleaf", self.create_overleaf_zip, "Create Overleaf-compatible zip", 60),
@@ -20662,6 +24907,8 @@ Created by {self.__author__}
         # Initial state (PRESERVED)
         toggle_anim_settings()
 
+
+
     def merge_preamble(self):
         """Merge definitions from current preamble into default"""
         if hasattr(self.master, 'merge_preamble'):
@@ -20672,16 +24919,14 @@ Created by {self.__author__}
 
     # ============================================================
     # MODIFICATION 9: Modify convert_beamer_tex_to_simple_text
-    # to preserve preamble
+    # to preserve preamble AND fix frametitle corruption
     # ============================================================
 
     @staticmethod
     def convert_beamer_tex_to_simple_text(tex_file_path):
         """
         Convert Beamer .tex file to simple text format with proper error handling.
-        PRESERVES the preamble from the TeX file.
-        Returns tuple (output_path, errors_list) where errors_list contains
-        (line_number, error_message, context) for each error found.
+        PRESERVES AND MERGES all preamble definitions (packages, colors, commands, themes, etc.)
         """
         import re
         from pathlib import Path
@@ -20690,7 +24935,6 @@ Created by {self.__author__}
         warnings = []
 
         def add_error(line_num, error_msg, context_line=""):
-            """Record an error with line number for later editing"""
             errors.append({
                 'line': line_num,
                 'message': error_msg,
@@ -20699,7 +24943,6 @@ Created by {self.__author__}
             print(f"  ⚠ Line {line_num}: {error_msg}")
 
         def add_warning(line_num, warning_msg, context_line=""):
-            """Record a warning"""
             warnings.append({
                 'line': line_num,
                 'message': warning_msg,
@@ -20707,82 +24950,259 @@ Created by {self.__author__}
             })
             print(f"  ℹ Line {line_num}: {warning_msg}")
 
+        def clean_latex_title(title):
+            if not title:
+                return "Untitled"
+            title = re.sub(r'\\textbf\{([^}]*)\}', r'\1', title)
+            title = re.sub(r'\\textit\{([^}]*)\}', r'\1', title)
+            title = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', title)
+            title = re.sub(r'\\Large\s*', '', title)
+            title = re.sub(r'\\large\s*', '', title)
+            title = re.sub(r'\\Huge\s*', '', title)
+            title = re.sub(r'\\huge\s*', '', title)
+            title = re.sub(r'\\[a-zA-Z]+\s*', '', title)
+            title = title.replace('&', '\\&')
+            title = title.replace('%', '\\%')
+            title = title.replace('#', '\\#')
+            title = title.replace('_', '\\_')
+            title = title.replace('$', '\\$')
+            title = re.sub(r'\s+', ' ', title).strip()
+            return title or "Untitled"
+
+        def fix_malformed_title_entries(text):
+            """Fix malformed \title entries in the document body."""
+            import re
+
+            # Pattern 1: \title {Title\n with Content block
+            pattern1 = r'\\title\s*\{\s*([^}\n]*?)\s*\n\s*(\\begin\{Content\})'
+            def fix1(match):
+                title_text = match.group(1).strip()
+                if not title_text:
+                    title_text = "Untitled"
+                title_text = title_text.rstrip('{').rstrip()
+                return f"\\title {title_text}\n{match.group(2)}"
+            text = re.sub(pattern1, fix1, text, flags=re.DOTALL)
+
+            # Pattern 2: \title \n\begin{Content} (empty title)
+            pattern2 = r'\\title\s*\n\s*(\\begin\{Content\})'
+            def fix2(match):
+                return f"\\title Untitled\n{match.group(1)}"
+            text = re.sub(pattern2, fix2, text)
+
+            # Pattern 3: \title {Title} \n\begin{Content}
+            pattern3 = r'\\title\s*\{([^}]*)\}\s*\n\s*(\\begin\{Content\})'
+            def fix3(match):
+                title_text = match.group(1).strip()
+                if not title_text:
+                    title_text = "Untitled"
+                return f"\\title {title_text}\n{match.group(2)}"
+            text = re.sub(pattern3, fix3, text, flags=re.DOTALL)
+
+            return text
+
         try:
-            with open(tex_file_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                tex_content = ''.join(lines)
+            # ========== READ FILE ==========
+            try:
+                with open(tex_file_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    tex_content = ''.join(lines)
+            except UnicodeDecodeError:
+                print("⚠ UTF-8 encoding failed, trying latin-1...")
+                try:
+                    with open(tex_file_path, 'r', encoding='latin-1') as f:
+                        lines = f.readlines()
+                        tex_content = ''.join(lines)
+                    add_warning(1, "File had encoding issues, used latin-1 fallback", "")
+                except Exception as e:
+                    add_error(1, f"Could not read file: {str(e)}", "")
+                    return None, errors
+
+            if not lines:
+                add_error(1, "File is empty", "")
+                return None, errors
 
             # Create output path
             tex_path = Path(tex_file_path)
             output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
 
-            # ========== EXTRACT AND PRESERVE THE COMPLETE PREAMBLE ==========
-            # Find everything before \begin{document}
-            preamble_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
-            preamble = ""
-            if preamble_match:
-                preamble = preamble_match.group(1).strip()
-                # Remove any existing \begin{document} from the end
-                if preamble.endswith('\\begin{document}'):
-                    preamble = preamble[:-len('\\begin{document}')].strip()
+            # ========== EXTRACT PREAMBLE ==========
+            doc_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
+
+            if doc_match:
+                preamble = doc_match.group(1).strip()
+                document_body = tex_content[doc_match.end():]
+                has_begin_document = True
                 print(f"✓ Extracted preamble ({len(preamble)} chars)")
+
+                # ============================================================
+                # Remove ALL \begin{document} from document body
+                # ============================================================
+                document_body = re.sub(r'\\begin\{document\}\s*', '', document_body)
+                document_body = re.sub(r'\\end\{document\}\s*', '', document_body)
+
+                # ============================================================
+                # Fix malformed \title entries in document body
+                # ============================================================
+                print("\n🔧 Fixing malformed \\title entries...")
+                document_body = fix_malformed_title_entries(document_body)
+                print("  ✓ Fixed malformed \\title entries")
+
+                # ============================================================
+                # Remove the \maketitle command if present
+                # ============================================================
+                document_body = re.sub(r'\\maketitle\s*', '', document_body)
+
+                # ============================================================
+                # Remove corrupted \title Untitled slides
+                # ============================================================
+                document_body = re.sub(
+                    r'\\title\s+Untitled\s*\\begin\{Content\}\s*\\None\s*\\begin\{tikzpicture\}.*?\\end\{tikzpicture\}\s*\\end\{Content\}\s*\\begin\{Notes\}.*?\\end\{Notes\}\s*',
+                    '',
+                    document_body,
+                    flags=re.DOTALL
+                )
+
+                # ============================================================
+                # Remove empty \title with no content
+                # ============================================================
+                document_body = re.sub(
+                    r'\\title\s*\n\s*\\begin\{Content\}\s*\\None\s*% No content for this slide\s*\\end\{Content\}\s*\\begin\{Notes\}.*?\\end\{Notes\}\s*',
+                    '',
+                    document_body,
+                    flags=re.DOTALL
+                )
+
             else:
                 print("⚠ No preamble found in TeX file")
-                # Generate a minimal preamble
                 preamble = r"""\documentclass[aspectratio=169]{beamer}
-    \usepackage{graphicx}
-    \usepackage{xcolor}
-    \usepackage{amsmath}
-    \usepackage{amssymb}
-    \usetheme{Madrid}
-    """
+            \usepackage{graphicx}
+            \usepackage{xcolor}
+            \usepackage{amsmath}
+            \usepackage{amssymb}
+            \usetheme{Madrid}
+            """
+                document_body = tex_content
+                has_begin_document = False
                 add_warning(1, "No preamble found, using default", "")
 
-            # Validate the TeX content line by line
-            brace_stack = []
-            in_math = False
-            dollar_count = 0
+            # ============================================================
+            # Remove any \begin{document} that might still be in the preamble
+            # ============================================================
+            preamble = re.sub(r'\\begin\{document\}\s*', '', preamble)
 
-            for i, line in enumerate(lines, 1):
-                line_stripped = line.strip()
-                if not line_stripped or line_stripped.startswith('%'):
-                    continue
+            # ============================================================
+            # EXTRACT DEFINITIONS FROM IMPORTED PREAMBLE
+            # ============================================================
+            print("\n📋 Extracting preamble definitions from imported file...")
 
-                # Check for unbalanced braces (skip preamble check)
-                if '\\begin{document}' not in line and '\\end{document}' not in line:
-                    for char in line:
-                        if char == '{':
-                            brace_stack.append(('{', i))
-                        elif char == '}':
-                            if brace_stack:
-                                brace_stack.pop()
-                            else:
-                                add_error(i, "Unmatched closing brace '}'", line_stripped[:80])
+            # Use the static method from BeamerSlideEditor
+            imported_defs = BeamerSlideEditor.extract_preamble_definitions_static(preamble)
+            print(f"  ✓ Found {len(imported_defs['packages'])} packages")
+            print(f"  ✓ Found {len(imported_defs['colors'])} colors")
+            print(f"  ✓ Found {len(imported_defs['tikzlibraries'])} TikZ libraries")
+            print(f"  ✓ Found {len(imported_defs['custom_commands'])} custom commands")
+            print(f"  ✓ Theme: {imported_defs['theme'] or 'default'}")
+            print(f"  ✓ Color theme: {imported_defs['colortheme'] or 'default'}")
 
-                # Check for unbalanced math mode
-                dollar_count += line.count('$') - line.count('\\$')
-                if dollar_count % 2 != 0:
-                    add_error(i, "Unbalanced math mode (odd number of $)", line_stripped[:80])
+            # ============================================================
+            # GET DEFAULT DEFINITIONS
+            # ============================================================
+            print("\n📋 Getting default preamble definitions...")
+            default_preamble = get_beamer_preamble(
+                "Title", "Subtitle", "Author", "Institution", "Short Inst", "\\today"
+            )
+            default_defs = BeamerSlideEditor.extract_preamble_definitions_static(default_preamble)
 
-            if brace_stack:
-                add_error(brace_stack[0][1], f"Unclosed brace(s): {len(brace_stack)} remaining", "")
+            # ============================================================
+            # MERGE DEFINITIONS
+            # ============================================================
+            print("\n🔧 Merging definitions...")
 
-            # Extract the document body
-            doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', tex_content, re.DOTALL)
-            if not doc_match:
-                add_error(1, "No \\begin{document} found in TeX file", "")
-                # Still try to continue with what we have
-                document_body = tex_content
-            else:
-                document_body = doc_match.group(1)
+            # Merge the definitions
+            merged_defs = {
+                'packages': list(set(default_defs['packages'] + imported_defs['packages'])),
+                'package_options': {**default_defs['package_options'], **imported_defs['package_options']},
+                'colors': {**default_defs['colors'], **imported_defs['colors']},
+                'colorlets': {**default_defs['colorlets'], **imported_defs['colorlets']},
+                'tikzlibraries': list(set(default_defs['tikzlibraries'] + imported_defs['tikzlibraries'])),
+                'pgfplotsset': default_defs['pgfplotsset'] + imported_defs['pgfplotsset'],
+                'beamercolors': default_defs['beamercolors'] + imported_defs['beamercolors'],
+                'beamerfonts': default_defs['beamerfonts'] + imported_defs['beamerfonts'],
+                'beamertemplates': default_defs['beamertemplates'] + imported_defs['beamertemplates'],
+                'beamersizes': default_defs['beamersizes'] + imported_defs['beamersizes'],
+                'custom_commands': default_defs['custom_commands'] + imported_defs['custom_commands'],
+                'def_commands': default_defs['def_commands'] + imported_defs['def_commands'],
+                'let_commands': default_defs['let_commands'] + imported_defs['let_commands'],
+                'theme': imported_defs['theme'] or default_defs['theme'],
+                'colortheme': imported_defs['colortheme'] or default_defs['colortheme'],
+                'fonttheme': imported_defs['fonttheme'] or default_defs['fonttheme'],
+                'sisetup': imported_defs['sisetup'] or default_defs['sisetup'],
+                'hypersetup': imported_defs['hypersetup'] or default_defs['hypersetup'],
+                'arraystretch': imported_defs['arraystretch'] or default_defs['arraystretch'],
+                'parskip': imported_defs['parskip'] or default_defs['parskip'],
+                'itemsep': imported_defs['itemsep'] or default_defs['itemsep'],
+                'topsep': imported_defs['topsep'] or default_defs['topsep'],
+                'footline': imported_defs['footline'] or default_defs['footline'],
+                'logo': imported_defs['logo'] or default_defs['logo'],
+                'title': imported_defs['title'] or default_defs['title'],
+                'subtitle': imported_defs['subtitle'] or default_defs['subtitle'],
+                'author': imported_defs['author'] or default_defs['author'],
+                'institute': imported_defs['institute'] or default_defs['institute'],
+                'date': imported_defs['date'] or default_defs['date'],
+                'shortinstitute': imported_defs['shortinstitute'] or default_defs['shortinstitute'],
+                'note_page': imported_defs['note_page'] or default_defs['note_page'],
+                'navigation_symbols': imported_defs['navigation_symbols'] or default_defs['navigation_symbols'],
+                'other_settings': default_defs['other_settings'] + imported_defs['other_settings'],
+                'critical_fixes': default_defs['critical_fixes'] + imported_defs['critical_fixes'],
+            }
 
-            # Find all frames with line number tracking
-            frame_pattern = r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end\{frame\}'
-            frames = list(re.finditer(frame_pattern, document_body, re.DOTALL))
+            print(f"  ✓ Merged {len(merged_defs['packages'])} packages")
+            print(f"  ✓ Merged {len(merged_defs['colors'])} colors")
 
-            if not frames:
+            # ============================================================
+            # GENERATE MERGED PREAMBLE
+            # ============================================================
+            print("\n🔧 Generating merged preamble...")
+            merged_preamble = BeamerSlideEditor.generate_merged_preamble(merged_defs)
+
+            # ============================================================
+            # FIX CUSTOM COMMANDS
+            # ============================================================
+            print("\n🔧 Fixing custom commands...")
+            merged_preamble = BeamerSlideEditor.fix_custom_commands_with_guards(merged_preamble)
+
+            # ========== FIND FRAMES ==========
+            frame_patterns = [
+                r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end\{frame\}',
+                r'\\begin\{frame\}(?:\[[^\]]*\])?\{([^}]*)\}(.*?)\\end\{frame\}',
+                r'\\begin\{frame\}(?:\[[^\]]*\])?(.*?)\\end\{frame\}',
+            ]
+
+            frames = []
+            used_pattern = None
+
+            for pattern in frame_patterns:
+                found_frames = list(re.finditer(pattern, document_body, re.DOTALL))
+                if found_frames:
+                    if len(found_frames) > len(frames):
+                        frames = found_frames
+                        used_pattern = pattern
+                        print(f"✓ Found {len(frames)} frames")
+
+            # Deduplicate frames
+            seen_content = set()
+            unique_frames = []
+            for frame in frames:
+                content_key = frame.group(0)[:200]
+                if content_key not in seen_content:
+                    seen_content.add(content_key)
+                    unique_frames.append(frame)
+
+            if unique_frames and len(unique_frames) < len(frames):
+                print(f"✓ Deduplicated: {len(frames)} → {len(unique_frames)} unique frames")
+
+            if not unique_frames:
                 add_error(1, "No frames found in document", "")
-                # Create a minimal slide
                 slides = [{
                     'title': 'Untitled Slide',
                     'content': ['\\begin{frame}{Untitled Slide}', '\\frametitle{Untitled Slide}', '\\end{frame}'],
@@ -20791,31 +25211,74 @@ Created by {self.__author__}
             else:
                 slides = []
                 slide_count = 0
+                title_page_found = False
 
-                for frame_match in frames:
+                for frame_match in unique_frames:
                     slide_count += 1
-                    title = frame_match.group(1) or f"Slide {slide_count}"
-                    subtitle = frame_match.group(2) or ""
-                    frame_content = frame_match.group(3).strip()
 
-                    # Skip title page frames but extract content
+                    if used_pattern and used_pattern.startswith(r'\\begin\{frame\}\{'):
+                        title = frame_match.group(1) or f"Slide {slide_count}"
+                        frame_content = frame_match.group(2).strip() if len(frame_match.groups()) >= 2 else ""
+                    else:
+                        if len(frame_match.groups()) >= 3:
+                            title = frame_match.group(1) or f"Slide {slide_count}"
+                            subtitle = frame_match.group(2) or ""
+                            frame_content = frame_match.group(3).strip()
+                        elif len(frame_match.groups()) >= 2:
+                            title = frame_match.group(1) or f"Slide {slide_count}"
+                            subtitle = ""
+                            frame_content = frame_match.group(2).strip()
+                        else:
+                            title = f"Slide {slide_count}"
+                            subtitle = ""
+                            frame_content = frame_match.group(0).strip()
+
+                    # ============================================================
+                    # Fix special characters in title
+                    # ============================================================
+                    title = BeamerSlideEditor.fix_special_characters(title)
+                    title = clean_latex_title(title)
+
+                    # ============================================================
+                    # Handle title page frames
+                    # ============================================================
                     if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
-                        # Try to extract title from frame content
-                        title_match = re.search(r'\\title\{([^}]*)\}', frame_content)
-                        if title_match:
-                            title = title_match.group(1)
-                        # Create a proper title slide
+                        title_match = re.search(r'\\title\{([^}]*)\}', preamble)
+                        title_text = title_match.group(1) if title_match else "Title Page"
+                        title_text = BeamerSlideEditor.fix_special_characters(title_text)
+
+                        if title_page_found:
+                            print(f"  ℹ Skipping duplicate title page")
+                            continue
+
+                        title_page_found = True
                         slides.append({
-                            'title': title,
-                            'content': [f"\\begin{{frame}}{{{title}}}", "\\titlepage", "\\end{frame}"],
+                            'title': title_text,
+                            'content': [
+                                f"\\begin{{frame}}{{{title_text}}}",
+                                "\\titlepage",
+                                "\\end{frame}"
+                            ],
                             'notes': []
                         })
                         continue
 
-                    # Build the slide content exactly as it appears
+                    # Fix malformed frametitle
+                    if 'rametitle' in frame_content:
+                        frame_content = frame_content.replace('rametitle', '\\frametitle')
+                        add_warning(slide_count, f"Fixed 'rametitle' to '\\frametitle' in slide {slide_count}", "")
+
+                    # Extract frametitle
+                    frametitle_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
+                    if frametitle_match:
+                        frametitle = clean_latex_title(frametitle_match.group(1))
+                        if frametitle and len(frametitle) > 3:
+                            title = frametitle
+                        frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
+
                     content_lines = []
 
-                    # Add frame title
+                    # Build frame with title
                     if subtitle:
                         content_lines.append(f"\\begin{{frame}}{{{title} - {subtitle}}}")
                         content_lines.append(f"\\frametitle{{{title} — {subtitle}}}")
@@ -20823,24 +25286,23 @@ Created by {self.__author__}
                         content_lines.append(f"\\begin{{frame}}{{{title}}}")
                         content_lines.append(f"\\frametitle{{{title}}}")
 
-                    # Extract and process frame content
-                    # Remove any existing \frametitle commands to avoid duplication
-                    frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
-
-                    # Process frame content preserving all LaTeX
+                    # Add frame content with special character fixes
                     for line in frame_content.split('\n'):
                         line = line.strip()
                         if line:
+                            line = BeamerSlideEditor.fix_special_characters(line)
+                            if line.startswith('rametitle'):
+                                line = line.replace('rametitle', '\\frametitle', 1)
                             content_lines.append(line)
 
-                    # Close the frame
                     content_lines.append("\\end{frame}")
 
-                    # Extract notes if present
+                    # Extract notes with special character fixes
                     notes = []
                     note_match = re.search(r'\\note\{(.*?)\}', frame_content, re.DOTALL)
                     if note_match:
                         note_content = note_match.group(1).strip()
+                        note_content = BeamerSlideEditor.fix_special_characters(note_content)
                         notes = [note_content]
 
                     slides.append({
@@ -20849,20 +25311,29 @@ Created by {self.__author__}
                         'notes': notes
                     })
 
-            # ========== WRITE TO OUTPUT FILE WITH PREAMBLE PRESERVED ==========
+            # ========== WRITE TO OUTPUT FILE ==========
             with open(output_path, 'w', encoding='utf-8') as f:
-                # Write the preamble first
-                f.write(preamble)
+                # Write the merged preamble (without \begin{document})
+                f.write(merged_preamble)
                 f.write("\n\n")
 
-                # Write the document body with frames
+                # Write \begin{document} exactly ONCE
+                f.write("\\begin{document}\n\n")
+
+                # Write the title page if we have a title slide
+                has_title_slide = any('\\titlepage' in ''.join(slide['content']) for slide in slides)
+
+                if not has_title_slide and merged_defs['title']:
+                    title_text = merged_defs['title']
+                    f.write(f"\\begin{{frame}}[plain]{{{title_text}}}\n")
+                    f.write("\\titlepage\n")
+                    f.write("\\end{frame}\n\n")
+
                 for slide in slides:
-                    # Write the frame directly - NO \title or \begin{Content}
                     for line in slide['content']:
                         f.write(f"{line}\n")
                     f.write("\n")
 
-                    # Add notes if present
                     if slide['notes']:
                         f.write("\\begin{Notes}\n")
                         for note in slide['notes']:
@@ -20874,11 +25345,11 @@ Created by {self.__author__}
                         f.write("\\end{Notes}\n")
                     f.write("\n")
 
-                # Ensure the document ends properly
                 f.write("\\end{document}\n")
 
-            print(f"✓ Converted {len(slides)} slides from {tex_file_path}")
-            print(f"✓ Preamble preserved in output file")
+            print(f"\n✓ Converted {len(slides)} slides from {tex_file_path}")
+            print(f"✓ Preamble preserved and merged in output file")
+            print(f"✓ \\begin{{document}} included" + (" (from original)" if has_begin_document else " (added)"))
 
             if errors:
                 print(f"\n⚠ Found {len(errors)} issue(s) during conversion:")
@@ -20893,63 +25364,844 @@ Created by {self.__author__}
             return output_path, errors
 
         except Exception as e:
-            print(f"Error converting TeX file: {e}")
+            error_msg = f"Error converting TeX file: {str(e)}"
+            print(error_msg)
             import traceback
             traceback.print_exc()
-            return None, []
+            return None, [{"line": 1, "message": error_msg, "context": traceback.format_exc()}]
+
+    # ============================================================
+    # SIMPLE FALLBACK CONVERTER (add to BeamerSlideGenerator.py)
+    # ============================================================
+
+    def simple_convert_tex_to_txt(tex_file_path):
+        """
+        A simpler, more robust converter for TeX files.
+        Handles malformed files better and extracts slides more reliably.
+        Returns (output_path, errors_list)
+        """
+        import re
+        from pathlib import Path
+
+        errors = []
+
+        try:
+            # Read the file with encoding fallback
+            try:
+                with open(tex_file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                with open(tex_file_path, 'r', encoding='latin-1') as f:
+                    content = f.read()
+                errors.append({"line": 1, "message": "Used latin-1 encoding fallback", "context": ""})
+
+            if not content.strip():
+                errors.append({"line": 1, "message": "File is empty", "context": ""})
+                return None, errors
+
+            output_path = Path(tex_file_path).with_suffix('.txt')
+
+            # Extract preamble if exists
+            preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if preamble_match:
+                preamble = preamble_match.group(1).strip()
+            else:
+                preamble = r"""\documentclass[aspectratio=169]{beamer}
+            \usepackage{graphicx}
+            \usepackage{xcolor}
+            \usepackage{amsmath}
+            \usepackage{amssymb}
+            \usetheme{Madrid}
+            """
+                errors.append({"line": 1, "message": "No preamble found, using default", "context": ""})
+
+            # Extract document body
+            doc_match = re.search(r'\\begin{document}(.*?)\\end{document}', content, re.DOTALL)
+            if doc_match:
+                doc_body = doc_match.group(1)
+            else:
+                doc_body = content
+                errors.append({"line": 1, "message": "No \\begin{document} found, treating entire file as content", "context": ""})
+
+            # Find all frames
+            frames = []
+
+            # Try different frame patterns
+            frame_pattern = r'\\begin{frame}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(.*?)\\end{frame}'
+            matches = re.findall(frame_pattern, doc_body, re.DOTALL)
+
+            if matches:
+                for title, frame_content in matches:
+                    if not title:
+                        title = "Untitled Slide"
+                    frames.append({"title": title, "content": frame_content.strip()})
+            else:
+                # Try alternative pattern for older beamer
+                frame_pattern2 = r'\\frame(?:\[[^\]]*\])?(?:{([^}]*)})?{(.*?)}'
+                matches2 = re.findall(frame_pattern2, doc_body, re.DOTALL)
+                if matches2:
+                    for title, frame_content in matches2:
+                        if not title:
+                            title = "Untitled Slide"
+                        frames.append({"title": title, "content": frame_content.strip()})
+                else:
+                    # No frames found, create one from the entire content
+                    frames.append({"title": "Content", "content": doc_body.strip()})
+                    errors.append({"line": 1, "message": "No frames found, created a single slide", "context": ""})
+
+            # Write the output
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(preamble)
+                f.write("\n\n")
+                f.write("\\begin{document}\n\n")
+
+                for slide in frames:
+                    title = slide['title'].replace('{', '').replace('}', '').strip()
+                    f.write(f"\\begin{{frame}}{{{title}}}\n")
+                    f.write(f"\\frametitle{{{title}}}\n")
+
+                    # Clean up the content
+                    content_lines = slide['content'].split('\n')
+                    for line in content_lines:
+                        line = line.strip()
+                        if line and not line.startswith('%'):
+                            # Skip lines that are already frame commands
+                            if not any(x in line for x in ['\\begin{frame}', '\\end{frame}', '\\frametitle']):
+                                f.write(f"{line}\n")
+
+                    f.write("\\end{frame}\n\n")
+
+                f.write("\\end{document}\n")
+
+            print(f"✓ Simple conversion completed: {output_path}")
+            return output_path, errors
+
+        except Exception as e:
+            import traceback
+            error_msg = str(e)
+            errors.append({"line": 1, "message": error_msg, "context": traceback.format_exc()})
+            print(f"✗ Simple conversion failed: {error_msg}")
+            return None, errors
+
+
+    # ============================================================
+    # MODIFICATION 3: Merge file preamble with default preamble
+    # ============================================================
+
+    def merge_preamble_with_file(self, file_path: str) -> str:
+        """Merge the preamble from the file with the default preamble."""
+        try:
+            import re
+
+            if getattr(self, '_is_merging', False):
+                self.write("  ⏭ Skipping merge (already in progress)\n", "yellow")
+                return self.get_custom_preamble()
+
+            self._is_merging = True
+
+            # Read the file content
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Extract the preamble from the file
+            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if not doc_match:
+                self.write("  ℹ No preamble found in file, using default\n", "cyan")
+                default_preamble = self.get_custom_preamble()
+                self._update_file_preamble(file_path, default_preamble)
+                self._is_merging = False
+                return default_preamble
+
+            file_preamble = doc_match.group(1).strip()
+
+            # ============================================================
+            # STEP 1: Extract and preserve presentation metadata
+            # ============================================================
+            title_match = re.search(r'\\title\{([^}]*)\}', file_preamble)
+            if title_match:
+                self.presentation_info['title'] = title_match.group(1)
+
+            author_match = re.search(r'\\author\{([^}]*)\}', file_preamble)
+            if author_match:
+                self.presentation_info['author'] = author_match.group(1)
+
+            institute_match = re.search(r'\\institute\{([^}]*)\}', file_preamble)
+            if institute_match:
+                self.presentation_info['institute'] = institute_match.group(1)
+
+            # ============================================================
+            # STEP 2: FIX CUSTOM COMMANDS - PERMANENTLY
+            # ============================================================
+            self.write("\n🔧 Fixing conflicting custom commands...\n", "cyan")
+            fixed_preamble, resolutions = self.fix_custom_commands_with_conflict_resolution(
+                file_preamble,
+                parent=self
+            )
+
+            if resolutions:
+                self.write(f"✓ Resolved {len(resolutions)} conflicts\n", "green")
+            else:
+                self.write("✓ No conflicts found\n", "green")
+
+            # ============================================================
+            # STEP 3: CHECK IF PREAMBLE CHANGED
+            # ============================================================
+            if fixed_preamble != file_preamble:
+                self.write("  📝 Preamble was modified - updating file\n", "cyan")
+
+                # Update the file with the fixed preamble
+                doc_pos = content.find('\\begin{document}')
+                if doc_pos != -1:
+                    document_body = content[doc_pos:]
+                    new_content = fixed_preamble + "\n\n" + document_body
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    self.write(f"  ✓ Updated {os.path.basename(file_path)} with fixed preamble\n", "green")
+
+                    # Re-read the content to get the updated version
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+            # ============================================================
+            # STEP 4: REMOVE EMPTY SLIDES FROM CONTENT
+            # ============================================================
+            self.write("\n🔧 Cleaning up empty slides...\n", "cyan")
+
+            # Find all \title blocks and identify empty ones
+            title_pattern = r'\\title\s*\n\s*\\begin{Content}\s*\\None\s*%?\s*\[?[^\]]*\]?\s*\\end{Content}\s*\\begin{Notes}\s*%?\s*\[?[^\]]*\]?\s*\\end{Notes}'
+
+            # Check if there's an empty slide
+            if re.search(title_pattern, content, re.DOTALL):
+                # Remove ALL empty slides (the one at the beginning and any others)
+                cleaned_content = re.sub(title_pattern, '', content, flags=re.DOTALL)
+
+                # Also remove the standalone \title with nothing after it
+                cleaned_content = re.sub(r'\\title\s*\n\s*\\begin{Content}\s*\\None\s*%?\s*.*?\\end{Content}\s*\\begin{Notes}\s*%?\s*.*?\\end{Notes}\s*\n?', '', cleaned_content, flags=re.DOTALL)
+
+                # Clean up extra newlines
+                cleaned_content = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned_content)
+
+                # Write the cleaned content back
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(cleaned_content)
+
+                self.write("  ✓ Removed empty slides from file\n", "green")
+
+                # Re-read the cleaned content
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = cleaned_content
+
+            # ============================================================
+            # STEP 5: EXTRACT AND STORE THE FINAL PREAMBLE
+            # ============================================================
+            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if doc_match:
+                final_preamble = doc_match.group(1).strip()
+                self.preamble_from_file = final_preamble
+                self.preamble_origin = 'merged'
+                self.custom_preamble = final_preamble
+                self.using_custom_preamble = True
+
+                # Store the fixed preamble in the file
+                self._update_file_preamble(file_path, final_preamble)
+
+                self.write(f"\n✅ Preamble merged and saved successfully\n", "green")
+                self._is_merging = False
+                return final_preamble
+
+            self._is_merging = False
+            return self.get_custom_preamble()
+
+        except Exception as e:
+            self.write(f"⚠ Error merging preamble: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
+            self._is_merging = False
+            return self.get_custom_preamble()
+
+    def _update_file_preamble(self, file_path: str, new_preamble: str) -> bool:
+        """
+        Update the preamble in the file while preserving the document body.
+        Returns True if successful.
+        """
+        try:
+            import re
+
+            # Read the current file content
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Find the document body (everything after \begin{document})
+            doc_match = re.search(r'(\\begin{document}.*?\\end{document})', content, re.DOTALL)
+
+            if doc_match:
+                # Preserve the document body
+                document_body = doc_match.group(1)
+                # Ensure there's exactly one newline between preamble and document body
+                new_content = new_preamble.rstrip() + "\n\n" + document_body.lstrip()
+            else:
+                # No document body found, add one
+                # Check if there's a \begin{document} without \end{document}
+                begin_match = re.search(r'(\\begin{document})', content)
+                if begin_match:
+                    document_body = begin_match.group(0)
+                    after_begin = content[begin_match.end():]
+                    if after_begin.strip():
+                        document_body += "\n" + after_begin
+                    else:
+                        document_body += "\n% Add your content here\n"
+                    document_body += "\n\\end{document}"
+                else:
+                    document_body = "\\begin{document}\n\n% Add your content here\n\n\\end{document}"
+
+                new_content = new_preamble.rstrip() + "\n\n" + document_body
+
+            # Write the updated content
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            self.write(f"  ✓ Updated preamble in {os.path.basename(file_path)}\n", "green")
+            return True
+
+        except Exception as e:
+            self.write(f"  ✗ Failed to update file: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    # ============================================================
+    # MODIFICATION 4: Add sanity tests before submitting to BeamerSlideGenerator
+    # ============================================================
+
+    def validate_txt_file(self, file_path: str) -> tuple:
+        """Validate a TXT file before submitting to BeamerSlideGenerator."""
+        import re
+
+        errors = []
+        warnings = []
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                lines = content.split('\n')
+
+            self.write("\n" + "="*60 + "\n", "cyan")
+            self.write("VALIDATING FILE\n", "cyan")
+            self.write("="*60 + "\n", "cyan")
+
+            # ========== DETECT FILE FORMAT ==========
+            has_title = '\\title' in content and '\\begin{Content}' in content
+            has_frames = '\\begin{frame}' in content and '\\end{frame}' in content
+
+            if has_frames and not has_title:
+                # This is the new Beamer frame format - validate differently
+                self.write("✓ Detected Beamer frame format\n", "green")
+                return self._validate_beamer_format(content, lines)
+            elif has_title and has_content_block:
+                # This is the old TXT format
+                self.write("✓ Detected TXT format\n", "green")
+                return self._validate_txt_format(content, lines)
+            else:
+                # Try to detect format
+                if has_frames:
+                    self.write("✓ Detected Beamer frame format (fallback)\n", "green")
+                    return self._validate_beamer_format(content, lines)
+                else:
+                    errors.append("Unknown file format - no \\title or \\begin{frame} found")
+                    return False, errors, warnings
+
+        except Exception as e:
+            error_msg = f"Error validating file: {str(e)}"
+            self.write(f"✗ {error_msg}\n", "red")
+            return False, [error_msg], []
+
+    def _validate_beamer_format(self, content: str, lines: list) -> tuple:
+        """Validate a Beamer frame format file."""
+        import re
+
+        errors = []
+        warnings = []
+
+        # ========== 1. CHECK FOR \begin{document} AND \end{document} ==========
+        has_begin_document = '\\begin{document}' in content
+        has_end_document = '\\end{document}' in content
+
+        if not has_begin_document:
+            errors.append("Missing \\begin{document}")
+            self.write("  ✗ Missing \\begin{document}\n", "red")
+        else:
+            self.write("  ✓ Found \\begin{document}\n", "green")
+
+        if not has_end_document:
+            errors.append("Missing \\end{document}")
+            self.write("  ✗ Missing \\end{document}\n", "red")
+        else:
+            self.write("  ✓ Found \\end{document}\n", "green")
+
+        # ========== 2. FIND ALL FRAMES ==========
+        frames = re.findall(r'\\begin{frame}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(.*?)\\end{frame}', content, re.DOTALL)
+
+        if not frames:
+            errors.append("No frames found - need at least one \\begin{frame}")
+            self.write("  ✗ No frames found\n", "red")
+        else:
+            self.write(f"  ✓ Found {len(frames)} frame(s)\n", "green")
+
+            # Check each frame has a title
+            for i, (title, frame_content) in enumerate(frames, 1):
+                if not title:
+                    # Check for frametitle inside the frame
+                    frametitle_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
+                    if not frametitle_match:
+                        warnings.append(f"Frame {i} has no title")
+                        self.write(f"  ⚠ Frame {i}: No title\n", "yellow")
+
+        # ========== 3. CHECK FOR BALANCED BRACES ==========
+        open_braces = content.count('{')
+        close_braces = content.count('}')
+        if open_braces != close_braces:
+            errors.append(f"Unbalanced braces: {open_braces} opening, {close_braces} closing")
+            self.write(f"  ✗ Unbalanced braces: {open_braces} vs {close_braces}\n", "red")
+        else:
+            self.write("  ✓ Braces are balanced\n", "green")
+
+        # ========== 4. CHECK FOR BALANCED MATH DELIMITERS ==========
+        dollar_count = len(re.findall(r'(?<!\\)\$', content))
+        if dollar_count % 2 != 0:
+            errors.append(f"Unbalanced math delimiters: {dollar_count} $ signs (odd number)")
+            self.write(f"  ✗ Unbalanced math delimiters: {dollar_count} $\n", "red")
+        else:
+            self.write("  ✓ Math delimiters are balanced\n", "green")
+
+        # ========== 5. CHECK FOR COMMON ISSUES ==========
+        # Check for smart quotes
+        smart_quotes = re.findall(r'[‘’“”]', content)
+        if smart_quotes:
+            errors.append(f"Found {len(smart_quotes)} smart/curly quotes - replace with straight quotes")
+            self.write(f"  ✗ Found {len(smart_quotes)} smart quotes (use straight quotes \" and ')\n", "red")
+
+        # Check for obsolete packages
+        obsolete_packages = ['grffile', 'capt-of', 'kvoptions']
+        for pkg in obsolete_packages:
+            if f'\\usepackage{{{pkg}}}' in content:
+                warnings.append(f"Obsolete package: {pkg}")
+                self.write(f"  ⚠ Obsolete package: {pkg}\n", "yellow")
+
+        # ========== SUMMARY ==========
+        self.write("\n" + "="*60 + "\n", "cyan")
+        self.write("VALIDATION RESULTS\n", "cyan")
+        self.write("="*60 + "\n", "cyan")
+
+        if errors:
+            self.write(f"✗ Found {len(errors)} error(s):\n", "red")
+            for err in errors:
+                self.write(f"  • {err}\n", "red")
+        else:
+            self.write("✓ No errors found\n", "green")
+
+        if warnings:
+            self.write(f"⚠ Found {len(warnings)} warning(s):\n", "yellow")
+            for warn in warnings:
+                self.write(f"  • {warn}\n", "yellow")
+        else:
+            self.write("✓ No warnings\n", "yellow")
+
+        self.write("="*60 + "\n", "cyan")
+
+        return len(errors) == 0, errors, warnings
+
+    def _validate_txt_format(self, content: str, lines: list) -> tuple:
+        """Validate the old TXT format with \title commands."""
+        import re
+
+        errors = []
+        warnings = []
+
+        # ========== 1. CHECK FOR \begin{document} AND \end{document} ==========
+        has_begin_document = '\\begin{document}' in content
+        has_end_document = '\\end{document}' in content
+
+        if not has_begin_document:
+            errors.append("Missing \\begin{document}")
+            self.write("  ✗ Missing \\begin{document}\n", "red")
+        else:
+            self.write("  ✓ Found \\begin{document}\n", "green")
+
+        if not has_end_document:
+            errors.append("Missing \\end{document}")
+            self.write("  ✗ Missing \\end{document}\n", "red")
+        else:
+            self.write("  ✓ Found \\end{document}\n", "green")
+
+        # ========== 2. CHECK FOR SLIDES ==========
+        slide_titles = re.findall(r'^%?\s*\\title\s+(.+)$', content, re.MULTILINE)
+
+        if not slide_titles:
+            errors.append("No slides found - need at least one \\title")
+            self.write("  ✗ No slides found\n", "red")
+        else:
+            self.write(f"  ✓ Found {len(slide_titles)} slide(s)\n", "green")
+
+        # ========== 3. CHECK FOR BALANCED BRACES ==========
+        open_braces = content.count('{')
+        close_braces = content.count('}')
+        if open_braces != close_braces:
+            errors.append(f"Unbalanced braces: {open_braces} opening, {close_braces} closing")
+            self.write(f"  ✗ Unbalanced braces: {open_braces} vs {close_braces}\n", "red")
+        else:
+            self.write("  ✓ Braces are balanced\n", "green")
+
+        # ========== 4. CHECK FOR BALANCED MATH DELIMITERS ==========
+        dollar_count = len(re.findall(r'(?<!\\)\$', content))
+        if dollar_count % 2 != 0:
+            errors.append(f"Unbalanced math delimiters: {dollar_count} $ signs (odd number)")
+            self.write(f"  ✗ Unbalanced math delimiters: {dollar_count} $\n", "red")
+        else:
+            self.write("  ✓ Math delimiters are balanced\n", "green")
+
+        # ========== SUMMARY ==========
+        self.write("\n" + "="*60 + "\n", "cyan")
+        self.write("VALIDATION RESULTS\n", "cyan")
+        self.write("="*60 + "\n", "cyan")
+
+        if errors:
+            self.write(f"✗ Found {len(errors)} error(s):\n", "red")
+            for err in errors:
+                self.write(f"  • {err}\n", "red")
+        else:
+            self.write("✓ No errors found\n", "green")
+
+        if warnings:
+            self.write(f"⚠ Found {len(warnings)} warning(s):\n", "yellow")
+            for warn in warnings:
+                self.write(f"  • {warn}\n", "yellow")
+        else:
+            self.write("✓ No warnings\n", "yellow")
+
+        self.write("="*60 + "\n", "cyan")
+
+        return len(errors) == 0, errors, warnings
+
+
+
+    # ============================================================
+    # Helper: Extract preamble definitions (already exists but ensure it's complete)
+    # ============================================================
+
+    def _extract_preamble_definitions(self, preamble: str) -> dict:
+        r"""
+        Extract color definitions, package imports, and other settings from preamble.
+
+        PRESERVES ALL ORIGINAL FEATURES:
+        - \definecolor definitions
+        - \colorlet definitions
+        - \usepackage with options
+        - theme, colortheme, fonttheme
+        - \sisetup
+        - \usetikzlibrary
+        - \pgfplotsset
+        - \setbeamertemplate
+        - \setbeamercolor
+        - \setbeamerfont
+        - \setbeamersize
+        - Custom commands (\newcommand, \renewcommand, \def, \let)
+        - \arraystretch
+        """
+        import re
+
+        result = {
+            'colors': {},
+            'packages': [],
+            'package_options': {},
+            'settings': [],
+            'custom_commands': {},
+            'theme': '',
+            'colortheme': '',
+            'fonttheme': '',
+            'templates': [],
+            'beamercolors': [],
+            'beamerfonts': []
+        }
+
+        # Extract \definecolor{name}{model}{value}
+        definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for name, model, value in re.findall(definecolor_pattern, preamble):
+            result['colors'][name.strip()] = (model.strip(), value.strip())
+
+        # Extract \colorlet{name}{source}
+        colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+        for name, source in re.findall(colorlet_pattern, preamble):
+            result['colors'][name.strip()] = ('colorlet', source.strip())
+
+        # Extract \usepackage[options]{package}
+        usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        for options, pkg_list in re.findall(usepackage_pattern, preamble):
+            for pkg in pkg_list.split(','):
+                pkg = pkg.strip()
+                if pkg:
+                    if pkg not in result['packages']:
+                        result['packages'].append(pkg)
+                    if options and pkg not in result['package_options']:
+                        result['package_options'][pkg] = options
+
+        # Extract theme
+        theme_match = re.search(r'\\usetheme\{([^}]+)\}', preamble)
+        if theme_match:
+            result['theme'] = theme_match.group(1).strip()
+
+        colortheme_match = re.search(r'\\usecolortheme\{([^}]+)\}', preamble)
+        if colortheme_match:
+            result['colortheme'] = colortheme_match.group(1).strip()
+
+        fonttheme_match = re.search(r'\\usefonttheme\{([^}]+)\}', preamble)
+        if fonttheme_match:
+            result['fonttheme'] = fonttheme_match.group(1).strip()
+
+        # Extract \sisetup
+        sisetup_match = re.search(r'\\sisetup\s*\{((?:[^{}]|\{[^{}]*\})*)\}', preamble, re.DOTALL)
+        if sisetup_match:
+            result['settings'].append(f"\\sisetup{{{sisetup_match.group(1)}}}")
+
+        # Extract \usetikzlibrary
+        tikzlib_match = re.search(r'\\usetikzlibrary\s*\{([^}]*)\}', preamble, re.DOTALL)
+        if tikzlib_match:
+            result['settings'].append(f"\\usetikzlibrary{{{tikzlib_match.group(1)}}}")
+
+        # Extract \pgfplotsset
+        pgfplotsset_match = re.search(r'\\pgfplotsset\s*\{((?:[^{}]|\{[^{}]*\})*)\}', preamble, re.DOTALL)
+        if pgfplotsset_match:
+            result['settings'].append(f"\\pgfplotsset{{{pgfplotsset_match.group(1)}}}")
+
+        # Extract \setbeamertemplate
+        beamertemplate_pattern = r'\\setbeamertemplate\s*\{([^}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        matches = re.findall(beamertemplate_pattern, preamble, re.DOTALL)
+        for name, content in matches:
+            if content.count('{') == content.count('}'):
+                result['templates'].append((name.strip(), content.strip()))
+                result['settings'].append(f"\\setbeamertemplate{{{name}}}{{{content}}}")
+
+        # Extract \setbeamercolor
+        beamercolor_pattern = r'\\setbeamercolor\s*\{([^}]*)\}\s*\{([^}]*)\}'
+        matches = re.findall(beamercolor_pattern, preamble)
+        for name, value in matches:
+            result['beamercolors'].append((name.strip(), value.strip()))
+            result['settings'].append(f"\\setbeamercolor{{{name}}}{{{value}}}")
+
+        # Extract \setbeamerfont
+        beamerfont_pattern = r'\\setbeamerfont\s*\{([^}]*)\}\s*\{([^}]*)\}'
+        matches = re.findall(beamerfont_pattern, preamble)
+        for name, value in matches:
+            result['beamerfonts'].append((name.strip(), value.strip()))
+            result['settings'].append(f"\\setbeamerfont{{{name}}}{{{value}}}")
+
+        # Extract \setbeamersize
+        beamersize_pattern = r'\\setbeamersize\s*\{([^}]*)\}'
+        matches = re.findall(beamersize_pattern, preamble)
+        for value in matches:
+            result['settings'].append(f"\\setbeamersize{{{value}}}")
+
+        # Extract custom commands
+        newcommand_pattern = r'\\(?:re)?newcommand\s*\{\\([^}]*)\}\s*(?:\[[^\]]*\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        matches = re.findall(newcommand_pattern, preamble, re.DOTALL)
+        for name, definition in matches:
+            if definition.count('{') == definition.count('}'):
+                cmd_def = f"\\newcommand{{\\{name}}}{{{definition}}}"
+                result['custom_commands'][name.strip()] = cmd_def
+
+        # \def\name{...}
+        def_pattern = r'\\def\\([a-zA-Z]+)\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        matches = re.findall(def_pattern, preamble, re.DOTALL)
+        for name, definition in matches:
+            if definition.count('{') == definition.count('}'):
+                cmd_def = f"\\def\\{name}{{{definition}}}"
+                result['custom_commands'][name.strip()] = cmd_def
+
+        # \let\name = ...
+        let_pattern = r'\\let\\([a-zA-Z]+)\s*=\s*([^\\\n]+)'
+        matches = re.findall(let_pattern, preamble)
+        for name, value in matches:
+            cmd_def = f"\\let\\{name}={value.strip()}"
+            result['custom_commands'][name.strip()] = cmd_def
+
+        # \arraystretch
+        arraystretch_match = re.search(r'\\renewcommand\{\\arraystretch\}\{([^}]*)\}', preamble)
+        if arraystretch_match:
+            result['custom_commands']['arraystretch'] = f"\\renewcommand{{\\arraystretch}}{{{arraystretch_match.group(1)}}}"
+
+        return result
 
     #----------------update ends -------------------------
     def _parse_old_format_enhanced(self, content: str) -> list:
-        """Enhanced parsing of old format with proper title extraction"""
+        """Enhanced parsing of old format with proper title extraction and title page handling"""
+        import re
+
         slides_raw = []
         lines = content.split('\n')
         current_slide_lines = []
         current_title = ""
         in_content = False
         in_notes = False
+        found_content_start = False
+        skip_until_content_end = False
+        slide_has_content = False
+        is_title_page = False
 
-        for line in lines:
+        for i, line in enumerate(lines):
             stripped = line.strip()
 
-            # Detect title lines - EXTRACT THE TITLE PROPERLY
+            # ============================================================
+            # Skip malformed lines
+            # ============================================================
+            if stripped == '}{%' or stripped.startswith('}{%'):
+                continue
+            if stripped in ['{}', '{', '}', '}{', '%)', '%)']:
+                continue
+
+            # Detect title lines
             title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
             if title_match:
-                # If we have a previous slide, save it
-                if current_slide_lines:
-                    slides_raw.append({
-                        'title': current_title,
-                        'lines': current_slide_lines
-                    })
-                # Start new slide with the extracted title
-                current_title = title_match.group(1).strip()
-                # Remove any LaTeX formatting from the title
-                current_title = self._clean_latex_title(current_title)
-                current_slide_lines = [line]
-                in_content = False
-                in_notes = False
-            else:
-                current_slide_lines.append(line)
+                # Save previous slide if it has content
+                if current_slide_lines and slide_has_content:
+                    filtered_lines = []
+                    for l in current_slide_lines:
+                        if l.strip() not in ['}{%', '{}', '{', '}', '}{'] and not l.strip().startswith('}{%'):
+                            filtered_lines.append(l)
+                    if filtered_lines:
+                        slides_raw.append({
+                            'title': current_title,
+                            'lines': filtered_lines,
+                            'is_title_page': is_title_page
+                        })
 
+                # Start new slide
+                title_text = title_match.group(1).strip()
+
+                # ============================================================
+                # CRITICAL FIX: Fix special characters in title
+                # ============================================================
+                title_text = self.fix_special_characters(title_text)
+
+                # Check if this is a valid title
+                if title_text and title_text != "\\title" and not re.match(r'^\\title\s*$', line):
+                    current_title = self._clean_latex_title(title_text)
+                    current_slide_lines = [line]
+                    in_content = False
+                    in_notes = False
+                    found_content_start = False
+                    skip_until_content_end = False
+                    slide_has_content = False
+                    is_title_page = False
+                else:
+                    # Skip empty title
+                    current_title = ""
+                    current_slide_lines = []
+                    in_content = False
+                    in_notes = False
+                    found_content_start = False
+                    skip_until_content_end = False
+                    slide_has_content = False
+                    is_title_page = False
+                continue
+
+            # ============================================================
             # Detect Content block boundaries
+            # ============================================================
             if re.match(r'^%?\s*\\begin{Content}\s*$', stripped):
                 in_content = True
-            elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
-                in_content = False
+                found_content_start = True
+                skip_until_content_end = False
+                current_slide_lines.append(line)
+                continue
 
+            if re.match(r'^%?\s*\\end{Content}\s*$', stripped):
+                in_content = False
+                current_slide_lines.append(line)
+                continue
+
+            # ============================================================
             # Detect Notes block boundaries
+            # ============================================================
             if re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
                 in_notes = True
-            elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
+                current_slide_lines.append(line)
+                continue
+
+            if re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
                 in_notes = False
+                current_slide_lines.append(line)
+                continue
+
+            # ============================================================
+            # Check for title page content
+            # ============================================================
+            if in_content and '\\titlepage' in stripped:
+                is_title_page = True
+                slide_has_content = True
+
+            # ============================================================
+            # Skip malformed content inside Content blocks
+            # ============================================================
+            if in_content and (stripped == '}{%' or stripped.startswith('}{%')):
+                continue
+
+            # ============================================================
+            # Check if this line has actual content
+            # ============================================================
+            if in_content:
+                if stripped and not stripped.startswith('%') and stripped != "\\None":
+                    slide_has_content = True
+
+                if stripped == "\\None":
+                    for j in range(i + 1, min(i + 5, len(lines))):
+                        next_stripped = lines[j].strip()
+                        if next_stripped and not next_stripped.startswith('%') and next_stripped != "\\None":
+                            slide_has_content = True
+                            break
+                        if re.match(r'^%?\s*\\end{Content}\s*$', next_stripped):
+                            break
+
+            # ============================================================
+            # Add the line to current slide (with special character fixes)
+            # ============================================================
+            # Only fix content lines, not the title line
+            if not title_match:
+                line = self.fix_special_characters(line)
+            current_slide_lines.append(line)
 
         # Add the last slide
-        if current_slide_lines:
-            slides_raw.append({
-                'title': current_title,
-                'lines': current_slide_lines
-            })
+        if current_slide_lines and slide_has_content:
+            filtered_lines = []
+            for l in current_slide_lines:
+                if l.strip() not in ['}{%', '{}', '{', '}', '}{'] and not l.strip().startswith('}{%'):
+                    filtered_lines.append(l)
+            if filtered_lines:
+                slides_raw.append({
+                    'title': current_title,
+                    'lines': filtered_lines,
+                    'is_title_page': is_title_page
+                })
 
-        return slides_raw
+        # ============================================================
+        # FIX: Convert title page slides to proper Beamer format
+        # ============================================================
+        fixed_slides = []
+        for slide_data in slides_raw:
+            if slide_data.get('is_title_page', False):
+                # Convert to proper title page frame
+                fixed_slides.append({
+                    'title': 'Title Page',
+                    'content': ['\\begin{frame}[plain]', '\\titlepage', '\\end{frame}'],
+                    'notes': [],
+                    'is_title_page': True,
+                    '_hidden_content_indices': [],
+                    '_hidden_note_indices': [],
+                    '_media_masked': False,
+                    '_fully_masked': False
+                })
+            else:
+                fixed_slides.append(slide_data)
+
+        return fixed_slides
 
     def _clean_latex_title(self, title: str) -> str:
         """Clean LaTeX title for display in IDE"""
@@ -20957,6 +26209,11 @@ Created by {self.__author__}
             return "Untitled"
 
         import re
+
+        # ============================================================
+        # CRITICAL FIX: Fix special characters in title
+        # ============================================================
+        title = self.fix_special_characters(title)
 
         # Remove common LaTeX formatting commands
         title = re.sub(r'\\textbf{([^}]*)}', r'\1', title)
@@ -20982,7 +26239,19 @@ Created by {self.__author__}
         """Enhanced processing of old format slides with proper content extraction"""
         import re
 
-        # Use the extracted title from slide_data
+        # Check if this is a title page
+        if slide_data.get('is_title_page', False):
+            return {
+                'title': 'Title Page',
+                'media': '',
+                'content': ['\\begin{frame}[plain]', '\\titlepage', '\\end{frame}'],
+                'notes': [],
+                '_hidden_content_indices': [],
+                '_hidden_note_indices': [],
+                '_media_masked': False,
+                '_fully_masked': False
+            }
+
         title = slide_data.get('title', f"Slide {slide_idx + 1}")
         slide_lines = slide_data.get('lines', [])
 
@@ -21032,10 +26301,14 @@ Created by {self.__author__}
                 else:
                     clean_line = line
 
+                # ============================================================
+                # CRITICAL FIX: Fix special characters in content
+                # ============================================================
+                clean_line = self.fix_special_characters(clean_line)
+
                 if clean_line.strip() or (is_masked and clean_line):
-                    # Skip \None lines - they should be treated as "no media"
+                    # Skip \None lines
                     if clean_line.strip() == "\\None":
-                        # If we haven't found media yet, this is the media line
                         if not found_media:
                             found_media = True
                             media = ""
@@ -21045,12 +26318,10 @@ Created by {self.__author__}
                     if not found_media:
                         found_media = True
                         media_value = clean_line.strip()
-                        # Check if this is a media directive
                         if media_value.startswith('\\file') or media_value.startswith('\\play'):
                             media = media_value
                             media_masked = is_masked
                         else:
-                            # Not media, treat as content
                             content_lines.append(clean_line.rstrip())
                             if is_masked:
                                 hidden_content_indices.append(content_line_index)
@@ -21071,6 +26342,11 @@ Created by {self.__author__}
                 else:
                     clean_line = line
 
+                # ============================================================
+                # CRITICAL FIX: Fix special characters in notes
+                # ============================================================
+                clean_line = self.fix_special_characters(clean_line)
+
                 if clean_line.strip():
                     notes_lines.append(clean_line.rstrip())
                     if is_masked:
@@ -21080,8 +26356,11 @@ Created by {self.__author__}
             media = ""
             media_masked = False
 
+        # Remove any title page command from content (it should be handled separately)
+        content_lines = [c for c in content_lines if '\\titlepage' not in c]
+
         return {
-            'title': title,  # Use the extracted title
+            'title': title,
             'media': media,
             'content': content_lines,
             'notes': notes_lines,
@@ -21191,8 +26470,7 @@ Created by {self.__author__}
         slides = []
         import re
 
-        # Find all frame blocks with support for nested structures
-        # This handles frames with titles, frametitles, and complex content
+        # Find all frame blocks
         frame_pattern = r'\\begin{frame}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end{frame}'
         frames = re.finditer(frame_pattern, content, re.DOTALL)
 
@@ -21201,13 +26479,18 @@ Created by {self.__author__}
             subtitle = frame_match.group(2) or ""
             frame_content = frame_match.group(3).strip()
 
+            # ============================================================
+            # CRITICAL FIX: Skip malformed frames
+            # ============================================================
+            if '}{%' in frame_content or frame_content.strip() == '}{%':
+                continue
+
             # Clean and extract the actual title
             if not title and not subtitle:
                 # Try to find \frametitle inside the content
                 frametitle_match = re.search(r'\\frametitle{([^}]*)}', frame_content)
                 if frametitle_match:
                     title = frametitle_match.group(1).strip()
-                    # Remove frametitle from content to avoid duplication
                     frame_content = re.sub(r'\\frametitle{[^}]*}', '', frame_content)
                 else:
                     # Try to find \title inside content (for title pages)
@@ -21215,7 +26498,7 @@ Created by {self.__author__}
                     if title_match:
                         title = title_match.group(1).strip()
 
-            # Clean title: remove LaTeX formatting artifacts
+            # Clean title
             if title:
                 title = self._clean_latex_title(title)
 
@@ -21231,16 +26514,14 @@ Created by {self.__author__}
             note_match = re.search(r'\\note{(.*?)}', frame_content, re.DOTALL)
             if note_match:
                 note_content = note_match.group(1).strip()
-                # Extract items from note content
                 note_items = re.finditer(r'\\item\s*(.*?)(?=\\item|$)', note_content, re.DOTALL)
                 for item in note_items:
                     note_text = item.group(1).strip()
                     if note_text:
                         notes.append(f"• {note_text}")
-                # Remove note from content
                 frame_content = re.sub(r'\\note{.*?}', '', frame_content, flags=re.DOTALL)
 
-            # Process content lines with enhanced detection
+            # Process content lines
             content_lines = self._process_frame_content(frame_content)
 
             # Extract media if present
@@ -21773,22 +27054,116 @@ Created by {self.__author__}
             return
 
         try:
-            # Get absolute paths
-            base_filename = os.path.splitext(self.current_file)[0]
-            pdf_file = base_filename + '.pdf'
-            abs_pdf_path = os.path.abspath(pdf_file)
+            # ============================================================
+            # STEP 1: Save current state and remember the current notes mode
+            # ============================================================
+            self.save_current_slide()
 
-            # Check if PDF exists and generate if needed
-            if not os.path.exists(abs_pdf_path):
-                self.write_to_terminal("PDF not found. Generating...")
-                self.generate_pdf()
+            # Store the current notes mode to restore later
+            original_mode = self.notes_mode.get() if hasattr(self, 'notes_mode') else "both"
 
-                if not os.path.exists(abs_pdf_path):
-                    messagebox.showerror("Error", "Failed to generate PDF presentation.")
+            # ============================================================
+            # STEP 2: Temporarily switch to "both" mode (notes on side)
+            # ============================================================
+            self.write("\n" + "="*60 + "\n", "cyan")
+            self.write("PRESENT WITH NOTES\n", "cyan")
+            self.write("="*60 + "\n", "cyan")
+            self.write(f"Switching to 'both' mode for presentation...\n", "cyan")
+
+            # Ensure we have a notes_mode variable
+            if not hasattr(self, 'notes_mode'):
+                self.notes_mode = tk.StringVar(value="both")
+
+            # Set to "both" mode for presentation
+            self.notes_mode.set("both")
+            self.update_notes_buttons("both")
+
+            # ============================================================
+            # STEP 3: Generate PDF with notes in the SAME directory
+            # ============================================================
+            # Get the directory and base name of the current file
+            current_dir = os.path.dirname(os.path.abspath(self.current_file))
+            base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+
+            # The PDF with notes will be in the same directory
+            both_pdf = os.path.join(current_dir, base_name + '_both.pdf')
+
+            self.write(f"\n📁 Working directory: {current_dir}\n", "cyan")
+            self.write(f"📄 Source file: {os.path.basename(self.current_file)}\n", "cyan")
+            self.write(f"📑 Target PDF: {os.path.basename(both_pdf)}\n", "cyan")
+
+            # First, ensure the TeX file exists in the same directory
+            tex_file = os.path.join(current_dir, base_name + '.tex')
+            if not os.path.exists(tex_file):
+                self.write("Converting to TeX...\n", "cyan")
+                self.convert_to_tex()
+                # After conversion, tex_file should exist
+                if not os.path.exists(tex_file):
+                    self.write("✗ Failed to create TeX file\n", "red")
                     return
 
-            # Use system pympress
-            self.write_to_terminal("Launching pympress presentation viewer...")
+            # Generate PDF with notes using compile_with_notes_mode
+            self.write("\nGenerating PDF with notes on side...\n", "cyan")
+
+            try:
+                # Use the compile_with_notes_mode function
+                from BSG_IDE import compile_with_notes_mode
+
+                # This will save the PDF in the same directory as the source file
+                result_pdf = compile_with_notes_mode(tex_file, "both", keep_temp=False)
+
+                if result_pdf and os.path.exists(result_pdf):
+                    self.write(f"✓ PDF with notes generated: {os.path.basename(result_pdf)}\n", "green")
+                    both_pdf = result_pdf
+                else:
+                    raise Exception("compile_with_notes_mode returned None or invalid path")
+
+            except (ImportError, NameError, AttributeError, Exception) as e:
+                self.write(f"⚠ compile_with_notes_mode not available: {str(e)}\n", "yellow")
+                self.write("Using standard PDF generation...\n", "cyan")
+
+                # Fallback: use standard generate_pdf
+                self.generate_pdf()
+
+                # Check if _both.pdf was created
+                if not os.path.exists(both_pdf):
+                    # Try to find any PDF with notes
+                    import glob
+                    pdf_files = glob.glob(os.path.join(current_dir, base_name + '_*.pdf'))
+                    if pdf_files:
+                        both_pdf = pdf_files[0]
+                        self.write(f"Found PDF with notes: {os.path.basename(both_pdf)}\n", "green")
+                    else:
+                        # Use the default PDF
+                        default_pdf = os.path.join(current_dir, base_name + '.pdf')
+                        if os.path.exists(default_pdf):
+                            # Copy default PDF to _both.pdf
+                            shutil.copy2(default_pdf, both_pdf)
+                            self.write(f"Using default PDF (copied to _both): {os.path.basename(both_pdf)}\n", "yellow")
+                        else:
+                            self.write("✗ No PDF found!\n", "red")
+                            messagebox.showerror("Error", "Failed to generate PDF.")
+                            return
+
+            # ============================================================
+            # STEP 4: Verify the PDF exists and is accessible
+            # ============================================================
+            if not os.path.exists(both_pdf):
+                self.write(f"✗ PDF not found: {both_pdf}\n", "red")
+                # Restore original mode
+                self.notes_mode.set(original_mode)
+                self.update_notes_buttons(original_mode)
+                messagebox.showerror("Error", f"PDF not found:\n{os.path.basename(both_pdf)}")
+                return
+
+            # Ensure we're in a stable directory before launching pympress
+            os.chdir(current_dir)
+            self.write(f"\n📂 Working directory: {os.getcwd()}\n", "cyan")
+
+            # ============================================================
+            # STEP 5: Launch pympress with the _both PDF
+            # ============================================================
+            self.write(f"\n🚀 Launching pympress with: {os.path.basename(both_pdf)}\n", "cyan")
 
             # Try different possible pympress locations
             pympress_paths = [
@@ -21801,34 +27176,79 @@ Created by {self.__author__}
             launched = False
             for path in pympress_paths:
                 if path and os.path.exists(path):
-                    subprocess.Popen([path, abs_pdf_path])
+                    self.write(f"  Using pympress: {path}\n", "cyan")
+                    subprocess.Popen([path, both_pdf])
                     launched = True
                     break
 
             if not launched:
                 # Try using python -m pympress
                 try:
-                    subprocess.Popen([sys.executable, "-m", "pympress", abs_pdf_path])
+                    self.write("  Trying: python -m pympress\n", "cyan")
+                    subprocess.Popen([sys.executable, "-m", "pympress", both_pdf])
                     launched = True
-                except:
-                    pass
+                except Exception as e:
+                    self.write(f"  Failed: {str(e)}\n", "yellow")
 
             if launched:
-                self.write_to_terminal("✓ Presentation launched successfully\n", "green")
-                self.write_to_terminal("\nPympress Controls:\n")
-                self.write_to_terminal("- Right Arrow/Space/Page Down: Next slide\n")
-                self.write_to_terminal("- Left Arrow/Page Up: Previous slide\n")
-                self.write_to_terminal("- Escape: Exit presentation\n")
-                self.write_to_terminal("- F11: Toggle fullscreen\n")
-                self.write_to_terminal("- N: Toggle notes\n")
-                self.write_to_terminal("- P: Pause/unpause timer\n")
+                self.write("\n" + "="*60 + "\n", "green")
+                self.write("✓ PRESENTATION LAUNCHED SUCCESSFULLY!\n", "green")
+                self.write("="*60 + "\n", "green")
+                self.write(f"  PDF: {os.path.basename(both_pdf)}\n", "white")
+                self.write(f"  Location: {os.path.dirname(both_pdf)}\n", "white")
+                self.write("\n📖 Pympress Controls:\n", "cyan")
+                self.write("  • Right Arrow / Space / Page Down: Next slide\n", "white")
+                self.write("  • Left Arrow / Page Up: Previous slide\n", "white")
+                self.write("  • Escape: Exit presentation\n", "white")
+                self.write("  • F11: Toggle fullscreen\n", "white")
+                self.write("  • N: Toggle notes\n", "white")
+                self.write("  • P: Pause/unpause timer\n", "white")
+                self.write("  • C: Show clock\n", "white")
+                self.write("="*60 + "\n", "green")
+
+                # ============================================================
+                # STEP 6: Restore original mode
+                # ============================================================
+                self.notes_mode.set(original_mode)
+                self.update_notes_buttons(original_mode)
+                self.write(f"\n🔄 Restored notes mode to: {original_mode}\n", "cyan")
+
             else:
-                self.write_to_terminal("✗ pympress not found. Please install it:\n", "red")
-                self.write_to_terminal("  pip install pympress\n", "yellow")
+                self.write("\n" + "="*60 + "\n", "red")
+                self.write("✗ pympress NOT FOUND\n", "red")
+                self.write("="*60 + "\n", "red")
+                self.write("\nPlease install pympress:\n", "yellow")
+                self.write("  pip install pympress\n", "white")
+                self.write("  or\n", "white")
+                self.write("  sudo apt install pympress  # Ubuntu/Debian\n", "white")
+                self.write("  sudo dnf install pympress  # Fedora\n", "white")
+                self.write("  brew install pympress      # macOS\n", "white")
+
+                # Restore original mode
+                self.notes_mode.set(original_mode)
+                self.update_notes_buttons(original_mode)
+
+                # Ask if user wants to open with default PDF viewer
+                if messagebox.askyesno("pympress Not Found",
+                    "pympress is not installed.\n\n"
+                    "Would you like to open the PDF with your default PDF viewer instead?\n\n"
+                    "(Notes will not be displayed in dual-screen mode)"):
+                    self.preview_pdf(both_pdf)
+                return
 
         except Exception as e:
-            self.write_to_terminal(f"✗ Error launching presentation: {str(e)}\n", "red")
+            self.write(f"\n✗ Error launching presentation: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("Error", f"Error launching presentation:\n{str(e)}")
+
+            # Attempt to restore original mode on error
+            try:
+                if 'original_mode' in locals():
+                    self.notes_mode.set(original_mode)
+                    self.update_notes_buttons(original_mode)
+            except:
+                pass
 
     def add_tikz_color_helper(self):
         """Add TikZ color helper button to toolbar"""
@@ -24687,6 +30107,2964 @@ Created by {self.__author__}
 
         return "\n".join(block)
 
+    @staticmethod
+    def fix_custom_commands(preamble):
+        """
+        Fix malformed custom commands by removing all existing definitions and
+        adding the correct default versions.
+
+        Strategy:
+        1. Detect all custom command definitions in the preamble
+        2. Remove ALL instances (both malformed and correct)
+        3. Add only the correct default version back
+        4. Preserve user's choices if they were saved
+        """
+        import re
+
+        fixed_preamble = preamble
+        removed_count = 0
+        added_count = 0
+
+        # ============================================================
+        # DEFAULT (CORRECT) COMMAND DEFINITIONS
+        # ============================================================
+        DEFAULT_CUSTOM_COMMANDS = {
+            'split': r"""\newcommand{\split}[2]{%
+            \begin{columns}[T]
+                \begin{column}{0.45\textwidth}
+                    \begin{center}
+                        \includegraphics[width=\textwidth,keepaspectratio]{#1}
+                    \end{center}
+                \end{column}
+                \begin{column}{0.5\textwidth}
+                    #2
+                \end{column}
+            \end{columns}
+        }""",
+            'pip': r"""\newcommand{\pip}[2]{%
+            \begin{columns}[T]
+                \begin{column}{0.68\textwidth}
+                    #2
+                \end{column}
+                \begin{column}{0.28\textwidth}
+                    \vspace{1em}
+                    \includegraphics[width=\textwidth,keepaspectratio]{#1}
+                \end{column}
+            \end{columns}
+        }""",
+            'tb': r"""\newcommand{\tb}[2]{%
+            \begin{center}
+                \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+            \end{center}
+            \vspace{0.5em}
+            #2
+        }""",
+            'insertshortinstitute': r"\newcommand{\insertshortinstitute}{airis4D}",
+            'ff': r"""\newcommand{\ff}[1]{%
+            \setbeamertemplate{background}{%
+                \begin{tikzpicture}[remember picture,overlay]
+                    \node at (current page.center) {%
+                        \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                    };
+                \end{tikzpicture}%
+            }
+            \begin{center}
+                \vfill
+                \textcolor{white}{\textbf{Full Frame Image}}
+                \vfill
+            \end{center}
+        }""",
+            'wm': r"""\newcommand{\wm}[1]{%
+            \setbeamertemplate{background}{%
+                \begin{tikzpicture}[remember picture,overlay]
+                    \node[opacity=0.15] at (current page.center) {%
+                        \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                    };
+                \end{tikzpicture}%
+            }
+        }""",
+            'hl': r"""\newcommand{\hl}[2]{%
+            \begin{columns}[T]
+                \begin{column}{0.6\textwidth}
+                    \includegraphics[width=\textwidth,keepaspectratio]{#1}
+                \end{column}
+                \begin{column}{0.36\textwidth}
+                    \colorbox{yellow!20}{%
+                        \begin{minipage}{\textwidth}
+                            #2
+                        \end{minipage}%
+                    }
+                \end{column}
+            \end{columns}
+        }""",
+            'bg': r"""\newcommand{\bg}[1]{%
+            \setbeamertemplate{background}{%
+                \begin{tikzpicture}[remember picture,overlay]
+                    \node[opacity=0.3] at (current page.center) {%
+                        \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                    };
+                \end{tikzpicture}%
+            }
+        }""",
+            'ol': r"""\newcommand{\ol}[1]{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node at (current page.center) {%
+                    \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }""",
+            'corner': r"""\newcommand{\corner}[2]{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[anchor=south east] at (current page.south east) {%
+                    \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+            #2
+        }""",
+        }
+
+        # ============================================================
+        # Helper: Find matching closing brace for nested braces
+        # ============================================================
+        def find_matching_brace(text, start_pos):
+            if start_pos >= len(text) or text[start_pos] != '{':
+                return -1
+            brace_count = 1
+            pos = start_pos + 1
+            while pos < len(text) and brace_count > 0:
+                if text[pos] == '{':
+                    brace_count += 1
+                elif text[pos] == '}':
+                    brace_count -= 1
+                pos += 1
+            return pos - 1 if brace_count == 0 else -1
+
+        # ============================================================
+        # Helper: Parse a command definition
+        # ============================================================
+        def parse_command_definition(text, start_pos):
+            """Parse a command definition and return its details."""
+            # Check for \newcommand or \renewcommand
+            newcmd_match = re.search(r'\\(?:re)?newcommand\{\\([^}]+)\}', text[start_pos:])
+            if newcmd_match:
+                local_pos = start_pos + newcmd_match.end()
+                name = newcmd_match.group(1)
+                full_start = start_pos + newcmd_match.start()
+
+                param_count = 0
+                if local_pos < len(text) and text[local_pos] == '[':
+                    bracket_match = re.search(r'\[(\d+)\]', text[local_pos:])
+                    if bracket_match:
+                        param_count = int(bracket_match.group(1))
+                        local_pos += bracket_match.end()
+
+                while local_pos < len(text):
+                    if text[local_pos] in ' \t\n\r':
+                        local_pos += 1
+                    elif text[local_pos] == '%':
+                        while local_pos < len(text) and text[local_pos] != '\n':
+                            local_pos += 1
+                    else:
+                        break
+
+                if local_pos >= len(text) or text[local_pos] != '{':
+                    return None
+
+                brace_end = find_matching_brace(text, local_pos)
+                if brace_end == -1:
+                    return None
+
+                definition = text[local_pos + 1:brace_end]
+                full_end = brace_end + 1
+
+                return {
+                    'type': 'newcommand',
+                    'name': name,
+                    'param_count': param_count,
+                    'definition': definition,
+                    'full_text': text[full_start:full_end],
+                    'start': full_start,
+                    'end': full_end
+                }
+
+            # Check for \def
+            def_match = re.search(r'\\def\\([a-zA-Z]+)', text[start_pos:])
+            if def_match:
+                local_pos = start_pos + def_match.end()
+                name = def_match.group(1)
+                full_start = start_pos + def_match.start()
+
+                param_count = 0
+                if local_pos < len(text) and text[local_pos] == '[':
+                    bracket_match = re.search(r'\[(\d+)\]', text[local_pos:])
+                    if bracket_match:
+                        param_count = int(bracket_match.group(1))
+                        local_pos += bracket_match.end()
+
+                while local_pos < len(text):
+                    if text[local_pos] in ' \t\n\r':
+                        local_pos += 1
+                    elif text[local_pos] == '%':
+                        while local_pos < len(text) and text[local_pos] != '\n':
+                            local_pos += 1
+                    else:
+                        break
+
+                if local_pos >= len(text) or text[local_pos] != '{':
+                    return None
+
+                brace_end = find_matching_brace(text, local_pos)
+                if brace_end == -1:
+                    return None
+
+                definition = text[local_pos + 1:brace_end]
+                full_end = brace_end + 1
+
+                return {
+                    'type': 'def',
+                    'name': name,
+                    'param_count': param_count,
+                    'definition': definition,
+                    'full_text': text[full_start:full_end],
+                    'start': full_start,
+                    'end': full_end
+                }
+
+            return None
+
+        # ============================================================
+        # Helper: Find all command definitions
+        # ============================================================
+        def find_all_commands(text):
+            results = {}
+            pos = 0
+
+            while pos < len(text):
+                cmd = parse_command_definition(text, pos)
+                if cmd:
+                    name = cmd['name']
+                    if name not in results:
+                        results[name] = []
+                    results[name].append(cmd)
+                    pos = cmd['end']
+                else:
+                    pos += 1
+
+            return results
+
+        # ============================================================
+        # Helper: Detect what parameters a definition uses
+        # ============================================================
+        def detect_used_params(definition):
+            used = []
+            for i in range(1, 10):
+                if f'#{i}' in definition:
+                    used.append(i)
+            return used
+
+        # ============================================================
+        # Helper: Check if a command is correctly defined
+        # ============================================================
+        def is_correctly_defined(cmd, default_cmd):
+            used_params = detect_used_params(cmd['definition'])
+            expected_params = detect_used_params(default_cmd)
+
+            # Check if the command has the correct number of parameters
+            # For \newcommand, param_count should match expected
+            if cmd['type'] == 'newcommand':
+                if cmd['param_count'] != len(expected_params):
+                    return False
+                # Check if the definition actually uses the parameters
+                if cmd['param_count'] > 0:
+                    for i in range(1, cmd['param_count'] + 1):
+                        if f'#{i}' not in cmd['definition']:
+                            return False
+            elif cmd['type'] == 'def':
+                # \def commands are more flexible, check if params are used
+                for i in range(1, 10):
+                    if f'#{i}' in default_cmd and f'#{i}' not in cmd['definition']:
+                        return False
+
+            return True
+
+        # ============================================================
+        # Step 1: Find all existing command definitions
+        # ============================================================
+        existing_commands = find_all_commands(fixed_preamble)
+
+        # ============================================================
+        # Step 2: Track which commands we need to handle
+        # ============================================================
+        important_commands = list(DEFAULT_CUSTOM_COMMANDS.keys())
+        commands_to_fix = {}
+
+        for cmd_name in important_commands:
+            if cmd_name in existing_commands:
+                definitions = existing_commands[cmd_name]
+
+                # Check if any definition is correct
+                is_correct = False
+                default_cmd = DEFAULT_CUSTOM_COMMANDS.get(cmd_name, '')
+                for cmd in definitions:
+                    if is_correctly_defined(cmd, default_cmd):
+                        is_correct = True
+                        break
+
+                commands_to_fix[cmd_name] = {
+                    'definitions': definitions,
+                    'is_correct': is_correct
+                }
+
+                print(f"  Found {len(definitions)} definition(s) of \\{cmd_name}")
+                for i, cmd in enumerate(definitions):
+                    used_params = detect_used_params(cmd['definition'])
+                    param_str = f"[{cmd['param_count']}]" if cmd['param_count'] > 0 else "[]"
+                    used_str = f" uses {used_params}" if used_params else " (no params)"
+                    print(f"    [{i+1}] {cmd['type']}{param_str}{used_str}")
+            else:
+                print(f"  No definition found for \\{cmd_name}")
+
+        # ============================================================
+        # Step 3: REMOVE ALL malformed definitions
+        # ============================================================
+        for cmd_name, info in commands_to_fix.items():
+            if not info['is_correct']:
+                # Remove all definitions for this command
+                for cmd in info['definitions']:
+                    # Make sure we only remove the exact command
+                    pattern = re.escape(cmd['full_text'])
+                    fixed_preamble = re.sub(pattern, '', fixed_preamble)
+                    removed_count += 1
+                    print(f"  ✓ Removed malformed \\{cmd_name} definition")
+
+        # Clean up extra newlines
+        fixed_preamble = re.sub(r'\n\s*\n\s*\n', '\n\n', fixed_preamble)
+        fixed_preamble = re.sub(r'\n\s*\n', '\n\n', fixed_preamble)
+
+        # ============================================================
+        # Step 4: Add back correct definitions (only if not already present)
+        # ============================================================
+        for cmd_name in important_commands:
+            if cmd_name in DEFAULT_CUSTOM_COMMANDS:
+                default_cmd = DEFAULT_CUSTOM_COMMANDS[cmd_name]
+
+                # Check if this command already exists correctly in the preamble
+                cmd_pattern = re.escape(default_cmd[:50])
+                if re.search(cmd_pattern, fixed_preamble):
+                    print(f"  ℹ \\{cmd_name} already correctly defined")
+                    continue
+
+                fixed_preamble = fixed_preamble.rstrip() + '\n' + default_cmd
+                added_count += 1
+                print(f"  ✓ Added correct \\{cmd_name} definition")
+
+        # ============================================================
+        # Step 5: Remove obsolete packages - FIXED
+        # ============================================================
+        obsolete_packages = ['grffile', 'capt-of', 'kvoptions']
+        for pkg in obsolete_packages:
+            pkg_pattern = rf'\\usepackage\{{\s*{pkg}\s*\}}'
+            if re.search(pkg_pattern, fixed_preamble):
+                # Use raw string with double braces to avoid escape issues
+                replacement = r'% \usepackage{' + pkg + r'}  % Removed: obsolete package'
+                fixed_preamble = re.sub(pkg_pattern, replacement, fixed_preamble)
+                print(f"  ✓ Removed obsolete package: {pkg}")
+
+        # ============================================================
+        # Step 6: Report
+        # ============================================================
+        if removed_count > 0 or added_count > 0:
+            print(f"✓ Fixed custom commands: removed {removed_count}, added {added_count}")
+
+        return fixed_preamble
+
+    @staticmethod
+    def fix_custom_commands_with_guards(preamble):
+        r"""
+        Fix malformed custom commands while preserving \ifcsname...\fi guards.
+
+        STRATEGY:
+        1. REMOVE ALL malformed custom commands FIRST
+        2. Then add correct guarded versions
+
+        This prevents the "Command \split already defined" error.
+        """
+        import re
+
+        fixed_preamble = preamble
+        fixed_count = 0
+
+        # ============================================================
+        # Step 1: REMOVE ALL MALFORMED COMMANDS
+        # ============================================================
+        print("\n🔧 Removing malformed custom commands...")
+
+        # List of commands that should have [2] parameter
+        important_commands = ['split', 'pip', 'tb', 'hl', 'ff', 'wm', 'bg', 'ol', 'corner', 'mosaic']
+
+        for cmd_name in important_commands:
+            # Pattern for malformed \newcommand without [2]
+            pattern = r'\\newcommand\{\\' + cmd_name + r'\}\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+
+            # Find and remove all occurrences
+            matches = list(re.finditer(pattern, fixed_preamble, re.DOTALL))
+            for match in reversed(matches):
+                full_def = match.group(0)
+                if full_def in fixed_preamble:
+                    fixed_preamble = fixed_preamble.replace(full_def, '')
+                    fixed_count += 1
+                    print(f"  ✓ Removed malformed \\{cmd_name} definition")
+
+            # Also remove malformed \newcommand with [0] or [1]
+            pattern2 = r'\\newcommand\{\\' + cmd_name + r'\}\s*\[[01]\]\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            matches = list(re.finditer(pattern2, fixed_preamble, re.DOTALL))
+            for match in reversed(matches):
+                full_def = match.group(0)
+                if full_def in fixed_preamble:
+                    fixed_preamble = fixed_preamble.replace(full_def, '')
+                    fixed_count += 1
+                    print(f"  ✓ Removed malformed \\{cmd_name} with [0/1] params")
+
+            # Also remove \def\cmd without params
+            pattern3 = r'\\def\\' + cmd_name + r'\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            matches = list(re.finditer(pattern3, fixed_preamble, re.DOTALL))
+            for match in reversed(matches):
+                full_def = match.group(0)
+                if full_def in fixed_preamble:
+                    fixed_preamble = fixed_preamble.replace(full_def, '')
+                    fixed_count += 1
+                    print(f"  ✓ Removed malformed \\def\\{cmd_name}")
+
+        # Also remove malformed \insertshortinstitute
+        insert_patterns = [
+            r'\\def\\insertshortinstitute\{\}',
+            r'\\def\\insertshortinstitute\{\}\}',
+        ]
+        for pattern in insert_patterns:
+            matches = list(re.finditer(pattern, fixed_preamble, re.DOTALL))
+            for match in reversed(matches):
+                full_def = match.group(0)
+                if full_def in fixed_preamble:
+                    fixed_preamble = fixed_preamble.replace(full_def, '')
+                    fixed_count += 1
+                    print(f"  ✓ Removed malformed \\insertshortinstitute definition")
+
+        # Clean up extra newlines
+        fixed_preamble = re.sub(r'\n\s*\n\s*\n', '\n\n', fixed_preamble)
+        fixed_preamble = re.sub(r'\n\s*\n', '\n\n', fixed_preamble)
+
+        # ============================================================
+        # Step 2: ADD CORRECT GUARDED COMMANDS (ONLY IF MISSING)
+        # ============================================================
+        print("\n🔧 Adding correct guarded commands...")
+
+        CORRECT_COMMANDS = {
+            'split': r"""\ifcsname split\endcsname\else
+    \newcommand{\split}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.45\textwidth}
+                \begin{center}
+                    \includegraphics[width=\textwidth,keepaspectratio]{#1}
+                \end{center}
+            \end{column}
+            \begin{column}{0.5\textwidth}
+                #2
+            \end{column}
+        \end{columns}
+    }
+    \fi""",
+            'pip': r"""\ifcsname pip\endcsname\else
+    \newcommand{\pip}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.68\textwidth}
+                #2
+            \end{column}
+            \begin{column}{0.28\textwidth}
+                \vspace{1em}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+        \end{columns}
+    }
+    \fi""",
+            'tb': r"""\ifcsname tb\endcsname\else
+    \newcommand{\tb}[2]{%
+        \begin{center}
+            \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+        \end{center}
+        \vspace{0.5em}
+        #2
+    }
+    \fi""",
+            'insertshortinstitute': r"\def\insertshortinstitute{airis4D}",
+            'hl': r"""\ifcsname hl\endcsname\else
+    \newcommand{\hl}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.6\textwidth}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+            \begin{column}{0.36\textwidth}
+                \colorbox{yellow!20}{%
+                    \begin{minipage}{\textwidth}
+                        #2
+                    \end{minipage}%
+                }
+            \end{column}
+        \end{columns}
+    }
+    \fi""",
+            'ff': r"""\ifcsname ff\endcsname\else
+    \newcommand{\ff}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+        \begin{center}
+            \vfill
+            \textcolor{white}{\textbf{Full Frame Image}}
+            \vfill
+        \end{center}
+    }
+    \fi""",
+            'wm': r"""\ifcsname wm\endcsname\else
+    \newcommand{\wm}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.15] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }
+    \fi""",
+            'bg': r"""\ifcsname bg\endcsname\else
+    \newcommand{\bg}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.3] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }
+    \fi""",
+            'ol': r"""\ifcsname ol\endcsname\else
+    \newcommand{\ol}[1]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node at (current page.center) {%
+                \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+    \fi""",
+            'corner': r"""\ifcsname corner\endcsname\else
+    \newcommand{\corner}[2]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[anchor=south east] at (current page.south east) {%
+                \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+        #2
+    }
+    \fi""",
+            'mosaic': r"""\ifcsname mosaic\endcsname\else
+    \newcommand{\mosaic}[2]{%
+        \begingroup
+        \def\mosaic@params{#1}%
+        \def\mosaic@images{#2}%
+        \pgfmathsetmacro{\mosaic@rows}{{\mosaic@params}[0]}%
+        \pgfmathsetmacro{\mosaic@cols}{{\mosaic@params}[2]}%
+        \begin{center}
+        \begin{tabular}{*{\mosaic@cols}{c}}
+        \hline
+        \mosaic@process
+        \hline
+        \end{tabular}
+        \end{center}
+        \endgroup
+    }
+    \def\mosaic@process{%
+        \mosaic@process@helper\mosaic@images,\@empty
+    }
+    \def\mosaic@process@helper#1,#2\@empty{%
+        \ifx\@empty#2\@empty
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
+        \else
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1} &
+            \def\mosaic@remaining{#2}%
+            \mosaic@process@next
+        \fi
+    }
+    \def\mosaic@process@next{%
+        \mosaic@process@helper\mosaic@remaining,\@empty
+    }
+    \fi""",
+        }
+
+        # Add missing commands
+        for cmd_name, correct_def in CORRECT_COMMANDS.items():
+            # Check if already guarded
+            if f'\\ifcsname {cmd_name}\\endcsname' in fixed_preamble:
+                print(f"  ℹ \\{cmd_name} already has guard")
+                continue
+
+            # Check if correctly defined without guard
+            if f'\\newcommand{{\\{cmd_name}}}[2]' in fixed_preamble:
+                print(f"  ℹ \\{cmd_name} correctly defined without guard")
+                continue
+
+            # Add the guarded definition
+            fixed_preamble = fixed_preamble.rstrip() + '\n' + correct_def
+            fixed_count += 1
+            print(f"  ✓ Added guarded \\{cmd_name} definition")
+
+        # ============================================================
+        # Step 3: REMOVE CONFLICTING PACKAGES
+        # ============================================================
+        # Remove soul package (if present)
+        soul_patterns = [
+            '\\usepackage{soul}',
+            '\\IfFileExists{soul.sty}{\\usepackage{soul}}{}',
+            '\\IfFileExists{soul.sty}',
+        ]
+        for pattern in soul_patterns:
+            if pattern in fixed_preamble:
+                fixed_preamble = fixed_preamble.replace(
+                    pattern,
+                    f'% {pattern}  % Removed: conflicts with custom \\hl'
+                )
+                print(f"  ✓ Removed soul package")
+
+        # Remove obsolete packages
+        obsolete_packages = ['grffile', 'capt-of', 'kvoptions']
+        for pkg in obsolete_packages:
+            pkg_pattern = f'\\usepackage{{{pkg}}}'
+            if pkg_pattern in fixed_preamble:
+                fixed_preamble = fixed_preamble.replace(
+                    pkg_pattern,
+                    f'% {pkg_pattern}  % Removed: obsolete package'
+                )
+                print(f"  ✓ Removed obsolete package: {pkg}")
+
+        # ============================================================
+        # Step 4: FINAL CLEANUP
+        # ============================================================
+        # Fix empty institute
+        if '\\institute{\\textcolor{mygreen}{}}' in fixed_preamble:
+            fixed_preamble = fixed_preamble.replace(
+                '\\institute{\\textcolor{mygreen}{}}',
+                '\\institute{\\textcolor{mygreen}{Artificial Intelligence Research and Intelligent Systems (airis4D)}}'
+            )
+            print(f"  ✓ Fixed empty \\institute")
+
+        # Remove duplicate \insertshortinstitute
+        lines = fixed_preamble.split('\n')
+        seen_lines = set()
+        cleaned_lines = []
+        for line in lines:
+            if '\\def\\insertshortinstitute' in line:
+                if line in seen_lines:
+                    continue
+                seen_lines.add(line)
+            cleaned_lines.append(line)
+        fixed_preamble = '\n'.join(cleaned_lines)
+
+        fixed_preamble = fixed_preamble.strip()
+
+        if fixed_count > 0:
+            print(f"\n✓ Fixed {fixed_count} items in preamble")
+
+        return fixed_preamble
+
+    @staticmethod
+    def fix_custom_commands_with_conflict_resolution(preamble, parent=None):
+        """
+        Fix malformed custom commands with user conflict resolution.
+        Shows dialogs for each conflict and lets the user choose.
+
+        Phase 1: Manual conflict resolution (user chooses)
+        Phase 2: Automated cleanup (removes remaining issues)
+
+        Returns: (fixed_preamble, resolutions)
+        """
+        import re
+
+        fixed_preamble = preamble
+        resolutions = {}
+        apply_to_all_choice = None  # Store the "Apply to All" choice
+
+        # ============================================================
+        # PHASE 1: REMOVE CONFLICTING PACKAGES FIRST (AUTOMATED)
+        # ============================================================
+        print("\n🔧 Phase 1: Removing conflicting packages...")
+
+        # Remove soul package - it conflicts with custom \hl
+        soul_patterns = [
+            '\\usepackage{soul}',
+            '\\IfFileExists{soul.sty}{\\usepackage{soul}}{}',
+            '\\IfFileExists{soul.sty}',
+        ]
+        for pattern in soul_patterns:
+            if pattern in fixed_preamble:
+                fixed_preamble = fixed_preamble.replace(
+                    pattern,
+                    f'% {pattern}  % Removed: conflicts with custom \\hl'
+                )
+                print(f"  ✓ Removed soul package (conflicts with custom \\hl)")
+
+        # Remove obsolete packages
+        obsolete_packages = ['grffile', 'capt-of', 'kvoptions']
+        for pkg in obsolete_packages:
+            pkg_pattern = f'\\usepackage{{{pkg}}}'
+            if pkg_pattern in fixed_preamble:
+                fixed_preamble = fixed_preamble.replace(
+                    pkg_pattern,
+                    f'% {pkg_pattern}  % Removed: obsolete package'
+                )
+                print(f"  ✓ Removed obsolete package: {pkg}")
+
+        # ============================================================
+        # PHASE 2: DETECT CUSTOM COMMAND CONFLICTS
+        # ============================================================
+        print("\n🔧 Phase 2: Detecting custom command conflicts...")
+
+        # Define the correct command definitions
+        CORRECT_COMMANDS = {
+            'split': {
+                'definition': r"""\ifcsname split\endcsname\else
+    \newcommand{\split}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.45\textwidth}
+                \begin{center}
+                    \includegraphics[width=\textwidth,keepaspectratio]{#1}
+                \end{center}
+            \end{column}
+            \begin{column}{0.5\textwidth}
+                #2
+            \end{column}
+        \end{columns}
+    }
+    \fi""",
+                'description': 'Split layout: image on left, content on right (2 parameters)'
+            },
+            'pip': {
+                'definition': r"""\ifcsname pip\endcsname\else
+    \newcommand{\pip}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.68\textwidth}
+                #2
+            \end{column}
+            \begin{column}{0.28\textwidth}
+                \vspace{1em}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+        \end{columns}
+    }
+    \fi""",
+                'description': 'Picture-in-picture layout: content on left, image on right (2 parameters)'
+            },
+            'tb': {
+                'definition': r"""\ifcsname tb\endcsname\else
+    \newcommand{\tb}[2]{%
+        \begin{center}
+            \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+        \end{center}
+        \vspace{0.5em}
+        #2
+    }
+    \fi""",
+                'description': 'Top-bottom layout: image at top, content at bottom (2 parameters)'
+            },
+            'insertshortinstitute': {
+                'definition': r"\def\insertshortinstitute{airis4D}",
+                'description': 'Short institution name for footers'
+            },
+            'ff': {
+                'definition': r"""\ifcsname ff\endcsname\else
+    \newcommand{\ff}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+        \begin{center}
+            \vfill
+            \textcolor{white}{\textbf{Full Frame Image}}
+            \vfill
+        \end{center}
+    }
+    \fi""",
+                'description': 'Full frame image layout (1 parameter)'
+            },
+            'wm': {
+                'definition': r"""\ifcsname wm\endcsname\else
+    \newcommand{\wm}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.15] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }
+    \fi""",
+                'description': 'Watermark layout (1 parameter)'
+            },
+            'hl': {
+                'definition': r"""\ifcsname hl\endcsname\else
+    \newcommand{\hl}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.6\textwidth}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+            \begin{column}{0.36\textwidth}
+                \colorbox{yellow!20}{%
+                    \begin{minipage}{\textwidth}
+                        #2
+                    \end{minipage}%
+                }
+            \end{column}
+        \end{columns}
+    }
+    \fi""",
+                'description': 'Highlight layout with yellow box (2 parameters)'
+            },
+            'bg': {
+                'definition': r"""\ifcsname bg\endcsname\else
+    \newcommand{\bg}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.3] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }
+    \fi""",
+                'description': 'Background image layout (1 parameter)'
+            },
+            'ol': {
+                'definition': r"""\ifcsname ol\endcsname\else
+    \newcommand{\ol}[1]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node at (current page.center) {%
+                \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }
+    \fi""",
+                'description': 'Overlay layout (1 parameter)'
+            },
+            'corner': {
+                'definition': r"""\ifcsname corner\endcsname\else
+    \newcommand{\corner}[2]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[anchor=south east] at (current page.south east) {%
+                \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+        #2
+    }
+    \fi""",
+                'description': 'Corner image layout (2 parameters)'
+            },
+            'mosaic': {
+                'definition': r"""\ifcsname mosaic\endcsname\else
+    \newcommand{\mosaic}[2]{%
+        \begingroup
+        \def\mosaic@params{#1}%
+        \def\mosaic@images{#2}%
+        \pgfmathsetmacro{\mosaic@rows}{{\mosaic@params}[0]}%
+        \pgfmathsetmacro{\mosaic@cols}{{\mosaic@params}[2]}%
+        \begin{center}
+        \begin{tabular}{*{\mosaic@cols}{c}}
+        \hline
+        \mosaic@process
+        \hline
+        \end{tabular}
+        \end{center}
+        \endgroup
+    }
+    \def\mosaic@process{%
+        \mosaic@process@helper\mosaic@images,\@empty
+    }
+    \def\mosaic@process@helper#1,#2\@empty{%
+        \ifx\@empty#2\@empty
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
+        \else
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1} &
+            \def\mosaic@remaining{#2}%
+            \mosaic@process@next
+        \fi
+    }
+    \def\mosaic@process@next{%
+        \mosaic@process@helper\mosaic@remaining,\@empty
+    }
+    \fi""",
+                'description': 'Mosaic grid layout (2 parameters)'
+            }
+        }
+
+        # ============================================================
+        # Helper: Find command definitions (ENHANCED)
+        # ============================================================
+        def find_command_definitions(text, cmd_name):
+            """Find all definitions of a command in the preamble"""
+            definitions = []
+
+            # ============================================================
+            # FIX: Better patterns to catch ALL malformed commands
+            # ============================================================
+            patterns = [
+                # Malformed: \newcommand{\cmd}{...} (no params)
+                (r'\\newcommand\{\\' + cmd_name + r'\}\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_no_params'),
+                # Malformed: \newcommand{\cmd}[0]{...} (0 params)
+                (r'\\newcommand\{\\' + cmd_name + r'\}\s*\[0\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_0_params'),
+                # Malformed: \newcommand{\cmd}[1]{...} (1 param - wrong)
+                (r'\\newcommand\{\\' + cmd_name + r'\}\s*\[1\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_1_param'),
+                # Correct: \newcommand{\cmd}[2]{...} (2 params)
+                (r'\\newcommand\{\\' + cmd_name + r'\}\s*\[2\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_2_params'),
+                # Malformed: \def\cmd{...} (no params)
+                (r'\\def\\' + cmd_name + r'\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'def_no_params'),
+                # Malformed: \def\cmd#1{...} (1 param - wrong)
+                (r'\\def\\' + cmd_name + r'#1\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'def_1_param'),
+                # Correct: \def\cmd#1#2{...} (2 params)
+                (r'\\def\\' + cmd_name + r'#1#2\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'def_2_params'),
+                # \let\cmd = ... (alias)
+                (r'\\let\\' + cmd_name + r'\s*=\s*([^\\\n]+)', 'let'),
+                # Malformed: \renewcommand{\cmd}{...} (no params)
+                (r'\\renewcommand\{\\' + cmd_name + r'\}\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'renewcommand_no_params'),
+                # Correct: \renewcommand{\cmd}[2]{...} (2 params)
+                (r'\\renewcommand\{\\' + cmd_name + r'\}\s*\[2\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'renewcommand_2_params'),
+            ]
+
+            for pattern, def_type in patterns:
+                for match in re.finditer(pattern, text, re.DOTALL):
+                    full_def = match.group(0)
+                    content = match.group(1) if match.groups() else ""
+                    definitions.append({
+                        'full': full_def,
+                        'type': def_type,
+                        'content': content,
+                        'start': match.start(),
+                        'end': match.end()
+                    })
+
+            return definitions
+
+        # ============================================================
+        # PHASE 2: Detect conflicts and show user dialogs
+        # ============================================================
+        conflicts = []
+
+        for cmd_name in CORRECT_COMMANDS.keys():
+            existing_defs = find_command_definitions(fixed_preamble, cmd_name)
+
+            if len(existing_defs) > 0:
+                is_correct = False
+                for def_info in existing_defs:
+                    # Check if the command is correctly defined with 2 parameters
+                    if 'newcommand_2_params' in def_info['type'] or 'def_2_params' in def_info['type']:
+                        if '#1' in def_info['content'] and '#2' in def_info['content']:
+                            is_correct = True
+                            break
+                    # Also check if it's properly guarded
+                    if '\\ifcsname' in def_info['full'] and cmd_name in def_info['full']:
+                        if '\\else' in def_info['full'] and '\\fi' in def_info['full']:
+                            is_correct = True
+                            break
+
+                # ============================================================
+                # CRITICAL: Detect conflict if:
+                # 1. Multiple definitions exist, OR
+                # 2. The definition is malformed (not correct)
+                # ============================================================
+                if len(existing_defs) > 1 or not is_correct:
+                    conflicts.append({
+                        'name': cmd_name,
+                        'existing_defs': existing_defs,
+                        'is_correct': is_correct,
+                        'default_def': CORRECT_COMMANDS[cmd_name]
+                    })
+                    print(f"  ⚠ Conflict detected for \\{cmd_name}: {len(existing_defs)} definition(s), correct={is_correct}")
+
+
+        if conflicts:
+            print(f"\n⚠ Found {len(conflicts)} conflict(s) to resolve")
+
+            for conflict in conflicts:
+                cmd_name = conflict['name']
+                existing_defs = conflict['existing_defs']
+                default_def = conflict['default_def']
+
+                print(f"\n📌 Conflict: \\{cmd_name}")
+                print(f"   {default_def['description']}")
+                print(f"   Found {len(existing_defs)} existing definition(s)")
+
+                user_choice = None
+
+                if len(existing_defs) == 1 and conflict['is_correct']:
+                    print(f"   → Using existing correct definition")
+                    user_choice = 'existing'
+                else:
+                    if parent:
+                        # ============================================================
+                        # CRITICAL FIX: Handle "Apply to All" choice
+                        # ============================================================
+                        if apply_to_all_choice is not None:
+                            # Use the stored "Apply to All" choice
+                            user_choice = apply_to_all_choice
+                            print(f"   → Applying '{user_choice}' to all remaining conflicts")
+                        else:
+                            # Show the dialog
+                            user_choice = BeamerSlideEditor._show_conflict_dialog(
+                                parent, cmd_name, existing_defs, default_def
+                            )
+                            # Check if user wants to apply to all
+                            if user_choice == 'all_default':
+                                apply_to_all_choice = 'default'
+                                user_choice = 'default'
+                                print(f"   → Applying 'default' to all remaining conflicts")
+                            elif user_choice == 'all_existing':
+                                apply_to_all_choice = 'existing'
+                                user_choice = 'existing'
+                                print(f"   → Applying 'existing' to all remaining conflicts")
+                            elif user_choice == 'all_remove':
+                                apply_to_all_choice = 'remove'
+                                user_choice = 'remove'
+                                print(f"   → Applying 'remove' to all remaining conflicts")
+                    else:
+                        print("\n   Options:")
+                        print("   1. Use DEFAULT definition (correct)")
+                        print("   2. Keep EXISTING definition")
+                        print("   3. Remove BOTH")
+                        print("   4. Apply DEFAULT to ALL remaining conflicts")
+                        print("   5. Apply EXISTING to ALL remaining conflicts")
+                        print("   6. Apply REMOVE to ALL remaining conflicts")
+                        choice = input("   Your choice (1-6): ").strip()
+                        if choice == '1':
+                            user_choice = 'default'
+                        elif choice == '2':
+                            user_choice = 'existing'
+                        elif choice == '3':
+                            user_choice = 'remove'
+                        elif choice == '4':
+                            apply_to_all_choice = 'default'
+                            user_choice = 'default'
+                        elif choice == '5':
+                            apply_to_all_choice = 'existing'
+                            user_choice = 'existing'
+                        elif choice == '6':
+                            apply_to_all_choice = 'remove'
+                            user_choice = 'remove'
+                        else:
+                            user_choice = 'default'
+
+                resolutions[cmd_name] = {
+                    'choice': user_choice,
+                    'existing_defs': existing_defs,
+                    'default_def': default_def
+                }
+
+        # ============================================================
+        # PHASE 3: APPLY USER CHOICES
+        # ============================================================
+        print("\n🔧 Phase 3: Applying user choices...")
+
+        # Remove ALL existing definitions for conflicted commands
+        for cmd_name, resolution in resolutions.items():
+            for def_info in resolution['existing_defs']:
+                full_def = def_info['full']
+                if full_def in fixed_preamble:
+                    fixed_preamble = fixed_preamble.replace(full_def, '')
+                    print(f"  ✓ Removed existing definition of \\{cmd_name}")
+
+        # Clean up extra newlines
+        fixed_preamble = re.sub(r'\n\s*\n\s*\n', '\n\n', fixed_preamble)
+        fixed_preamble = re.sub(r'\n\s*\n', '\n\n', fixed_preamble)
+
+        # Insert ONLY the selected definitions
+        for cmd_name, resolution in resolutions.items():
+            choice = resolution['choice']
+
+            if choice == 'default':
+                default_def = resolution['default_def']['definition']
+                fixed_preamble = fixed_preamble.rstrip() + '\n' + default_def
+                print(f"  ✓ Added DEFAULT \\{cmd_name} definition")
+            elif choice == 'existing':
+                existing_defs = resolution['existing_defs']
+                best_def = None
+                for def_info in existing_defs:
+                    if 'newcommand_2_params' in def_info['type'] or 'def_2_params' in def_info['type']:
+                        if '#1' in def_info['content'] and '#2' in def_info['content']:
+                            best_def = def_info['full']
+                            break
+                if not best_def and existing_defs:
+                    best_def = existing_defs[0]['full']
+                if best_def:
+                    fixed_preamble = fixed_preamble.rstrip() + '\n' + best_def
+                    print(f"  ✓ Kept EXISTING \\{cmd_name} definition")
+            else:
+                print(f"  ✓ Removed \\{cmd_name} (user chose to skip)")
+
+        # ============================================================
+        # PHASE 4: AUTOMATED CLEANUP (Run after manual resolution)
+        # ============================================================
+        print("\n🔧 Phase 4: Automated cleanup...")
+
+        # Check for any remaining malformed commands (hidden conflicts)
+        for cmd_name in CORRECT_COMMANDS.keys():
+            # Check if the command exists without a guard but is malformed
+            if cmd_name not in resolutions:
+                # Check if it exists but is malformed
+                defs = find_command_definitions(fixed_preamble, cmd_name)
+                for def_info in defs:
+                    if 'newcommand_2_params' not in def_info['type'] and 'def_2_params' not in def_info['type']:
+                        # This is a malformed command that was hidden
+                        if def_info['full'] in fixed_preamble:
+                            fixed_preamble = fixed_preamble.replace(def_info['full'], '')
+                            print(f"  ✓ Removed hidden malformed \\{cmd_name} definition")
+
+                            # Add the correct version if it's not already there
+                            if f'\\ifcsname {cmd_name}\\endcsname' not in fixed_preamble:
+                                fixed_preamble = fixed_preamble.rstrip() + '\n' + CORRECT_COMMANDS[cmd_name]['definition']
+                                print(f"  ✓ Added corrected \\{cmd_name} definition")
+
+        # Fix any empty or malformed \insertshortinstitute
+        if '\\def\\insertshortinstitute{}' in fixed_preamble:
+            fixed_preamble = fixed_preamble.replace(
+                '\\def\\insertshortinstitute{}',
+                '\\def\\insertshortinstitute{airis4D}'
+            )
+            print(f"  ✓ Fixed empty \\insertshortinstitute")
+
+        if '\\def\\insertshortinstitute{}}' in fixed_preamble:
+            fixed_preamble = fixed_preamble.replace(
+                '\\def\\insertshortinstitute{}}',
+                '\\def\\insertshortinstitute{airis4D}'
+            )
+            print(f"  ✓ Fixed malformed \\insertshortinstitute")
+
+        # Fix any empty institute
+        if '\\institute{\\textcolor{mygreen}{}}' in fixed_preamble:
+            fixed_preamble = fixed_preamble.replace(
+                '\\institute{\\textcolor{mygreen}{}}',
+                '\\institute{\\textcolor{mygreen}{Artificial Intelligence Research and Intelligent Systems (airis4D)}}'
+            )
+            print(f"  ✓ Fixed empty \\institute")
+
+        # Remove duplicate \insertshortinstitute definitions
+        lines = fixed_preamble.split('\n')
+        seen_lines = set()
+        cleaned_lines = []
+        for line in lines:
+            if '\\def\\insertshortinstitute' in line:
+                if line in seen_lines:
+                    continue
+                seen_lines.add(line)
+            cleaned_lines.append(line)
+        fixed_preamble = '\n'.join(cleaned_lines)
+
+        # Final cleanup
+        fixed_preamble = fixed_preamble.strip()
+
+        print(f"\n✅ Conflict resolution complete")
+        print(f"   • Manual resolutions: {len(resolutions)}")
+        print(f"   • Automated cleanup: completed")
+
+        return fixed_preamble, resolutions
+
+    def process_content_with_features(self, content):
+        """
+        Process content with full feature support including itemize/enumerate.
+        PRESERVES existing LaTeX commands and environments.
+        Only converts plain text bullet points (- and •) to \item.
+
+        This is a wrapper that calls the standalone function from BeamerSlideGenerator
+        or processes content directly if the import is not available.
+        """
+        import re
+
+        if not content:
+            return ""
+
+        # If content is a string, split it into lines
+        if isinstance(content, str):
+            content = content.split('\n')
+
+        # ============================================================
+        # PRE-PROCESSING PASS: Identify what's already LaTeX
+        # ============================================================
+        has_latex_environment = False
+
+        # Check if content already has LaTeX environments
+        latex_env_patterns = [
+            r'\\begin\{itemize\}',
+            r'\\begin\{enumerate\}',
+            r'\\begin\{block\}',
+            r'\\begin\{columns\}',
+            r'\\begin\{tabular\}',
+            r'\\begin\{tikzpicture\}',
+            r'\\item\s+',
+        ]
+
+        for line in content:
+            if not isinstance(line, str):
+                continue
+            for pattern in latex_env_patterns:
+                if re.search(pattern, line):
+                    has_latex_environment = True
+                    break
+            if has_latex_environment:
+                break
+
+        # ============================================================
+        # If content already has LaTeX environments, pass through
+        # ============================================================
+        if has_latex_environment:
+            # Just clean up the content and return it
+            result = []
+            for line in content:
+                if isinstance(line, str):
+                    line = line.rstrip()
+                    if line:
+                        result.append(line)
+            return '\n'.join(result)
+
+        # ============================================================
+        # Try to use the standalone function from BeamerSlideGenerator
+        # ============================================================
+        try:
+            from BeamerSlideGenerator import process_content_with_features as bsg_process
+            result = bsg_process(content)
+            if result:
+                return result
+        except (ImportError, AttributeError):
+            pass  # Fall back to our own processing
+
+        # ============================================================
+        # Process plain text content (no existing LaTeX)
+        # ============================================================
+        result = []
+        itemize_stack = []
+        in_tikz = False
+        tikz_buffer = []
+        in_math = False
+        math_buffer = []
+        in_tabular = False
+
+        for idx, line in enumerate(content):
+            if not line or not line.strip():
+                continue
+
+            stripped = line.strip()
+
+            # Track tabular environment
+            if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
+                in_tabular = True
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                result.append(line)
+                continue
+
+            if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
+                in_tabular = False
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                result.append(line)
+                continue
+
+            # Clean up any placeholder artifacts
+            if isinstance(line, str):
+                line = re.sub(r'@@@[^@]+@@@', '', line)
+                line = re.sub(r'PROTECTED_\d+', '', line)
+                line = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', line)
+
+            # TikZ environment - preserve completely
+            if '\\begin{tikzpicture}' in stripped:
+                in_tikz = True
+                tikz_buffer = [line]
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                continue
+
+            if in_tikz:
+                tikz_buffer.append(line)
+                if '\\end{tikzpicture}' in stripped:
+                    in_tikz = False
+                    result.append('\n'.join(tikz_buffer))
+                    tikz_buffer = []
+                continue
+
+            # Math environment - preserve completely
+            if any(stripped.startswith(start) for start in ['\\begin{align', '\\begin{equation', '\\begin{gather', '\\begin{multline']):
+                in_math = True
+                math_buffer = [line]
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                continue
+
+            if in_math:
+                math_buffer.append(line)
+                if any(end in stripped for end in ['\\end{align', '\\end{equation}', '\\end{gather}', '\\end{multline']):
+                    in_math = False
+                    result.append('\n'.join(math_buffer))
+                    math_buffer = []
+                continue
+
+            # List environments - pass through if they exist
+            if '\\begin{itemize}' in stripped:
+                if in_tabular:
+                    result.append(line)
+                    continue
+                itemize_stack.append('itemize')
+                result.append(stripped)
+                continue
+
+            if '\\end{itemize}' in stripped:
+                if itemize_stack and itemize_stack[-1] == 'itemize':
+                    itemize_stack.pop()
+                result.append(stripped)
+                continue
+
+            if '\\begin{enumerate}' in stripped:
+                if in_tabular:
+                    result.append(line)
+                    continue
+                itemize_stack.append('enumerate')
+                result.append(stripped)
+                continue
+
+            if '\\end{enumerate}' in stripped:
+                if itemize_stack and itemize_stack[-1] == 'enumerate':
+                    itemize_stack.pop()
+                result.append(stripped)
+                continue
+
+            # Bullet points - only convert if not in tabular and not already LaTeX
+            is_bullet = stripped.startswith('-') or stripped.startswith('•')
+
+            if is_bullet and not in_tabular:
+                bullet_content = re.sub(r'^[-•]\s*', '', stripped)
+                # Check if bullet content itself contains LaTeX commands
+                if '\\' in bullet_content:
+                    # Contains LaTeX commands, keep as-is with \item
+                    if not itemize_stack:
+                        result.append("\\begin{itemize}")
+                        itemize_stack.append('itemize')
+                        result.append(f"\\item {bullet_content}")
+                    else:
+                        result.append(f"\\item {bullet_content}")
+                else:
+                    # Plain text bullet
+                    if not itemize_stack:
+                        result.append("\\begin{itemize}")
+                        itemize_stack.append('itemize')
+                        result.append(f"\\item {bullet_content}")
+                    else:
+                        result.append(f"\\item {bullet_content}")
+                continue
+
+            # \item commands - pass through
+            if stripped.startswith('\\item'):
+                if in_tabular:
+                    result.append(line)
+                    continue
+                result.append(stripped)
+                continue
+
+            # Block environments - pass through
+            if stripped.startswith(('\\begin{block}', '\\begin{alertblock}', '\\begin{exampleblock}')):
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                result.append(stripped)
+                continue
+
+            if stripped.startswith(('\\end{block}', '\\end{alertblock}', '\\end{exampleblock}')):
+                result.append(stripped)
+                continue
+
+            # Column environments - pass through
+            if stripped.startswith(('\\begin{columns}', '\\end{columns}')):
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                result.append(stripped)
+                continue
+
+            if stripped.startswith('\\column'):
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                result.append(stripped)
+                continue
+
+            # Table commands - pass through
+            if stripped in ['\\hline', '\\toprule', '\\midrule', '\\bottomrule', '\\addlinespace']:
+                result.append(stripped)
+                continue
+
+            # Math mode (inline) - preserve
+            if stripped.startswith('$') or stripped.startswith('\\[') or stripped.startswith('\\('):
+                result.append(stripped)
+                continue
+
+            # Center environment - pass through
+            if stripped == '\\begin{center}' or stripped == '\\end{center}':
+                result.append(stripped)
+                continue
+
+            # Beamer color box - pass through
+            if stripped.startswith('\\begin{beamercolorbox}') or stripped == '\\end{beamercolorbox}':
+                result.append(stripped)
+                continue
+
+            # Text formatting with special effects
+            if stripped.startswith(('\\textcolor', '\\textbf', '\\textit', '\\emph', '\\alert')):
+                stripped = self.process_special_effects(stripped)
+                result.append(stripped)
+                continue
+
+            # URLs and hyperlinks - pass through
+            if stripped.startswith(('http://', 'https://', '\\url{', '\\href{')):
+                result.append(stripped)
+                continue
+
+            # Spacing commands - pass through
+            if stripped.startswith(('\\vspace', '\\hspace')):
+                result.append(stripped)
+                continue
+
+            # Scan for TikZ inside other environments
+            if '\\begin{tikzpicture}' in stripped or '\\end{tikzpicture}' in stripped:
+                while itemize_stack:
+                    result.append("\\end{itemize}")
+                    itemize_stack.pop()
+                result.append(stripped)
+                continue
+
+            # Regular text - fix braces and add
+            stripped = self.fix_braces(stripped)
+            if stripped:
+                result.append(stripped)
+
+        # Close any remaining itemize environments
+        while itemize_stack:
+            if itemize_stack[-1] == 'itemize':
+                result.append("\\end{itemize}")
+            elif itemize_stack[-1] == 'enumerate':
+                result.append("\\end{enumerate}")
+            itemize_stack.pop()
+
+        return '\n'.join(result)
+
+    @staticmethod
+    def _show_conflict_dialog(parent, cmd_name, existing_defs, default_def):
+        """
+        Show a GUI dialog for conflict resolution.
+        Returns: 'default', 'existing', 'remove', 'all_default', 'all_existing', or 'all_remove'
+        """
+        import customtkinter as ctk
+        import tkinter as tk
+
+        result = {'choice': None}
+
+        # ============================================================
+        # INCREASED WINDOW SIZE for better visibility
+        # ============================================================
+        dialog = ctk.CTkToplevel(parent)
+        dialog.title(f"Conflict: \\{cmd_name}")
+        dialog.geometry("850x650")  # Increased from 700x500
+        dialog.transient(parent)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 850) // 2
+        y = (dialog.winfo_screenheight() - 650) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Make dialog resizable
+        dialog.resizable(True, True)
+
+        # ============================================================
+        # Main frame with padding
+        # ============================================================
+        main_frame = ctk.CTkFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+        # ============================================================
+        # Title section
+        # ============================================================
+        title_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        title_frame.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            title_frame,
+            text=f"⚠ Conflict Detected: \\{cmd_name}",
+            font=("Arial", 18, "bold"),
+            text_color="#FFB86C"
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            title_frame,
+            text=default_def['description'],
+            font=("Arial", 13),
+            text_color="#4ECDC4"
+        ).pack(anchor="w", pady=(5, 0))
+
+        ctk.CTkLabel(
+            title_frame,
+            text=f"Found {len(existing_defs)} existing definition(s) in the preamble.",
+            font=("Arial", 12),
+            text_color="#888888"
+        ).pack(anchor="w", pady=(5, 0))
+
+        # ============================================================
+        # Comparison frame - Side by side with larger text areas
+        # ============================================================
+        compare_frame = ctk.CTkFrame(main_frame)
+        compare_frame.pack(fill="both", expand=True, padx=5, pady=10)
+
+        # Default definition (left)
+        default_frame = ctk.CTkFrame(compare_frame)
+        default_frame.pack(side="left", fill="both", expand=True, padx=5)
+
+        ctk.CTkLabel(
+            default_frame,
+            text="📋 DEFAULT Definition (Correct)",
+            font=("Arial", 13, "bold"),
+            text_color="#4ECDC4"
+        ).pack(pady=5)
+
+        # Increased height for better visibility
+        default_text = ctk.CTkTextbox(default_frame, height=180, font=("Courier", 11))
+        default_text.pack(fill="both", expand=True, padx=5, pady=5)
+        default_text.insert("1.0", default_def['definition'])
+        default_text.configure(state="disabled")
+
+        # Existing definition (right)
+        existing_frame = ctk.CTkFrame(compare_frame)
+        existing_frame.pack(side="right", fill="both", expand=True, padx=5)
+
+        ctk.CTkLabel(
+            existing_frame,
+            text="📥 EXISTING Definition",
+            font=("Arial", 13, "bold"),
+            text_color="#FFB86C"
+        ).pack(pady=5)
+
+        # Increased height for better visibility
+        existing_text = ctk.CTkTextbox(existing_frame, height=180, font=("Courier", 11))
+        existing_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Show all existing definitions
+        display_text = ""
+        for i, def_info in enumerate(existing_defs, 1):
+            display_text += f"[{i}] {def_info['type']}:\n{def_info['full'][:300]}\n\n"
+        existing_text.insert("1.0", display_text)
+        existing_text.configure(state="disabled")
+
+        # ============================================================
+        # Options section - Radio buttons
+        # ============================================================
+        options_frame = ctk.CTkFrame(main_frame)
+        options_frame.pack(fill="x", padx=5, pady=10)
+
+        ctk.CTkLabel(
+            options_frame,
+            text="Choose which definition to keep:",
+            font=("Arial", 13, "bold")
+        ).pack(anchor="w", pady=(0, 10))
+
+        choice_var = tk.StringVar(value="default")
+
+        # Radio buttons with clear labels
+        radio_frame = ctk.CTkFrame(options_frame, fg_color="transparent")
+        radio_frame.pack(fill="x")
+
+        ctk.CTkRadioButton(
+            radio_frame,
+            text="1. Use DEFAULT definition (with [2] parameters, recommended)",
+            variable=choice_var,
+            value="default",
+            font=("Arial", 12)
+        ).pack(anchor="w", pady=3)
+
+        ctk.CTkRadioButton(
+            radio_frame,
+            text="2. Keep EXISTING definition (as found in the importing file)",
+            variable=choice_var,
+            value="existing",
+            font=("Arial", 12)
+        ).pack(anchor="w", pady=3)
+
+        ctk.CTkRadioButton(
+            radio_frame,
+            text="3. Remove BOTH (skip this command entirely)",
+            variable=choice_var,
+            value="remove",
+            font=("Arial", 12)
+        ).pack(anchor="w", pady=3)
+
+        # ============================================================
+        # Button section - All buttons visible without scrolling
+        # ============================================================
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=5, pady=(10, 0))
+
+        def apply_choice():
+            result['choice'] = choice_var.get()
+            dialog.destroy()
+
+        def apply_to_all_default():
+            result['choice'] = 'all_default'
+            dialog.destroy()
+
+        def apply_to_all_existing():
+            result['choice'] = 'all_existing'
+            dialog.destroy()
+
+        def apply_to_all_remove():
+            result['choice'] = 'all_remove'
+            dialog.destroy()
+
+        def cancel():
+            result['choice'] = None
+            dialog.destroy()
+
+        # Left side - Apply buttons
+        left_buttons = ctk.CTkFrame(button_frame, fg_color="transparent")
+        left_buttons.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkButton(
+            left_buttons,
+            text="✓ Apply This Choice",
+            command=apply_choice,
+            width=160,
+            height=38,
+            fg_color="#28a745",
+            hover_color="#218838",
+            font=("Arial", 12, "bold")
+        ).pack(side="left", padx=5)
+
+        # Right side - Apply to All buttons
+        right_buttons = ctk.CTkFrame(button_frame, fg_color="transparent")
+        right_buttons.pack(side="right")
+
+        ctk.CTkButton(
+            right_buttons,
+            text="Apply 'Default' to All",
+            command=apply_to_all_default,
+            width=170,
+            height=34,
+            fg_color="#17a2b8",
+            hover_color="#138496",
+            font=("Arial", 11)
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            right_buttons,
+            text="Apply 'Existing' to All",
+            command=apply_to_all_existing,
+            width=170,
+            height=34,
+            fg_color="#ffc107",
+            hover_color="#e0a800",
+            text_color="black",
+            font=("Arial", 11)
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            right_buttons,
+            text="Apply 'Remove' to All",
+            command=apply_to_all_remove,
+            width=170,
+            height=34,
+            fg_color="#dc3545",
+            hover_color="#c82333",
+            font=("Arial", 11)
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            right_buttons,
+            text="✕ Cancel",
+            command=cancel,
+            width=100,
+            height=34,
+            fg_color="#6c757d",
+            hover_color="#5a6268",
+            font=("Arial", 11)
+        ).pack(side="left", padx=3)
+
+        # ============================================================
+        # Wait for dialog
+        # ============================================================
+        parent.wait_window(dialog)
+        return result['choice']
+
+
+    @staticmethod
+    def fix_special_characters(text):
+        """
+        Fix special character issues in LaTeX content.
+
+        Handles:
+        - \\& -> \& (escaped ampersand, NOT line break)
+        - \\% -> \% (escaped percent)
+        - \\# -> \# (escaped hash)
+        - \\_ -> \_ (escaped underscore)
+        - \\$ -> \$ (escaped dollar)
+        - But preserves \\ for line breaks when NOT followed by special characters
+        """
+        import re
+
+        # ============================================================
+        # CRITICAL FIX: \\& -> \& (escaped ampersand)
+        # This is the most common issue
+        # ============================================================
+        text = re.sub(r'\\\\&', r'\\&', text)
+
+        # ============================================================
+        # Fix other escaped special characters
+        # ============================================================
+        # \\% -> \%
+        text = re.sub(r'\\\\%', r'\\%', text)
+
+        # \\# -> \#
+        text = re.sub(r'\\\\#', r'\\#', text)
+
+        # \\_ -> \_
+        text = re.sub(r'\\\\_', r'\\_', text)
+
+        # \\$ -> \$
+        text = re.sub(r'\\\\\$', r'\\$', text)
+
+        # ============================================================
+        # Fix double backslashes that are NOT followed by a command
+        # This is tricky - we want to preserve \\ for line breaks
+        # but fix cases where it's accidentally doubled
+        # ============================================================
+        # Fix "\\\\" (four backslashes) -> "\\" (two backslashes)
+        # But only if not part of a command
+        text = re.sub(r'(?<!\\)\\\\\\(?!\\)', r'\\\\', text)
+
+        # Fix "\\\" (backslash followed by quote) -> just quote
+        text = re.sub(r'\\\\"', r'"', text)
+
+        # Fix "\\'" (backslash followed by apostrophe) -> just apostrophe
+        text = re.sub(r"\\\\'", r"'", text)
+
+        return text
+
+    # Then add this to the _parse_old_format_enhanced method
+    # or wherever the content is being processed for the frame titles
+
+    def _fix_content_special_characters(self, content_lines: list) -> list:
+        """
+        Fix special character issues in content lines.
+        """
+        fixed_lines = []
+        for line in content_lines:
+            fixed_line = self.fix_special_characters(line)
+            fixed_lines.append(fixed_line)
+        return fixed_lines
+
+
+    # ============================================================
+    # ENHANCEMENT #2: PREAMBLE MERGING SYSTEM
+    # ============================================================
+
+    @staticmethod
+    def is_valid_latex_command(cmd_text: str) -> bool:
+        """
+        Validate that a LaTeX command definition is syntactically valid.
+        Returns True if the command appears to be well-formed.
+        """
+        import re
+
+        if not cmd_text or not cmd_text.strip():
+            return False
+
+        # Check for basic LaTeX command structure
+        if cmd_text.startswith('\\'):
+            # Check for balanced braces
+            open_braces = cmd_text.count('{')
+            close_braces = cmd_text.count('}')
+
+            # For commands with parameters like \newcommand, \renewcommand, \def
+            if '\\newcommand' in cmd_text or '\\renewcommand' in cmd_text:
+                # Must have at least one pair of braces
+                if open_braces < 2 or close_braces < 2:
+                    return False
+                # Must have a command name
+                if not re.search(r'\\newcommand\{\\([a-zA-Z]+)\}', cmd_text):
+                    return False
+                # Must have a definition body
+                if not re.search(r'\\newcommand\{[^}]+\}\s*(?:\[[^\]]*\])?\s*\{', cmd_text):
+                    return False
+            elif '\\def' in cmd_text:
+                # Must have a command name
+                if not re.search(r'\\def\\([a-zA-Z]+)', cmd_text):
+                    return False
+                # Must have a definition body
+                if '{' not in cmd_text or '}' not in cmd_text:
+                    return False
+            elif '\\let' in cmd_text:
+                # Must have a command name and value
+                if not re.search(r'\\let\\([a-zA-Z]+)\s*=\s*', cmd_text):
+                    return False
+            elif '\\setlength' in cmd_text or '\\renewcommand' in cmd_text:
+                # Must have balanced braces
+                if open_braces != close_braces:
+                    return False
+
+            # For simple commands, check brace balance
+            if open_braces != close_braces:
+                return False
+
+            # Check for unmatched brackets
+            open_brackets = cmd_text.count('[')
+            close_brackets = cmd_text.count(']')
+            if open_brackets != close_brackets:
+                return False
+
+            return True
+
+        return False
+
+
+    @staticmethod
+    def extract_preamble_definitions_static(preamble: str) -> dict:
+        """
+        Extract ALL definitions from preamble for merging.
+        Uses validation to skip malformed definitions.
+        Returns dict with all extracted definitions.
+        """
+        import re
+
+        definitions = {
+            'packages': [],
+            'package_options': {},
+            'colors': {},
+            'colorlets': {},
+            'tikzlibraries': [],
+            'pgfplotsset': [],
+            'beamercolors': [],
+            'beamerfonts': [],
+            'beamertemplates': [],
+            'beamersizes': [],
+            'custom_commands': [],
+            'def_commands': [],
+            'let_commands': [],
+            'theme': '',
+            'colortheme': '',
+            'fonttheme': '',
+            'sisetup': '',
+            'hypersetup': '',
+            'other_settings': [],
+            'arraystretch': '',
+            'parskip': '',
+            'itemsep': '',
+            'topsep': '',
+            'footline': '',
+            'background': '',
+            'frametitle': '',
+            'note_page': '',
+            'navigation_symbols': '',
+            'logo': '',
+            'title': '',
+            'subtitle': '',
+            'author': '',
+            'institute': '',
+            'date': '',
+            'shortinstitute': '',
+            'critical_fixes': []
+        }
+
+        # ============================================================
+        # Safe package extraction
+        # ============================================================
+        usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        for options, pkg_list in re.findall(usepackage_pattern, preamble):
+            for pkg in pkg_list.split(','):
+                pkg = pkg.strip()
+                if pkg and not pkg.startswith('%'):
+                    definitions['packages'].append(pkg)
+                    if options:
+                        definitions['package_options'][pkg] = options
+
+        # ============================================================
+        # Safe color extraction
+        # ============================================================
+        definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for name, model, value in re.findall(definecolor_pattern, preamble):
+            if name and model and value and not name.startswith('%'):
+                definitions['colors'][name.strip()] = (model.strip(), value.strip())
+
+        colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+        for name, source in re.findall(colorlet_pattern, preamble):
+            if name and source and not name.startswith('%'):
+                definitions['colorlets'][name.strip()] = source.strip()
+
+        # ============================================================
+        # Safe TikZ library extraction
+        # ============================================================
+        tikzlib_pattern = r'\\usetikzlibrary\s*\{([^}]+)\}'
+        for libs in re.findall(tikzlib_pattern, preamble):
+            for lib in libs.split(','):
+                lib = lib.strip()
+                if lib and not lib.startswith('%'):
+                    definitions['tikzlibraries'].append(lib)
+
+        # ============================================================
+        # Safe pgfplots extraction
+        # ============================================================
+        pgfplotsset_pattern = r'\\pgfplotsset\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        for settings in re.findall(pgfplotsset_pattern, preamble, re.DOTALL):
+            if settings and settings.strip():
+                if 'compat' in settings or '=' in settings:
+                    definitions['pgfplotsset'].append(settings.strip())
+
+        # ============================================================
+        # Safe beamer color extraction
+        # ============================================================
+        beamercolor_pattern = r'\\setbeamercolor\s*\{([^}]*)\}\s*\{([^}]*)\}'
+        for name, value in re.findall(beamercolor_pattern, preamble):
+            if name and value and not name.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamercolors'].append((name.strip(), value.strip()))
+
+        # ============================================================
+        # Safe beamer font extraction
+        # ============================================================
+        beamerfont_pattern = r'\\setbeamerfont\s*\{([^}]*)\}\s*\{([^}]*)\}'
+        for name, value in re.findall(beamerfont_pattern, preamble):
+            if name and value and not name.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamerfonts'].append((name.strip(), value.strip()))
+
+        # ============================================================
+        # Safe beamer template extraction
+        # ============================================================
+        beamertemplate_pattern = r'\\setbeamertemplate\s*\{([^}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        for name, value in re.findall(beamertemplate_pattern, preamble, re.DOTALL):
+            if name and value and not name.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamertemplates'].append((name.strip(), value.strip()))
+
+        # ============================================================
+        # Safe beamer size extraction
+        # ============================================================
+        beamersize_pattern = r'\\setbeamersize\s*\{([^}]*)\}'
+        for value in re.findall(beamersize_pattern, preamble):
+            if value and value.strip() and not value.startswith('%'):
+                if value.count('{') == value.count('}'):
+                    definitions['beamersizes'].append(value.strip())
+
+        # ============================================================
+        # Safe custom command extraction with validation
+        # ============================================================
+        # \ifcsname...\fi guarded commands
+        guarded_pattern = r'\\ifcsname\s*([a-zA-Z]+)\s*\\endcsname\s*\\else\s*(\\newcommand\{\\1\}(?:\[[^\]]*\])?\{[^}]*\})\s*\\fi'
+        for match in re.finditer(guarded_pattern, preamble, re.DOTALL):
+            cmd_name = match.group(1)
+            definition = match.group(2)
+            if cmd_name and definition and BeamerSlideEditor.is_valid_latex_command(definition):
+                definitions['custom_commands'].append(definition.strip())
+
+        # Standard \newcommand and \renewcommand
+        newcommand_pattern = r'\\(?:re)?newcommand\s*\{\\([^}]*)\}\s*(?:\[[^\]]*\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+        for match in re.finditer(newcommand_pattern, preamble, re.DOTALL):
+            name = match.group(1)
+            definition = match.group(2)
+            if name and definition:
+                if definition.count('{') == definition.count('}'):
+                    cmd_def = f"\\newcommand{{\\{name}}}{{{definition}}}"
+                    if BeamerSlideEditor.is_valid_latex_command(cmd_def):
+                        definitions['custom_commands'].append(cmd_def)
+
+        # ============================================================
+        # Safe extraction of arraystretch
+        # ============================================================
+        arraystretch_pattern = r'\\renewcommand\{\\arraystretch\}\{([^}]*)\}'
+        matches = re.findall(arraystretch_pattern, preamble)
+        for value in matches:
+            if value and value.strip() and (value.strip().isdigit() or '.' in value):
+                definitions['arraystretch'] = value.strip()
+                break
+
+        # ============================================================
+        # Safe extraction of spacing settings
+        # ============================================================
+        parskip_pattern = r'\\setlength\{\\parskip\}\{([^}]*)\}'
+        matches = re.findall(parskip_pattern, preamble)
+        for value in matches:
+            if value and value.strip():
+                if any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
+                    definitions['parskip'] = value.strip()
+                    break
+
+        itemsep_pattern = r'\\setlength\{\\itemsep\}\{([^}]*)\}'
+        matches = re.findall(itemsep_pattern, preamble)
+        for value in matches:
+            if value and value.strip() and any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
+                definitions['itemsep'] = value.strip()
+                break
+
+        topsep_pattern = r'\\setlength\{\\topsep\}\{([^}]*)\}'
+        matches = re.findall(topsep_pattern, preamble)
+        for value in matches:
+            if value and value.strip() and any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
+                definitions['topsep'] = value.strip()
+                break
+
+        # ============================================================
+        # Extract critical LaTeX fixes
+        # ============================================================
+        critical_fixes = []
+        for fix in ['\\overfullrule=0pt', '\\sloppy', '\\tolerance=9999',
+                    '\\emergencystretch=3em', '\\hfuzz=2pt', '\\raggedright']:
+            if fix in preamble:
+                critical_fixes.append(fix)
+        definitions['critical_fixes'] = critical_fixes
+
+        return definitions
+
+
+    @staticmethod
+    def generate_merged_preamble(merged_defs: dict) -> str:
+        """
+        Generate the full preamble from merged definitions with safety checks.
+        """
+        lines = []
+
+        # Documentclass
+        lines.append("\\documentclass[aspectratio=169]{beamer}")
+
+        # ============================================================
+        # Critical LaTeX fixes (from imported file)
+        # ============================================================
+        if merged_defs.get('critical_fixes'):
+            lines.append("")
+            lines.append("% ====== CRITICAL FIXES ======")
+            for fix in merged_defs['critical_fixes']:
+                lines.append(fix)
+            lines.append("% ===========================")
+
+        # ============================================================
+        # Essential packages (always included)
+        # ============================================================
+        essential_packages = ['hyperref', 'graphicx', 'amsmath', 'tikz', 'pgfplots',
+                              'xstring', 'animate', 'multimedia', 'xifthen', 'xcolor',
+                              'booktabs', 'adjustbox', 'environ', 'array', 'multirow',
+                              'textcomp', 'pgfpages']
+
+        lines.append("")
+        lines.append("% Essential packages")
+        for pkg in essential_packages:
+            if pkg in merged_defs['packages']:
+                opts = merged_defs['package_options'].get(pkg, '')
+                if opts:
+                    lines.append(f"\\usepackage[{opts}]{{{pkg}}}")
+                else:
+                    lines.append(f"\\usepackage{{{pkg}}}")
+
+        # ============================================================
+        # Other packages (skip obsolete ones)
+        # ============================================================
+        obsolete_packages = ['grffile', 'capt-of', 'kvoptions', 'soul']
+        lines.append("")
+        lines.append("% --- Additional Packages ---")
+        seen_packages = set(essential_packages)
+        for pkg in merged_defs['packages']:
+            if pkg not in seen_packages and pkg not in obsolete_packages:
+                opts = merged_defs['package_options'].get(pkg, '')
+                if opts:
+                    lines.append(f"\\usepackage[{opts}]{{{pkg}}}")
+                else:
+                    lines.append(f"\\usepackage{{{pkg}}}")
+                seen_packages.add(pkg)
+
+        # ============================================================
+        # TikZ libraries
+        # ============================================================
+        if merged_defs['tikzlibraries']:
+            lines.append("")
+            lines.append("% TikZ libraries")
+            unique_libs = sorted(set(merged_defs['tikzlibraries']))
+            lines.append(f"\\usetikzlibrary{{{', '.join(unique_libs)}}}")
+
+        # ============================================================
+        # Pgfplots settings (deduplicated)
+        # ============================================================
+        if merged_defs['pgfplotsset']:
+            lines.append("")
+            lines.append("% Pgfplots settings")
+            seen_settings = set()
+            for setting in merged_defs['pgfplotsset']:
+                if setting and setting not in seen_settings:
+                    lines.append(f"\\pgfplotsset{{{setting}}}")
+                    seen_settings.add(setting)
+
+        # ============================================================
+        # Color definitions
+        # ============================================================
+        if merged_defs['colors']:
+            lines.append("")
+            lines.append("% Color definitions")
+            for name, (model, value) in merged_defs['colors'].items():
+                lines.append(f"\\definecolor{{{name}}}{{{model}}}{{{value}}}")
+
+        if merged_defs['colorlets']:
+            for name, source in merged_defs['colorlets'].items():
+                lines.append(f"\\colorlet{{{name}}}{{{source}}}")
+
+        # ============================================================
+        # Beamer colors, fonts, templates
+        # ============================================================
+        if merged_defs['beamercolors']:
+            lines.append("")
+            lines.append("% Beamer colors")
+            for name, value in merged_defs['beamercolors']:
+                lines.append(f"\\setbeamercolor{{{name}}}{{{value}}}")
+
+        if merged_defs['beamerfonts']:
+            lines.append("")
+            lines.append("% Beamer fonts")
+            for name, value in merged_defs['beamerfonts']:
+                lines.append(f"\\setbeamerfont{{{name}}}{{{value}}}")
+
+        if merged_defs['beamertemplates']:
+            lines.append("")
+            lines.append("% Beamer templates")
+            for name, value in merged_defs['beamertemplates']:
+                lines.append(f"\\setbeamertemplate{{{name}}}{{{value}}}")
+
+        if merged_defs['beamersizes']:
+            lines.append("")
+            lines.append("% Beamer sizes")
+            for value in merged_defs['beamersizes']:
+                lines.append(f"\\setbeamersize{{{value}}}")
+
+        # ============================================================
+        # Themes (only if valid)
+        # ============================================================
+        if merged_defs['theme'] and not merged_defs['theme'].startswith('%'):
+            lines.append("")
+            lines.append("% Theme setup")
+            lines.append(f"\\usetheme{{{merged_defs['theme']}}}")
+        if merged_defs['colortheme'] and not merged_defs['colortheme'].startswith('%'):
+            lines.append(f"\\usecolortheme{{{merged_defs['colortheme']}}}")
+        if merged_defs['fonttheme'] and not merged_defs['fonttheme'].startswith('%'):
+            lines.append(f"\\usefonttheme{{{merged_defs['fonttheme']}}}")
+
+        # ============================================================
+        # Spacing settings (safe)
+        # ============================================================
+        if merged_defs['parskip'] or merged_defs['itemsep'] or merged_defs['topsep']:
+            lines.append("")
+            lines.append("% Spacing settings")
+            if merged_defs['parskip']:
+                lines.append(f"\\setlength{{\\parskip}}{{{merged_defs['parskip']}}}")
+            if merged_defs['itemsep']:
+                lines.append(f"\\setlength{{\\itemsep}}{{{merged_defs['itemsep']}}}")
+            if merged_defs['topsep']:
+                lines.append(f"\\setlength{{\\topsep}}{{{merged_defs['topsep']}}}")
+
+        # ============================================================
+        # Array stretch (SAFE - only if valid)
+        # ============================================================
+        if merged_defs['arraystretch']:
+            try:
+                val = float(merged_defs['arraystretch'])
+                if 0.5 <= val <= 2.0:
+                    lines.append("")
+                    lines.append("% Array stretch")
+                    lines.append(f"\\renewcommand{{\\arraystretch}}{{{merged_defs['arraystretch']}}}")
+                else:
+                    print(f"  ⚠ Skipping invalid arraystretch value: {merged_defs['arraystretch']}")
+            except ValueError:
+                print(f"  ⚠ Skipping non-numeric arraystretch: {merged_defs['arraystretch']}")
+
+        # ============================================================
+        # Title, author, institute, date (safe)
+        # ============================================================
+        lines.append("")
+        lines.append("% Title page information")
+        if merged_defs['title']:
+            lines.append(f"\\title{{{merged_defs['title']}}}")
+        if merged_defs['subtitle']:
+            lines.append(f"\\subtitle{{{merged_defs['subtitle']}}}")
+        if merged_defs['author']:
+            lines.append(f"\\author{{{merged_defs['author']}}}")
+        if merged_defs['institute']:
+            lines.append(f"\\institute{{{merged_defs['institute']}}}")
+        if merged_defs['date']:
+            lines.append(f"\\date{{{merged_defs['date']}}}")
+
+        # ============================================================
+        # Layout commands (always include with guards)
+        # ============================================================
+        lines.append("")
+        lines.append("% ========== LAYOUT COMMANDS ==========")
+        layout_commands = [
+            ('split', r"""\newcommand{\split}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.45\textwidth}
+                \begin{center}
+                    \includegraphics[width=\textwidth,keepaspectratio]{#1}
+                \end{center}
+            \end{column}
+            \begin{column}{0.5\textwidth}
+                #2
+            \end{column}
+        \end{columns}
+    }"""),
+            ('pip', r"""\newcommand{\pip}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.68\textwidth}
+                #2
+            \end{column}
+            \begin{column}{0.28\textwidth}
+                \vspace{1em}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+        \end{columns}
+    }"""),
+            ('tb', r"""\newcommand{\tb}[2]{%
+        \begin{center}
+            \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
+        \end{center}
+        \vspace{0.5em}
+        #2
+    }"""),
+            ('hl', r"""\newcommand{\hl}[2]{%
+        \begin{columns}[T]
+            \begin{column}{0.6\textwidth}
+                \includegraphics[width=\textwidth,keepaspectratio]{#1}
+            \end{column}
+            \begin{column}{0.36\textwidth}
+                \colorbox{yellow!20}{%
+                    \begin{minipage}{\textwidth}
+                        #2
+                    \end{minipage}%
+                }
+            \end{column}
+        \end{columns}
+    }"""),
+            ('ff', r"""\newcommand{\ff}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+        \begin{center}
+            \vfill
+            \textcolor{white}{\textbf{Full Frame Image}}
+            \vfill
+        \end{center}
+    }"""),
+            ('wm', r"""\newcommand{\wm}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.15] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }"""),
+            ('bg', r"""\newcommand{\bg}[1]{%
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=0.3] at (current page.center) {%
+                    \includegraphics[width=\paperwidth,height=\paperheight,keepaspectratio]{#1}
+                };
+            \end{tikzpicture}%
+        }
+    }"""),
+            ('ol', r"""\newcommand{\ol}[1]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node at (current page.center) {%
+                \includegraphics[width=\paperwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+    }"""),
+            ('corner', r"""\newcommand{\corner}[2]{%
+        \begin{tikzpicture}[remember picture,overlay]
+            \node[anchor=south east] at (current page.south east) {%
+                \includegraphics[width=0.25\textwidth,keepaspectratio]{#1}
+            };
+        \end{tikzpicture}%
+        #2
+    }"""),
+            ('mosaic', r"""\newcommand{\mosaic}[2]{%
+        \begingroup
+        \def\mosaic@params{#1}%
+        \def\mosaic@images{#2}%
+        \pgfmathsetmacro{\mosaic@rows}{{\mosaic@params}[0]}%
+        \pgfmathsetmacro{\mosaic@cols}{{\mosaic@params}[2]}%
+        \begin{center}
+        \begin{tabular}{*{\mosaic@cols}{c}}
+        \hline
+        \mosaic@process
+        \hline
+        \end{tabular}
+        \end{center}
+        \endgroup
+    }
+    \def\mosaic@process{%
+        \mosaic@process@helper\mosaic@images,\@empty
+    }
+    \def\mosaic@process@helper#1,#2\@empty{%
+        \ifx\@empty#2\@empty
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1}%
+        \else
+            \includegraphics[width=0.3\textwidth,keepaspectratio]{#1} &
+            \def\mosaic@remaining{#2}%
+            \mosaic@process@next
+        \fi
+    }
+    \def\mosaic@process@next{%
+        \mosaic@process@helper\mosaic@remaining,\@empty
+    }"""),
+            ('insertshortinstitute', r"\def\insertshortinstitute{airis4D}"),
+        ]
+
+        for cmd_name, cmd_def in layout_commands:
+            if any(cmd_name in c for c in merged_defs['custom_commands']):
+                continue
+            lines.append(f"\\ifcsname {cmd_name}\\endcsname\\else")
+            lines.append(cmd_def)
+            lines.append("\\fi")
+
+        # ============================================================
+        # Progress bar (always include)
+        # ============================================================
+        lines.append("")
+        lines.append("% Progress bar - always defined")
+        lines.append("\\makeatletter")
+        lines.append("\\def\\progressbar@progressbar{}")
+        lines.append("\\newcount\\progressbar@tmpcounta")
+        lines.append("\\newcount\\progressbar@tmpcountb")
+        lines.append("\\newdimen\\progressbar@pbht")
+        lines.append("\\newdimen\\progressbar@pbwd")
+        lines.append("\\newdimen\\progressbar@tmpdim")
+        lines.append("")
+        lines.append("\\progressbar@pbwd=\\paperwidth")
+        lines.append("\\progressbar@pbht=2pt")
+        lines.append("")
+        lines.append("\\def\\progressbar@progressbar{")
+        lines.append("   \\begin{tikzpicture}[very thin]")
+        lines.append("       \\ifnum\\insertframenumber>0")
+        lines.append("           \\pgfmathparse{\\insertframenumber/\\inserttotalframenumber}")
+        lines.append("           \\edef\\progress@ratio{\\pgfmathresult}")
+        lines.append("           \\shade[top color=myblue!50,bottom color=myblue]")
+        lines.append("               (0pt, 0pt) rectangle (\\progress@ratio\\progressbar@pbwd, \\progressbar@pbht)")
+        lines.append("       \\fi")
+        lines.append("   \\end{tikzpicture}%")
+        lines.append("}")
+        lines.append("\\makeatother")
+
+        # ============================================================
+        # Tight spacing (safe defaults)
+        # ============================================================
+        lines.append("")
+        lines.append("% ========== TIGHTER SPACING FOR DENSE CONTENT ==========")
+        lines.append("\\setlength{\\parskip}{0.12em}")
+        lines.append("\\setlength{\\itemsep}{0.04em}")
+        lines.append("\\setlength{\\topsep}{0.04em}")
+        lines.append("\\setlength{\\partopsep}{0pt}")
+        lines.append("\\setlength{\\abovedisplayskip}{0pt}")
+        lines.append("\\setlength{\\belowdisplayskip}{0pt}")
+        lines.append("\\setlength{\\abovedisplayshortskip}{0pt}")
+        lines.append("\\setlength{\\belowdisplayshortskip}{0pt}")
+
+        # ============================================================
+        # Frame mode helper macros
+        # ============================================================
+        lines.append("")
+        lines.append("% ========== FRAME MODE HELPER MACROS ==========")
+        lines.append("\\ifcsname shrinkframe\\endcsname\\else")
+        lines.append("\\newenvironment{shrinkframe}[1][]{%")
+        lines.append("    \\begin{frame}[#1, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%")
+        lines.append("}{%")
+        lines.append("    \\end{frame}%")
+        lines.append("}")
+        lines.append("\\fi")
+        lines.append("")
+        lines.append("\\ifcsname breakframe\\endcsname\\else")
+        lines.append("\\newenvironment{breakframe}[1][]{%")
+        lines.append("    \\begin{frame}[#1, allowframebreaks]%")
+        lines.append("}{%")
+        lines.append("    \\end{frame}%")
+        lines.append("}")
+        lines.append("\\fi")
+        lines.append("")
+        lines.append("\\ifcsname smartframe\\endcsname\\else")
+        lines.append("\\newenvironment{smartframe}[1][]{%")
+        lines.append("    \\begin{frame}[#1, allowframebreaks, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%")
+        lines.append("}{%")
+        lines.append("    \\end{frame}%")
+        lines.append("}")
+        lines.append("\\fi")
+
+        # Begin document
+        lines.append("")
+        lines.append("\\begin{document}")
+
+        return "\n".join(lines)
+
+    def sanitize_latex_content(self, content: str) -> str:
+        """
+        Sanitize content for LaTeX compilation.
+        ONLY fixes known issues without breaking valid LaTeX.
+        """
+        if not content:
+            return content
+
+        import re
+
+        lines = content.split('\n')
+        fixed_lines = []
+
+        for line in lines:
+            # ============================================================
+            # FIX 1: Convert separator lines with # to comments
+            # ============================================================
+            stripped = line.strip()
+            if stripped.startswith('#') and '-' in stripped and not stripped.startswith('%'):
+                line = line.replace('#', '%', 1)
+                fixed_lines.append(line)
+                continue
+
+            # ============================================================
+            # FIX 2: Fix \N command - ONLY if it's exactly \N
+            # ============================================================
+            # Check for \N (not part of a larger command)
+            if '\\N' in line:
+                # Only replace \N when it's a standalone command
+                line = re.sub(r'(?<!\\)\\N\s*', r'\\\\[0.2cm] ', line)
+
+            # ============================================================
+            # FIX 3: Fix standalone # (not followed by a number)
+            # ============================================================
+            # Preserve #1, #2, #3 (macro parameters)
+            # First protect them
+            def protect_param(match):
+                return f'@@@PARAM_{match.group(1)}@@@'
+
+            line = re.sub(r'(?<!\\)#(\d+)', protect_param, line)
+
+            # Escape remaining # (standalone ones)
+            line = re.sub(r'(?<!\\)#', r'\\#', line)
+
+            # Restore macro parameters
+            def restore_param(match):
+                return f'#{match.group(1)}'
+
+            line = re.sub(r'@@@PARAM_(\d+)@@@', restore_param, line)
+
+            fixed_lines.append(line)
+
+        return '\n'.join(fixed_lines)
+
+    def merge_preamble_definitions(self, default_defs: dict, imported_defs: dict) -> dict:
+        """
+        Merge imported definitions with default definitions.
+        Preserves all non-conflicting settings.
+        """
+        merged = {
+            'packages': list(set(default_defs['packages'] + imported_defs['packages'])),
+            'package_options': {**default_defs['package_options'], **imported_defs['package_options']},
+            'colors': {**default_defs['colors'], **imported_defs['colors']},
+            'colorlets': {**default_defs['colorlets'], **imported_defs['colorlets']},
+            'tikzlibraries': list(set(default_defs['tikzlibraries'] + imported_defs['tikzlibraries'])),
+            'pgfplotsset': default_defs['pgfplotsset'] + imported_defs['pgfplotsset'],
+            'beamercolors': default_defs['beamercolors'] + imported_defs['beamercolors'],
+            'beamerfonts': default_defs['beamerfonts'] + imported_defs['beamerfonts'],
+            'beamertemplates': default_defs['beamertemplates'] + imported_defs['beamertemplates'],
+            'beamersizes': default_defs['beamersizes'] + imported_defs['beamersizes'],
+            'custom_commands': default_defs['custom_commands'] + imported_defs['custom_commands'],
+            'def_commands': default_defs['def_commands'] + imported_defs['def_commands'],
+            'let_commands': default_defs['let_commands'] + imported_defs['let_commands'],
+            'theme': imported_defs['theme'] or default_defs['theme'],
+            'colortheme': imported_defs['colortheme'] or default_defs['colortheme'],
+            'fonttheme': imported_defs['fonttheme'] or default_defs['fonttheme'],
+            'sisetup': imported_defs['sisetup'] or default_defs['sisetup'],
+            'hypersetup': imported_defs['hypersetup'] or default_defs['hypersetup'],
+            'arraystretch': imported_defs['arraystretch'] or default_defs['arraystretch'],
+            'parskip': imported_defs['parskip'] or default_defs['parskip'],
+            'itemsep': imported_defs['itemsep'] or default_defs['itemsep'],
+            'topsep': imported_defs['topsep'] or default_defs['topsep'],
+            'footline': imported_defs['footline'] or default_defs['footline'],
+            'logo': imported_defs['logo'] or default_defs['logo'],
+            'title': imported_defs['title'] or default_defs['title'],
+            'subtitle': imported_defs['subtitle'] or default_defs['subtitle'],
+            'author': imported_defs['author'] or default_defs['author'],
+            'institute': imported_defs['institute'] or default_defs['institute'],
+            'date': imported_defs['date'] or default_defs['date'],
+            'shortinstitute': imported_defs['shortinstitute'] or default_defs['shortinstitute'],
+            'note_page': imported_defs['note_page'] or default_defs['note_page'],
+            'navigation_symbols': imported_defs['navigation_symbols'] or default_defs['navigation_symbols'],
+            'other_settings': default_defs['other_settings'] + imported_defs['other_settings'],
+            'critical_fixes': default_defs['critical_fixes'] + imported_defs['critical_fixes'],
+        }
+
+        return merged
+
+    def _generate_notes_from_content(self, notes_lines: list) -> str:
+        """Generate notes with full LaTeX command support"""
+        if not notes_lines:
+            return ""
+
+        # Join notes lines
+        notes_content = '\n'.join(notes_lines)
+
+        # Check if notes already have LaTeX formatting
+        has_latex = any(cmd in notes_content for cmd in [
+            '\\large', '\\small', '\\Huge', '\\textcolor', '\\textbf',
+            '\\textit', '\\begin{itemize}', '\\begin{enumerate}',
+            '\\item', '\\vspace', '\\hspace', '\\alert', '\\emph'
+        ])
+
+        # Build notes content
+        result = []
+        result.append("\\note{")
+
+        if has_latex:
+            # Preserve LaTeX commands as-is
+            result.append(notes_content)
+        else:
+            # Process plain text notes with formatting
+            lines = notes_content.split('\n')
+            has_bullets = any(line.strip().startswith(('-', '•')) for line in lines)
+
+            if has_bullets:
+                # Convert bullet points to itemize
+                result.append("\\begin{itemize}")
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped.startswith(('-', '•')):
+                        item_text = re.sub(r'^[-•]\s*', '', stripped)
+                        result.append(f"\\item {item_text}")
+                    elif stripped:
+                        result.append(stripped)
+                result.append("\\end{itemize}")
+            else:
+                # Plain text notes
+                for line in lines:
+                    if line.strip():
+                        result.append(line)
+
+        result.append("}")
+        return '\n'.join(result)
+
+    def convert_old_to_new_format(self) -> None:
+        """
+        Convert old format (\\title + \\begin{Content}) to new format (\\begin{frame})
+        """
+        if not self.current_file:
+            messagebox.showwarning("Warning", "Please open a file first!")
+            return
+
+        try:
+            # Read the current file
+            with open(self.current_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Check if it's old format
+            if '\\begin{Content}' not in content:
+                messagebox.showinfo("Info", "This file appears to be in the new format already.")
+                return
+
+            self.write("\n" + "="*60 + "\n", "cyan")
+            self.write("CONVERTING OLD FORMAT TO NEW FORMAT\n", "cyan")
+            self.write("="*60 + "\n", "cyan")
+
+            # Parse the old format - NO pre-sanitization!
+            new_content = self._convert_old_format_to_new(content)
+
+            # Create new filename with _new suffix
+            base_name = os.path.splitext(self.current_file)[0]
+            new_file = base_name + '_new.txt'
+
+            # Write the new file
+            with open(new_file, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            self.write(f"✓ Converted to new format: {os.path.basename(new_file)}\n", "green")
+
+            # Ask if user wants to load the new file
+            if messagebox.askyesno("Conversion Complete",
+                                   f"File converted successfully!\n\n"
+                                   f"New file: {os.path.basename(new_file)}\n\n"
+                                   f"Would you like to load it now?"):
+                self.load_file(new_file)
+
+        except Exception as e:
+            self.write(f"✗ Error converting file: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Error converting file:\n{str(e)}")
+
+    def _convert_old_format_to_new(self, content: str) -> str:
+        """
+        Simple conversion - preserves preamble exactly, only converts document body.
+        """
+        import re
+
+        # ============================================================
+        # STEP 1: EXTRACT PREAMBLE AND DOCUMENT BODY
+        # ============================================================
+        # Find where the document begins
+        doc_start = content.find('\\begin{document}')
+        if doc_start == -1:
+            # No document found, return as-is
+            return content
+
+        # Split into preamble and body
+        preamble = content[:doc_start].strip()
+        body = content[doc_start:]
+
+        # ============================================================
+        # STEP 2: FIX THE SEPARATOR LINE IN PREAMBLE (ONLY IF PRESENT)
+        # ============================================================
+        # Only fix the #---------------------------------- line
+        lines = preamble.split('\n')
+        fixed_preamble_lines = []
+        for line in lines:
+            if line.strip() == '#----------------------------------':
+                fixed_preamble_lines.append('%----------------------------------')
+            elif line.strip().startswith('#') and '-' in line.strip():
+                fixed_preamble_lines.append(line.replace('#', '%', 1))
+            else:
+                fixed_preamble_lines.append(line)
+        preamble = '\n'.join(fixed_preamble_lines)
+
+        # ============================================================
+        # STEP 3: PARSE THE DOCUMENT BODY - OLD FORMAT
+        # ============================================================
+        # Remove the \begin{document} line
+        body = re.sub(r'\\begin{document}\s*', '', body)
+        body = re.sub(r'\\end{document}\s*', '', body)
+
+        slides = []
+        lines = body.split('\n')
+        i = 0
+
+        while i < len(lines):
+            line = lines[i].strip()
+
+            # Look for \title
+            title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
+            if title_match:
+                title = title_match.group(1).strip()
+                i += 1
+
+                content_lines = []
+                notes_lines = []
+                in_content = False
+                in_notes = False
+
+                while i < len(lines):
+                    current_line = lines[i]
+                    stripped = current_line.strip()
+
+                    # Content block
+                    if re.match(r'^%?\s*\\begin{Content}\s*', stripped):
+                        in_content = True
+                        # Get anything after \begin{Content}
+                        remaining = re.sub(r'^%?\s*\\begin{Content}\s*', '', current_line)
+                        if remaining.strip() and remaining.strip() != "\\None":
+                            content_lines.append(remaining.strip())
+                        i += 1
+                        continue
+
+                    elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
+                        in_content = False
+                        i += 1
+                        break
+
+                    # Notes block
+                    elif re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
+                        in_notes = True
+                        in_content = False
+                        i += 1
+                        continue
+
+                    elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
+                        in_notes = False
+                        i += 1
+                        continue
+
+                    # Collect content
+                    if in_content:
+                        if stripped and stripped != "\\None":
+                            content_lines.append(current_line.rstrip())
+                        i += 1
+                    elif in_notes:
+                        if stripped:
+                            notes_lines.append(current_line.rstrip())
+                        i += 1
+                    else:
+                        i += 1
+
+                if title or content_lines or notes_lines:
+                    slides.append({
+                        'title': title,
+                        'content': content_lines,
+                        'notes': notes_lines
+                    })
+            else:
+                i += 1
+
+        # ============================================================
+        # STEP 4: BUILD NEW FORMAT DOCUMENT
+        # ============================================================
+        new_body = []
+        new_body.append("\\begin{document}\n")
+
+        # Add title page
+        new_body.append("\\begin{frame}[plain]")
+        new_body.append("\\titlepage")
+        new_body.append("\\end{frame}\n")
+
+        for slide in slides:
+            title = slide['title']
+            content_lines = slide['content']
+            notes_lines = slide['notes']
+
+            # Clean title
+            clean_title = re.sub(r'\\[a-zA-Z]+\{', '', title)
+            clean_title = re.sub(r'[{}]', '', clean_title).strip()
+            if not clean_title:
+                clean_title = "Untitled"
+
+            new_body.append(f"\\begin{{frame}}{{{clean_title}}}")
+            new_body.append(f"\\frametitle{{{clean_title}}}")
+
+            # Add content - PRESERVE EXACTLY
+            for line in content_lines:
+                if line.strip():
+                    new_body.append(line)
+
+            new_body.append("\\end{frame}\n")
+
+            # Add notes
+            if notes_lines:
+                new_body.append("\\note{")
+                for note in notes_lines:
+                    if note.strip():
+                        new_body.append(note)
+                new_body.append("}\n")
+
+        new_body.append("\\end{document}\n")
+
+        # ============================================================
+        # STEP 5: COMBINE - PREAMBLE IS UNMODIFIED (EXCEPT SEPARATOR)
+        # ============================================================
+        return preamble + "\n\n" + '\n'.join(new_body)
+
+    def generate_tex_with_preserved_formatting(self) -> str:
+        """Generate TeX content with preserved LaTeX formatting including notes"""
+        # ... existing code ...
+
+        # When adding notes:
+        if notes_lines and not slide.get('_fully_masked', False):
+            notes_content = '\n'.join(notes_lines)
+
+            # Check if notes have LaTeX formatting
+            has_latex_notes = any(cmd in notes_content for cmd in [
+                '\\large', '\\small', '\\Huge', '\\textcolor', '\\textbf',
+                '\\textit', '\\begin{itemize}', '\\begin{enumerate}',
+                '\\item', '\\vspace', '\\hspace', '\\alert', '\\emph'
+            ])
+
+            doc_body.append("\\begin{Notes}")
+            if has_latex_notes:
+                # Preserve LaTeX commands in notes
+                for note in notes_lines:
+                    if note.strip():
+                        doc_body.append(note)
+            else:
+                # Process plain text notes
+                has_bullets = any(note.strip().startswith(('-', '•')) for note in notes_lines)
+                if has_bullets:
+                    doc_body.append("\\begin{itemize}")
+                    for note in notes_lines:
+                        stripped = note.strip()
+                        if stripped.startswith(('-', '•')):
+                            item_text = re.sub(r'^[-•]\s*', '', stripped)
+                            doc_body.append(f"\\item {item_text}")
+                        elif stripped:
+                            doc_body.append(stripped)
+                    doc_body.append("\\end{itemize}")
+                else:
+                    for note in notes_lines:
+                        if note.strip():
+                            doc_body.append(note)
+            doc_body.append("\\end{Notes}\n")
+
+    def process_content_with_latex_formatting(self, content: list) -> str:
+        """
+        Process content and wrap it in proper LaTeX environments.
+        Preserves existing LaTeX commands and adds necessary wrappers.
+        """
+        if not content:
+            return ""
+
+        # Join content for processing
+        full_content = '\n'.join(content)
+
+        # Check if content is already in a LaTeX environment
+        has_environment = any(env in full_content for env in [
+            '\\begin{itemize}', '\\begin{enumerate}', '\\begin{center}',
+            '\\begin{beamercolorbox}', '\\begin{columns}', '\\begin{tabular}',
+            '\\begin{tikzpicture}', '\\begin{block}', '\\begin{alertblock}'
+        ])
+
+        # If content already has environments, return as-is
+        if has_environment:
+            return full_content
+
+        # Check if content has bullet points that need itemize environment
+        has_bullets = any(line.strip().startswith(('-', '•')) for line in content)
+
+        if has_bullets:
+            # Process bullet points into itemize environment
+            result = []
+            result.append("\\begin{itemize}")
+            for line in content:
+                stripped = line.strip()
+                if stripped.startswith(('-', '•')):
+                    # Remove bullet prefix and add as item
+                    item_text = re.sub(r'^[-•]\s*', '', stripped)
+                    result.append(f"\\item {item_text}")
+                elif stripped:
+                    # Add non-bullet text as regular content
+                    result.append(stripped)
+            result.append("\\end{itemize}")
+            return '\n'.join(result)
+
+        # Check if content has formatting commands that need center environment
+        has_formatting = any(cmd in full_content for cmd in [
+            '\\large', '\\small', '\\Huge', '\\textcolor', '\\textbf',
+            '\\textit', '\\emph', '\\alert', '\\vspace', '\\hspace'
+        ])
+
+        if has_formatting:
+            # Wrap in center environment for better display
+            return f"\\begin{{center}}\n{full_content}\n\\end{{center}}"
+
+        # Plain text - add as-is
+        return full_content
+
+    # ============================================================================
+    # UTILITY: Patch all messagebox calls in BeamerSlideEditor
+    # ============================================================================
+
+    def patch_messageboxes(editor_instance):
+        """
+        Patch the messagebox calls in the editor to ensure they appear on top.
+        Call this during initialization.
+        """
+        # Store original methods
+        editor_instance._original_showinfo = messagebox.showinfo
+        editor_instance._original_showwarning = messagebox.showwarning
+        editor_instance._original_showerror = messagebox.showerror
+        editor_instance._original_askyesno = messagebox.askyesno
+        editor_instance._original_askokcancel = messagebox.askokcancel
+
+        # Override with WindowManager versions
+        def showinfo(title, message, parent=None):
+            return WindowManager.show_message(parent or editor_instance, title, message, "info")
+
+        def showwarning(title, message, parent=None):
+            return WindowManager.show_message(parent or editor_instance, title, message, "warning")
+
+        def showerror(title, message, parent=None):
+            return WindowManager.show_message(parent or editor_instance, title, message, "error")
+
+        def askyesno(title, message, parent=None):
+            return WindowManager.show_message(parent or editor_instance, title, message, "yesno")
+
+        def askokcancel(title, message, parent=None):
+            return WindowManager.show_message(parent or editor_instance, title, message, "okcancel")
+
+        # Apply patches
+        messagebox.showinfo = showinfo
+        messagebox.showwarning = showwarning
+        messagebox.showerror = showerror
+        messagebox.askyesno = askyesno
+        messagebox.askokcancel = askokcancel
+
+        return editor_instance
+
+
+    # ============================================================================
+    # UPDATE: BeamerSlideEditor.edit_theme_style method
+    # ============================================================================
+
+    def edit_theme_style_enhanced(self):
+        """
+        Open the enhanced Theme & Style dialog with all features.
+        """
+        current_preamble = self._get_safe_current_preamble()
+        dialog = EnhancedThemeStyleDialog(self, current_preamble)
+        self.wait_window(dialog)
+
+        if dialog.result is not None:
+            new_preamble = dialog.result
+
+            if self.current_file and os.path.exists(self.current_file):
+                success = self._apply_preamble_to_file(self.current_file, new_preamble)
+                if success:
+                    self.write("✓ Theme and style changes applied successfully\n", "green")
+                    self.load_file(self.current_file)
+                    WindowManager.show_message(
+                        self,
+                        "Success",
+                        "Theme and style settings applied successfully!\n\n"
+                        "Only the settings you changed were modified.\n"
+                        "All other customizations were preserved.",
+                        "info"
+                    )
+                else:
+                    self.write("✗ Failed to apply theme changes\n", "red")
+                    WindowManager.show_message(
+                        self,
+                        "Error",
+                        "Failed to apply theme changes.\nPlease check the terminal for details.",
+                        "error"
+                    )
+            else:
+                self.custom_preamble = new_preamble
+                self.using_custom_preamble = True
+                self.preamble_origin = 'theme_style'
+                self.preamble_from_file = new_preamble
+                self.write("✓ Theme and style changes applied in memory\n", "green")
+                WindowManager.show_message(
+                    self,
+                    "Success",
+                    "Theme and style settings applied in memory!\n\n"
+                    "Save your presentation to persist these changes.",
+                    "info"
+                )
+
+
+
 class ScreenCaptureMethod:
     """Detect and manage screen capture methods for different environments"""
 
@@ -25176,20 +33554,27 @@ def modify_preamble_for_notes_mode(tex_content: str, mode: str) -> str:
 def compile_with_notes_mode(input_file: str, mode: str, keep_temp: bool = False) -> str:
     """
     Compile TEX file with specified notes mode.
+    Saves the PDF in the same directory as the input file.
 
     Args:
         input_file: Path to input TEX file
         mode: 'slides', 'notes', or 'both'
         keep_temp: Whether to keep temporary files
     Returns:
-        Path to generated PDF
+        Path to generated PDF (in the same directory as input_file)
     """
     try:
+        # Get the directory of the input file
+        input_dir = os.path.dirname(os.path.abspath(input_file))
+        base_name = os.path.splitext(os.path.basename(input_file))[0]
+
+        # The final PDF will be in the same directory as the input file
+        final_pdf = os.path.join(input_dir, f"{base_name}_{mode}.pdf")
+
         # Create temp directory for compilation
         temp_dir = tempfile.mkdtemp()
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
         temp_tex = os.path.join(temp_dir, f"{base_name}_{mode}.tex")
-        output_pdf = os.path.join(temp_dir, f"{base_name}_{mode}.pdf")
+        temp_pdf = os.path.join(temp_dir, f"{base_name}_{mode}.pdf")
 
         # Read original content
         with open(input_file, 'r', encoding='utf-8') as f:
@@ -25203,31 +33588,63 @@ def compile_with_notes_mode(input_file: str, mode: str, keep_temp: bool = False)
             f.write(modified_content)
 
         # Copy required media files to temp directory
-        media_dir = os.path.join(os.path.dirname(input_file), 'media_files')
+        media_dir = os.path.join(input_dir, 'media_files')
         if os.path.exists(media_dir):
             temp_media = os.path.join(temp_dir, 'media_files')
             shutil.copytree(media_dir, temp_media)
+        else:
+            # Create empty media_files directory in temp
+            os.makedirs(os.path.join(temp_dir, 'media_files'), exist_ok=True)
 
-        # Compile document
+        # Change to temp directory for compilation
+        original_dir = os.getcwd()
         os.chdir(temp_dir)
-        for _ in range(2):  # Two passes for references
-            subprocess.run(['pdflatex', '-interaction=nonstopmode', temp_tex],
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Move final PDF to original directory
-        final_pdf = os.path.join(os.path.dirname(input_file), f"{base_name}_{mode}.pdf")
-        shutil.copy2(output_pdf, final_pdf)
+        try:
+            # Compile document (two passes for references)
+            for pass_num in range(2):
+                result = subprocess.run(
+                    ['pdflatex', '-interaction=nonstopmode',
+                     '-file-line-error', temp_tex],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=120
+                )
 
-        return final_pdf
+                if result.returncode != 0:
+                    print(f"⚠ Compilation pass {pass_num + 1} had errors")
+                    # Check for fatal errors
+                    if 'Fatal error' in result.stdout or '! ' in result.stdout:
+                        print(f"✗ Fatal error in compilation: {result.stdout[-500:]}")
+                        return None
 
+            # Check if PDF was created
+            if os.path.exists(temp_pdf) and os.path.getsize(temp_pdf) > 0:
+                # Copy the PDF to the permanent location (same directory as input)
+                shutil.copy2(temp_pdf, final_pdf)
+                print(f"✓ PDF saved to: {final_pdf}")
+                print(f"  Size: {os.path.getsize(final_pdf)} bytes")
+                return final_pdf
+            else:
+                print(f"✗ PDF compilation failed: {temp_pdf} not found or empty")
+                return None
+
+        finally:
+            # Change back to original directory
+            os.chdir(original_dir)
+
+    except subprocess.TimeoutExpired:
+        print(f"✗ Compilation timed out")
+        return None
+    except Exception as e:
+        print(f"✗ Error in compilation: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
     finally:
         if not keep_temp:
             shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-
-
-
 
 
 #---------------------------------------------------------------------------------
