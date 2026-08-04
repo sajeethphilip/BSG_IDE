@@ -1386,20 +1386,26 @@ from datetime import datetime
 # ============================================================================
 # WINDOW MANAGER - Add this after imports
 # ============================================================================
+# ============================================================================
+# UPDATE WINDOW MANAGER - Add file dialog handling
+# ============================================================================
 
 class WindowManager:
-    """Utility to ensure windows appear on top and are properly focused"""
+    """
+    Utility to ensure all windows appear on top, including file dialogs.
+    """
 
     @staticmethod
     def ensure_on_top(window, parent=None):
         """Force a window to appear on top of all others."""
         try:
-            window.lift()
-            if parent:
+            if parent and parent.winfo_exists():
                 window.transient(parent)
+            window.lift()
             window.attributes('-topmost', True)
             window.focus_force()
             window.grab_set()
+            window.update_idletasks()
             window.after(100, lambda: window.attributes('-topmost', False))
 
             # Platform-specific fixes
@@ -1413,8 +1419,6 @@ class WindowManager:
                 except:
                     pass
 
-            window.update_idletasks()
-            window.update()
             return True
         except Exception as e:
             print(f"Warning: Could not ensure window on top: {e}")
@@ -1424,6 +1428,9 @@ class WindowManager:
     def center_on_parent(window, parent):
         """Center a window on its parent"""
         try:
+            if not parent or not parent.winfo_exists():
+                return
+
             window.update_idletasks()
             parent_x = parent.winfo_rootx()
             parent_y = parent.winfo_rooty()
@@ -1450,6 +1457,69 @@ class WindowManager:
             window.geometry(f"+{x}+{y}")
         except Exception as e:
             print(f"Warning: Could not center window: {e}")
+
+    @staticmethod
+    def show_file_dialog(parent, dialog_type, **kwargs):
+        """
+        Show a file dialog and ensure it appears on top.
+        dialog_type: 'open', 'save', 'directory', 'openfiles'
+        """
+        # Make parent topmost temporarily
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update()
+        except:
+            pass
+
+        # Create a temporary window to force focus
+        temp = None
+        try:
+            if parent and parent.winfo_exists():
+                temp = tk.Toplevel(parent)
+                temp.attributes('-topmost', True)
+                temp.overrideredirect(True)
+                temp.geometry('1x1+0+0')
+                temp.lift()
+                temp.focus_force()
+                temp.after(50, temp.destroy)
+        except:
+            pass
+
+        # Show the dialog
+        result = None
+        try:
+            if dialog_type == 'open':
+                result = filedialog.askopenfilename(parent=parent, **kwargs)
+            elif dialog_type == 'save':
+                result = filedialog.asksaveasfilename(parent=parent, **kwargs)
+            elif dialog_type == 'directory':
+                result = filedialog.askdirectory(parent=parent, **kwargs)
+            elif dialog_type == 'openfiles':
+                result = filedialog.askopenfilenames(parent=parent, **kwargs)
+        except Exception as e:
+            print(f"File dialog error: {e}")
+            # Fallback without parent
+            if dialog_type == 'open':
+                result = filedialog.askopenfilename(**kwargs)
+            elif dialog_type == 'save':
+                result = filedialog.asksaveasfilename(**kwargs)
+            elif dialog_type == 'directory':
+                result = filedialog.askdirectory(**kwargs)
+            elif dialog_type == 'openfiles':
+                result = filedialog.askopenfilenames(**kwargs)
+
+        # Restore parent state
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update()
+        except:
+            pass
+
+        return result
 
     @staticmethod
     def create_progress_dialog(parent, title, message):
@@ -1526,32 +1596,3452 @@ class WindowManager:
     def show_message(parent, title, message, icon="info"):
         """Show a message box that appears on top"""
         try:
-            import tkinter.messagebox as messagebox
             parent.attributes('-topmost', True)
-            parent.update()
+            parent.update_idletasks()
         except:
             pass
 
         if icon == "info":
-            result = messagebox.showinfo(title, message, parent=parent)
+            result = DialogManager.showinfo(title, message, parent)
         elif icon == "warning":
-            result = messagebox.showwarning(title, message, parent=parent)
+            result = DialogManager.showwarning(title, message, parent)
         elif icon == "error":
-            result = messagebox.showerror(title, message, parent=parent)
+            result = DialogManager.showerror(title, message, parent)
         elif icon == "yesno":
-            result = messagebox.askyesno(title, message, parent=parent)
+            result = DialogManager.askyesno(title, message, parent)
         elif icon == "okcancel":
-            result = messagebox.askokcancel(title, message, parent=parent)
+            result = DialogManager.askokcancel(title, message, parent)
+        elif icon == "retrycancel":
+            result = DialogManager.askretrycancel(title, message, parent)
         else:
-            result = messagebox.showinfo(title, message, parent=parent)
+            result = DialogManager.showinfo(title, message, parent)
 
         try:
             parent.attributes('-topmost', False)
-            parent.update()
+            parent.update_idletasks()
         except:
             pass
 
         return result
+
+
+# ============================================================================
+# FILE DIALOG WRAPPER - Ensures file dialogs appear on top
+# ============================================================================
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
+import customtkinter as ctk
+import platform
+
+class DialogManager:
+    """
+    Manages all dialog windows to ensure they appear on top.
+    Handles file dialogs, message boxes, and custom dialogs.
+    """
+
+    @staticmethod
+    def _ensure_on_top(window, parent=None):
+        """Force any window to appear on top"""
+        try:
+            if parent and parent.winfo_exists():
+                window.transient(parent)
+            window.lift()
+            window.focus_force()
+            window.grab_set()
+            window.attributes('-topmost', True)
+            window.update_idletasks()
+            # Remove topmost after a moment to allow normal window behavior
+            window.after(100, lambda: window.attributes('-topmost', False))
+            return True
+        except Exception as e:
+            print(f"Warning: Could not ensure window on top: {e}")
+            return False
+
+    @staticmethod
+    def _create_temp_focus_window(parent):
+        """Create a temporary window to force focus"""
+        try:
+            if parent and parent.winfo_exists():
+                temp = tk.Toplevel(parent)
+                temp.attributes('-topmost', True)
+                temp.overrideredirect(True)
+                temp.geometry('1x1+0+0')
+                temp.lift()
+                temp.focus_force()
+                temp.update_idletasks()
+                temp.after(50, temp.destroy)
+                return True
+        except:
+            pass
+        return False
+
+    # ========== FILE DIALOGS ==========
+
+    @staticmethod
+    def askopenfilename(parent=None, **kwargs):
+        """File open dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        # Create temp focus window
+        DialogManager._create_temp_focus_window(parent)
+
+        result = None
+        try:
+            result = filedialog.askopenfilename(parent=parent, **kwargs)
+        except Exception as e:
+            print(f"File dialog error: {e}")
+            result = filedialog.askopenfilename(**kwargs)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def asksaveasfilename(parent=None, **kwargs):
+        """File save dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = None
+        try:
+            result = filedialog.asksaveasfilename(parent=parent, **kwargs)
+        except Exception as e:
+            print(f"File save dialog error: {e}")
+            result = filedialog.asksaveasfilename(**kwargs)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def askdirectory(parent=None, **kwargs):
+        """Directory dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = None
+        try:
+            result = filedialog.askdirectory(parent=parent, **kwargs)
+        except Exception as e:
+            print(f"Directory dialog error: {e}")
+            result = filedialog.askdirectory(**kwargs)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def askopenfilenames(parent=None, **kwargs):
+        """Multiple file open dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = None
+        try:
+            result = filedialog.askopenfilenames(parent=parent, **kwargs)
+        except Exception as e:
+            print(f"File dialog error: {e}")
+            result = filedialog.askopenfilenames(**kwargs)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    # ========== MESSAGE BOXES ==========
+
+    @staticmethod
+    def showinfo(title, message, parent=None):
+        """Show info dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = messagebox.showinfo(title, message, parent=parent)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def showwarning(title, message, parent=None):
+        """Show warning dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = messagebox.showwarning(title, message, parent=parent)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def showerror(title, message, parent=None):
+        """Show error dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = messagebox.showerror(title, message, parent=parent)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def askyesno(title, message, parent=None):
+        """Ask yes/no dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = messagebox.askyesno(title, message, parent=parent)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def askokcancel(title, message, parent=None):
+        """Ask OK/Cancel dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = messagebox.askokcancel(title, message, parent=parent)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def askretrycancel(title, message, parent=None):
+        """Ask Retry/Cancel dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = messagebox.askretrycancel(title, message, parent=parent)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    @staticmethod
+    def askquestion(title, message, parent=None):
+        """Ask question dialog - always on top"""
+        was_topmost = False
+        try:
+            if parent and parent.winfo_exists():
+                was_topmost = parent.attributes('-topmost')
+                parent.attributes('-topmost', True)
+                parent.update_idletasks()
+        except:
+            pass
+
+        DialogManager._create_temp_focus_window(parent)
+
+        result = messagebox.askquestion(title, message, parent=parent)
+
+        try:
+            if parent and parent.winfo_exists():
+                parent.attributes('-topmost', was_topmost)
+                parent.update_idletasks()
+        except:
+            pass
+
+        return result
+
+    # ========== CUSTOM DIALOGS ==========
+
+    @staticmethod
+    def show_custom_dialog(dialog_class, parent=None, *args, **kwargs):
+        """Show any custom dialog - always on top"""
+        # Create the dialog
+        dialog = dialog_class(parent, *args, **kwargs)
+
+        # Ensure it's on top
+        DialogManager._ensure_on_top(dialog, parent)
+
+        # Center on parent
+        if parent and parent.winfo_exists():
+            DialogManager.center_on_parent(dialog, parent)
+
+        # Make it modal
+        dialog.grab_set()
+        dialog.wait_window()
+
+        return dialog.result if hasattr(dialog, 'result') else None
+
+    @staticmethod
+    def center_on_parent(window, parent):
+        """Center a window on its parent"""
+        try:
+            if not parent or not parent.winfo_exists():
+                return
+
+            window.update_idletasks()
+            parent_x = parent.winfo_rootx()
+            parent_y = parent.winfo_rooty()
+            parent_width = parent.winfo_width()
+            parent_height = parent.winfo_height()
+            window_width = window.winfo_width()
+            window_height = window.winfo_height()
+
+            x = parent_x + (parent_width - window_width) // 2
+            y = parent_y + (parent_height - window_height) // 2
+
+            # Ensure window stays on screen
+            screen_width = window.winfo_screenwidth()
+            screen_height = window.winfo_screenheight()
+
+            if x < 0:
+                x = 50
+            if y < 0:
+                y = 50
+            if x + window_width > screen_width:
+                x = screen_width - window_width - 50
+            if y + window_height > screen_height:
+                y = screen_height - window_height - 50
+
+            window.geometry(f"+{x}+{y}")
+        except Exception as e:
+            print(f"Warning: Could not center window: {e}")
+
+    @staticmethod
+    def create_progress_dialog(parent, title, message):
+        """Create a progress dialog that appears on top"""
+        try:
+            dialog = ctk.CTkToplevel(parent)
+            dialog.title(title)
+            dialog.geometry("450x180")
+
+            # Make it modal and on top
+            dialog.transient(parent)
+            dialog.grab_set()
+            DialogManager._ensure_on_top(dialog, parent)
+            DialogManager.center_on_parent(dialog, parent)
+
+            dialog.resizable(False, False)
+
+            main_frame = ctk.CTkFrame(dialog)
+            main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+            message_label = ctk.CTkLabel(main_frame, text=message, font=("Arial", 12))
+            message_label.pack(pady=10)
+
+            progress_bar = ctk.CTkProgressBar(main_frame, width=350)
+            progress_bar.pack(pady=10)
+            progress_bar.set(0)
+
+            status_label = ctk.CTkLabel(main_frame, text="0%", font=("Arial", 10))
+            status_label.pack(pady=5)
+
+            dialog.progress_bar = progress_bar
+            dialog.status_label = status_label
+            dialog.message_label = message_label
+            dialog.is_cancelled = False
+
+            return dialog
+        except Exception as e:
+            print(f"Error creating progress dialog: {e}")
+            return None
+
+    @staticmethod
+    def update_progress_dialog(dialog, value, message=None):
+        """Update a progress dialog"""
+        try:
+            if dialog and dialog.winfo_exists():
+                dialog.progress_bar.set(value / 100)
+                dialog.status_label.configure(text=f"{value:.1f}%")
+                if message:
+                    dialog.message_label.configure(text=message)
+                dialog.update_idletasks()
+                return True
+        except:
+            pass
+        return False
+
+    @staticmethod
+    def close_progress_dialog(dialog):
+        """Close a progress dialog"""
+        try:
+            if dialog and dialog.winfo_exists():
+                dialog.grab_release()
+                dialog.destroy()
+                return True
+        except:
+            pass
+        return False
+
+
+# ============================================================================
+# PATCH ALL FILE DIALOGS - Call this at application startup
+# ============================================================================
+
+def patch_all_file_dialogs():
+    """
+    Patch all file dialog functions in the application.
+    Call this once at application startup in the main function.
+    """
+    from tkinter import filedialog, messagebox
+
+    # Store originals
+    originals = {
+        'askopenfilename': filedialog.askopenfilename,
+        'asksaveasfilename': filedialog.asksaveasfilename,
+        'askdirectory': filedialog.askdirectory,
+        'askopenfilenames': filedialog.askopenfilenames,
+        'showinfo': messagebox.showinfo,
+        'showwarning': messagebox.showwarning,
+        'showerror': messagebox.showerror,
+        'askyesno': messagebox.askyesno,
+        'askokcancel': messagebox.askokcancel,
+        'askretrycancel': messagebox.askretrycancel,
+        'askquestion': messagebox.askquestion,
+    }
+
+    # Replace with DialogManager versions
+    filedialog.askopenfilename = DialogManager.askopenfilename
+    filedialog.asksaveasfilename = DialogManager.asksaveasfilename
+    filedialog.askdirectory = DialogManager.askdirectory
+    filedialog.askopenfilenames = DialogManager.askopenfilenames
+
+    messagebox.showinfo = DialogManager.showinfo
+    messagebox.showwarning = DialogManager.showwarning
+    messagebox.showerror = DialogManager.showerror
+    messagebox.askyesno = DialogManager.askyesno
+    messagebox.askokcancel = DialogManager.askokcancel
+    messagebox.askretrycancel = DialogManager.askretrycancel
+    messagebox.askquestion = DialogManager.askquestion
+
+    print("✓ All dialogs patched to appear on top")
+    return originals
+
+
+# ============================================================================
+# PATCH ALL FILE DIALOGS IN THE APPLICATION
+# ============================================================================
+
+def patch_file_dialogs():
+    """
+    Patch all file dialog functions in the application to use DialogManager.
+    Call this once at application startup.
+    """
+    # Store original functions
+    original_askopenfilename = filedialog.askopenfilename
+    original_asksaveasfilename = filedialog.asksaveasfilename
+    original_askdirectory = filedialog.askdirectory
+    original_askopenfilenames = filedialog.askopenfilenames
+
+    # Replace with wrapped versions
+    filedialog.askopenfilename = DialogManager.askopenfilename
+    filedialog.asksaveasfilename = DialogManager.asksaveasfilename
+    filedialog.askdirectory = DialogManager.askdirectory
+    filedialog.askopenfilenames = DialogManager.askopenfilenames
+
+    return {
+        'original_askopenfilename': original_askopenfilename,
+        'original_asksaveasfilename': original_asksaveasfilename,
+        'original_askdirectory': original_askdirectory,
+        'original_askopenfilenames': original_askopenfilenames
+    }
+
+
+
+
+# ============================================================================
+# THEME IMPORTER - Extract themes from Beamer TeX files
+# ============================================================================
+
+import re
+import json
+from pathlib import Path
+from datetime import datetime
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
+
+class ThemeImporter:
+    """
+    Import themes from Beamer TeX files.
+    Extracts all preamble elements and stores them in a structured format.
+    """
+
+    # Categories of preamble elements
+    CATEGORIES = {
+        'documentclass': 'Document Class',
+        'packages': 'Packages',
+        'colors': 'Colors',
+        'themes': 'Themes (Beamer)',
+        'colorthemes': 'Color Themes',
+        'fontthemes': 'Font Themes',
+        'beamercolors': 'Beamer Colors',
+        'beamerfonts': 'Beamer Fonts',
+        'beamertemplates': 'Beamer Templates',
+        'custom_commands': 'Custom Commands',
+        'tikz_libraries': 'TikZ Libraries',
+        'pgfplots_settings': 'PGFPlots Settings',
+        'spacing': 'Spacing Settings',
+        'notes': 'Notes Configuration',
+        'footer': 'Footer/Footline',
+        'header': 'Header/Frametitle',
+        'logo': 'Logo',
+        'title_info': 'Title Information',
+        'progress_bar': 'Progress Bar',
+        'navigation': 'Navigation',
+        'background': 'Background',
+        'other': 'Other Settings'
+    }
+
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.extracted_theme = None
+        self.errors = []
+        self.warnings = []
+
+    def import_from_file(self, tex_file_path):
+        """Import a theme from a TeX file"""
+        try:
+            with open(tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            return self.import_from_content(content, tex_file_path)
+        except Exception as e:
+            self.errors.append(f"Error reading file: {str(e)}")
+            return None
+
+    def import_from_content(self, content, source_name="Unknown"):
+        """Import a theme from TeX content"""
+        self.extracted_theme = {
+            'name': Path(source_name).stem if source_name != "Unknown" else "Imported Theme",
+            'source': source_name,
+            'imported': datetime.now().isoformat(),
+            'categories': {},
+            'raw_preamble': '',
+            'errors': [],
+            'warnings': []
+        }
+
+        # Extract the preamble
+        preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+        if preamble_match:
+            preamble = preamble_match.group(1)
+            self.extracted_theme['raw_preamble'] = preamble
+        else:
+            # Try to find just the preamble
+            preamble = content
+            self.warnings.append("Could not find \\begin{document}, using entire content")
+
+        # Extract each category
+        self._extract_documentclass(preamble)
+        self._extract_packages(preamble)
+        self._extract_colors(preamble)
+        self._extract_themes(preamble)
+        self._extract_beamercolors(preamble)
+        self._extract_beamerfonts(preamble)
+        self._extract_beamertemplates(preamble)
+        self._extract_custom_commands(preamble)
+        self._extract_tikz_libraries(preamble)
+        self._extract_pgfplots_settings(preamble)
+        self._extract_spacing(preamble)
+        self._extract_notes(preamble)
+        self._extract_footer(preamble)
+        self._extract_header(preamble)
+        self._extract_logo(preamble)
+        self._extract_title_info(preamble)
+        self._extract_progress_bar(preamble)
+        self._extract_navigation(preamble)
+        self._extract_background(preamble)
+
+        # Store warnings
+        self.extracted_theme['warnings'] = self.warnings
+        self.extracted_theme['errors'] = self.errors
+
+        return self.extracted_theme
+
+    def _extract_documentclass(self, preamble):
+        """Extract documentclass and aspect ratio"""
+        match = re.search(r'\\documentclass(?:\[([^\]]*)\])?\{([^}]+)\}', preamble)
+        if match:
+            options = match.group(1) or ""
+            class_type = match.group(2)
+            aspect_match = re.search(r'aspectratio=(\d+)', options)
+            aspect = aspect_match.group(1) if aspect_match else "169"
+
+            self.extracted_theme['categories']['documentclass'] = {
+                'class': class_type,
+                'options': options,
+                'aspect': aspect,
+                'raw': match.group(0)
+            }
+
+    def _extract_packages(self, preamble):
+        """Extract all packages with their options"""
+        packages = []
+        pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            options = match.group(1) or ""
+            pkg_list = [p.strip() for p in match.group(2).split(',')]
+            for pkg in pkg_list:
+                packages.append({
+                    'name': pkg,
+                    'options': options,
+                    'raw': match.group(0)
+                })
+        self.extracted_theme['categories']['packages'] = packages
+
+    def _extract_colors(self, preamble):
+        """Extract all color definitions"""
+        colors = []
+
+        # \definecolor{name}{model}{value}
+        pattern1 = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern1, preamble):
+            colors.append({
+                'type': 'definecolor',
+                'name': match.group(1),
+                'model': match.group(2),
+                'value': match.group(3),
+                'raw': match.group(0)
+            })
+
+        # \colorlet{name}{source}
+        pattern2 = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern2, preamble):
+            colors.append({
+                'type': 'colorlet',
+                'name': match.group(1),
+                'source': match.group(2),
+                'raw': match.group(0)
+            })
+
+        # \xdefinecolor{name}{model}{value}
+        pattern3 = r'\\xdefinecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern3, preamble):
+            colors.append({
+                'type': 'xdefinecolor',
+                'name': match.group(1),
+                'model': match.group(2),
+                'value': match.group(3),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['colors'] = colors
+
+    def _extract_themes(self, preamble):
+        """Extract Beamer themes"""
+        themes = []
+
+        # \usetheme{name}
+        pattern = r'\\usetheme\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            themes.append({
+                'type': 'theme',
+                'name': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['themes'] = themes
+
+        # Color themes
+        colorthemes = []
+        pattern = r'\\usecolortheme\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            colorthemes.append({
+                'name': match.group(1),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['colorthemes'] = colorthemes
+
+        # Font themes
+        fontthemes = []
+        pattern = r'\\usefonttheme\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            fontthemes.append({
+                'name': match.group(1),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['fontthemes'] = fontthemes
+
+    def _extract_beamercolors(self, preamble):
+        """Extract Beamer color settings"""
+        colors = []
+        pattern = r'\\setbeamercolor\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            colors.append({
+                'name': match.group(1),
+                'settings': match.group(2),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['beamercolors'] = colors
+
+    def _extract_beamerfonts(self, preamble):
+        """Extract Beamer font settings"""
+        fonts = []
+        pattern = r'\\setbeamerfont\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            fonts.append({
+                'name': match.group(1),
+                'settings': match.group(2),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['beamerfonts'] = fonts
+
+    def _extract_beamertemplates(self, preamble):
+        """Extract Beamer template settings"""
+        templates = []
+        pattern = r'\\setbeamertemplate\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble, re.DOTALL):
+            templates.append({
+                'name': match.group(1),
+                'content': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['beamertemplates'] = templates
+
+    def _extract_custom_commands(self, preamble):
+        """Extract custom commands"""
+        commands = []
+
+        # \newcommand{\name}[n]{definition}
+        pattern1 = r'\\(?:re)?newcommand\{\\([^}]+)\}(?:\[(\d+)\])?\{([^}]+)\}'
+        for match in re.finditer(pattern1, preamble, re.DOTALL):
+            commands.append({
+                'type': 'newcommand',
+                'name': match.group(1),
+                'params': int(match.group(2)) if match.group(2) else 0,
+                'definition': match.group(3).strip(),
+                'raw': match.group(0)
+            })
+
+        # \def\name{definition}
+        pattern2 = r'\\def\\([a-zA-Z]+)\s*\{([^}]+)\}'
+        for match in re.finditer(pattern2, preamble, re.DOTALL):
+            commands.append({
+                'type': 'def',
+                'name': match.group(1),
+                'params': 0,
+                'definition': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        # \let\name = value
+        pattern3 = r'\\let\\([a-zA-Z]+)\s*=\s*([^\\\n]+)'
+        for match in re.finditer(pattern3, preamble):
+            commands.append({
+                'type': 'let',
+                'name': match.group(1),
+                'value': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        # \renewcommand{\name}{definition}
+        pattern4 = r'\\renewcommand\{\\([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern4, preamble, re.DOTALL):
+            commands.append({
+                'type': 'renewcommand',
+                'name': match.group(1),
+                'params': 0,
+                'definition': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['custom_commands'] = commands
+
+    def _extract_tikz_libraries(self, preamble):
+        """Extract TikZ library imports"""
+        libraries = []
+        pattern = r'\\usetikzlibrary\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            libs = [l.strip() for l in match.group(1).split(',')]
+            for lib in libs:
+                libraries.append({
+                    'name': lib,
+                    'raw': match.group(0)
+                })
+        self.extracted_theme['categories']['tikz_libraries'] = libraries
+
+    def _extract_pgfplots_settings(self, preamble):
+        """Extract PGFPlots settings"""
+        settings = []
+        pattern = r'\\pgfplotsset\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble, re.DOTALL):
+            settings.append({
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['pgfplots_settings'] = settings
+
+    def _extract_spacing(self, preamble):
+        """Extract spacing settings"""
+        spacing = []
+
+        patterns = {
+            'parskip': r'\\setlength\{\\parskip\}\{([^}]+)\}',
+            'itemsep': r'\\setlength\{\\itemsep\}\{([^}]+)\}',
+            'topsep': r'\\setlength\{\\topsep\}\{([^}]+)\}',
+            'partopsep': r'\\setlength\{\\partopsep\}\{([^}]+)\}',
+            'abovedisplayskip': r'\\setlength\{\\abovedisplayskip\}\{([^}]+)\}',
+            'belowdisplayskip': r'\\setlength\{\\belowdisplayskip\}\{([^}]+)\}',
+            'arraystretch': r'\\renewcommand\{\\arraystretch\}\{([^}]+)\}',
+        }
+
+        for name, pattern in patterns.items():
+            match = re.search(pattern, preamble)
+            if match:
+                spacing.append({
+                    'name': name,
+                    'value': match.group(1),
+                    'raw': match.group(0)
+                })
+
+        self.extracted_theme['categories']['spacing'] = spacing
+
+    def _extract_notes(self, preamble):
+        """Extract notes configuration"""
+        notes = []
+
+        # \setbeameroption{...}
+        match = re.search(r'\\setbeameroption\{([^}]+)\}', preamble)
+        if match:
+            notes.append({
+                'type': 'option',
+                'value': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setbeamertemplate{note page}{...}
+        match = re.search(r'\\setbeamertemplate\{note page\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            notes.append({
+                'type': 'template',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['notes'] = notes
+
+    def _extract_footer(self, preamble):
+        """Extract footer/footline settings"""
+        footers = []
+
+        # \setbeamertemplate{footline}{...}
+        match = re.search(r'\\setbeamertemplate\{footline\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            footers.append({
+                'type': 'footline',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamertemplate{footline}[...]
+        match = re.search(r'\\setbeamertemplate\{footline\}\[([^\]]+)\]', preamble)
+        if match:
+            footers.append({
+                'type': 'footline_style',
+                'style': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['footer'] = footers
+
+    def _extract_header(self, preamble):
+        """Extract header/frametitle settings"""
+        headers = []
+
+        # \setbeamertemplate{frametitle}{...}
+        match = re.search(r'\\setbeamertemplate\{frametitle\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            headers.append({
+                'type': 'frametitle',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamertemplate{frametitle}[...]
+        match = re.search(r'\\setbeamertemplate\{frametitle\}\[([^\]]+)\]', preamble)
+        if match:
+            headers.append({
+                'type': 'frametitle_style',
+                'style': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['header'] = headers
+
+    def _extract_logo(self, preamble):
+        """Extract logo settings"""
+        logos = []
+
+        # \logo{...}
+        match = re.search(r'\\logo\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            logos.append({
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['logo'] = logos
+
+    def _extract_title_info(self, preamble):
+        """Extract title page information"""
+        title_info = {}
+
+        patterns = {
+            'title': r'\\title\{([^}]+)\}',
+            'subtitle': r'\\subtitle\{([^}]+)\}',
+            'author': r'\\author\{([^}]+)\}',
+            'institute': r'\\institute\{([^}]+)\}',
+            'date': r'\\date\{([^}]+)\}',
+        }
+
+        for name, pattern in patterns.items():
+            match = re.search(pattern, preamble, re.DOTALL)
+            if match:
+                title_info[name] = {
+                    'value': match.group(1).strip(),
+                    'raw': match.group(0)
+                }
+
+        self.extracted_theme['categories']['title_info'] = title_info
+
+    def _extract_progress_bar(self, preamble):
+        """Extract progress bar configuration"""
+        progress = []
+
+        if '\\progressbar@progressbar' in preamble:
+            # Extract the progress bar definition
+            match = re.search(r'% Progress bar.*?\\makeatother', preamble, re.DOTALL)
+            if match:
+                progress.append({
+                    'type': 'custom_progress_bar',
+                    'content': match.group(0).strip(),
+                    'raw': match.group(0)
+                })
+
+        self.extracted_theme['categories']['progress_bar'] = progress
+
+    def _extract_navigation(self, preamble):
+        """Extract navigation settings"""
+        navigation = []
+
+        # \setbeamertemplate{navigation symbols}{...}
+        match = re.search(r'\\setbeamertemplate\{navigation symbols\}\{([^}]*)\}', preamble)
+        if match:
+            navigation.append({
+                'type': 'navigation_symbols',
+                'content': match.group(1) or 'hidden',
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['navigation'] = navigation
+
+    def _extract_background(self, preamble):
+        """Extract background settings"""
+        backgrounds = []
+
+        # \setbeamertemplate{background}{...}
+        match = re.search(r'\\setbeamertemplate\{background\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            backgrounds.append({
+                'type': 'background_template',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{background canvas}{...}
+        match = re.search(r'\\setbeamercolor\{background canvas\}\{([^}]+)\}', preamble)
+        if match:
+            backgrounds.append({
+                'type': 'background_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['background'] = backgrounds
+
+    def save_theme(self, theme_data, theme_name=None):
+        """Save an imported theme to the themes directory"""
+        if not theme_name:
+            theme_name = theme_data.get('name', 'Imported Theme')
+
+        # Clean the name for filename
+        clean_name = re.sub(r'[<>:"/\\|?*]', '', theme_name)
+        clean_name = clean_name.replace(' ', '_')
+
+        # Save to themes directory
+        theme_path = ThemeManager.get_theme_path(clean_name)
+
+        # Prepare the data
+        save_data = {
+            'name': theme_name,
+            'created': datetime.now().isoformat(),
+            'source': theme_data.get('source', 'Unknown'),
+            'categories': theme_data.get('categories', {}),
+            'raw_preamble': theme_data.get('raw_preamble', ''),
+            'version': '2.0',
+            'type': 'imported'
+        }
+
+        with open(theme_path, 'w', encoding='utf-8') as f:
+            json.dump(save_data, f, indent=2, ensure_ascii=False)
+
+        return theme_path
+
+    def generate_preamble_from_theme(self, theme_data):
+        """Generate a LaTeX preamble from imported theme data"""
+        lines = []
+        categories = theme_data.get('categories', {})
+
+        # Document class
+        if 'documentclass' in categories:
+            doc = categories['documentclass']
+            if isinstance(doc, dict):
+                lines.append(f"\\documentclass[aspectratio={doc.get('aspect', '169')}]{{beamer}}")
+            lines.append("")
+
+        # Packages
+        if 'packages' in categories:
+            lines.append("% Essential packages")
+            for pkg in categories['packages']:
+                if pkg.get('options'):
+                    lines.append(f"\\usepackage[{pkg['options']}]{{{pkg['name']}}}")
+                else:
+                    lines.append(f"\\usepackage{{{pkg['name']}}}")
+            lines.append("")
+
+        # TikZ libraries
+        if 'tikz_libraries' in categories and categories['tikz_libraries']:
+            lines.append("% TikZ libraries")
+            libs = [lib['name'] for lib in categories['tikz_libraries']]
+            lines.append(f"\\usetikzlibrary{{{', '.join(libs)}}}")
+            lines.append("")
+
+        # Colors
+        if 'colors' in categories and categories['colors']:
+            lines.append("% Color definitions")
+            for color in categories['colors']:
+                if color['type'] == 'definecolor':
+                    lines.append(f"\\definecolor{{{color['name']}}}{{{color['model']}}}{{{color['value']}}}")
+                elif color['type'] == 'colorlet':
+                    lines.append(f"\\colorlet{{{color['name']}}}{{{color['source']}}}")
+            lines.append("")
+
+        # Beamer colors
+        if 'beamercolors' in categories and categories['beamercolors']:
+            lines.append("% Beamer colors")
+            for color in categories['beamercolors']:
+                lines.append(f"\\setbeamercolor{{{color['name']}}}{{{color['settings']}}}")
+            lines.append("")
+
+        # Beamer fonts
+        if 'beamerfonts' in categories and categories['beamerfonts']:
+            lines.append("% Beamer fonts")
+            for font in categories['beamerfonts']:
+                lines.append(f"\\setbeamerfont{{{font['name']}}}{{{font['settings']}}}")
+            lines.append("")
+
+        # Beamer templates
+        if 'beamertemplates' in categories and categories['beamertemplates']:
+            lines.append("% Beamer templates")
+            for template in categories['beamertemplates']:
+                lines.append(f"\\setbeamertemplate{{{template['name']}}}{{{template['content']}}}")
+            lines.append("")
+
+        # Themes
+        if 'themes' in categories and categories['themes']:
+            lines.append("% Theme setup")
+            for theme in categories['themes']:
+                lines.append(f"\\usetheme{{{theme['name']}}}")
+            lines.append("")
+
+        # Custom commands
+        if 'custom_commands' in categories and categories['custom_commands']:
+            lines.append("% Custom commands")
+            for cmd in categories['custom_commands']:
+                if cmd['type'] == 'newcommand':
+                    if cmd['params'] > 0:
+                        lines.append(f"\\newcommand{{\\{cmd['name']}}}[{cmd['params']}]{{{cmd['definition']}}}")
+                    else:
+                        lines.append(f"\\newcommand{{\\{cmd['name']}}}{{{cmd['definition']}}}")
+                elif cmd['type'] == 'def':
+                    lines.append(f"\\def\\{cmd['name']}{{{cmd['definition']}}}")
+                elif cmd['type'] == 'let':
+                    lines.append(f"\\let\\{cmd['name']}={cmd['value']}")
+            lines.append("")
+
+        # Spacing
+        if 'spacing' in categories and categories['spacing']:
+            lines.append("% Spacing settings")
+            for spacing in categories['spacing']:
+                if spacing['name'] == 'arraystretch':
+                    lines.append(f"\\renewcommand{{\\arraystretch}}{{{spacing['value']}}}")
+                else:
+                    lines.append(f"\\setlength{{\\{spacing['name']}}}{{{spacing['value']}}}")
+            lines.append("")
+
+        # Notes
+        if 'notes' in categories and categories['notes']:
+            lines.append("% Notes configuration")
+            lines.append("\\usepackage{pgfpages}")
+            for note in categories['notes']:
+                if note['type'] == 'option':
+                    lines.append(f"\\setbeameroption{{{note['value']}}}")
+                elif note['type'] == 'template':
+                    lines.append(f"\\setbeamertemplate{{note page}}{{{note['content']}}}")
+            lines.append("")
+
+        # Progress bar
+        if 'progress_bar' in categories and categories['progress_bar']:
+            lines.append("% Progress bar")
+            for pb in categories['progress_bar']:
+                if pb['type'] == 'custom_progress_bar':
+                    lines.append(pb['content'])
+            lines.append("")
+
+        # Begin document
+        lines.append("\\begin{document}")
+
+        return '\n'.join(lines)
+
+    def get_theme_summary(self, theme_data):
+        """Get a human-readable summary of the theme"""
+        categories = theme_data.get('categories', {})
+        summary = []
+
+        summary.append(f"Theme: {theme_data.get('name', 'Unnamed')}")
+        summary.append(f"Source: {theme_data.get('source', 'Unknown')}")
+        summary.append(f"Imported: {theme_data.get('imported', 'Unknown')}")
+        summary.append("")
+        summary.append("Categories:")
+
+        for cat_name, cat_data in categories.items():
+            if cat_data:
+                display_name = self.CATEGORIES.get(cat_name, cat_name)
+                if isinstance(cat_data, list):
+                    summary.append(f"  • {display_name}: {len(cat_data)} item(s)")
+                elif isinstance(cat_data, dict):
+                    summary.append(f"  • {display_name}: {len(cat_data)} item(s)")
+                else:
+                    summary.append(f"  • {display_name}: present")
+
+        return '\n'.join(summary)
+
+# ============================================================================
+# COMPLETE THEME IMPORTER - Captures EVERYTHING from Beamer TeX files
+# ============================================================================
+
+import re
+import json
+from pathlib import Path
+from datetime import datetime
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
+
+class CompleteThemeImporter:
+    """
+    Complete theme importer that captures EVERYTHING from Beamer TeX files.
+    Can fully recreate the exact appearance of the imported theme.
+    """
+
+    # Complete categories for full theme capture
+    CATEGORIES = {
+        'documentclass': 'Document Class & Options',
+        'packages': 'Packages & Options',
+        'colors': 'Color Definitions',
+        'themes': 'Beamer Themes',
+        'colorthemes': 'Color Themes',
+        'fontthemes': 'Font Themes',
+        'beamercolors': 'Beamer Color Settings',
+        'beamerfonts': 'Beamer Font Settings',
+        'beamertemplates': 'Beamer Templates',
+        'custom_commands': 'Custom Commands',
+        'tikz_libraries': 'TikZ Libraries',
+        'pgfplots_settings': 'PGFPlots Settings',
+        'spacing': 'Spacing Settings',
+        'notes': 'Notes Configuration',
+        'footer': 'Footer/Footline',
+        'header': 'Header/Frametitle',
+        'logo': 'Logo Settings',
+        'title_info': 'Title Information',
+        'progress_bar': 'Progress Bar',
+        'navigation': 'Navigation Settings',
+        'background': 'Background Settings',
+        'font_sizes': 'Font Sizes',
+        'line_spacing': 'Line Spacing',
+        'margins': 'Margins',
+        'item_spacing': 'Item Spacing',
+        'block_styles': 'Block Styles',
+        'list_styles': 'List Styles',
+        'table_styles': 'Table Styles',
+        'figure_styles': 'Figure Styles',
+        'citation_styles': 'Citation Styles',
+        'hyperref_settings': 'Hyperref Settings',
+        'biblatex_settings': 'Biblatex Settings',
+        'other_preamble': 'Other Preamble Content'
+    }
+
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.extracted_theme = None
+        self.errors = []
+        self.warnings = []
+        self.raw_preamble = ""
+        self.full_document = ""
+
+    def import_from_file(self, tex_file_path):
+        """Import a complete theme from a TeX file"""
+        try:
+            with open(tex_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            self.full_document = content
+            return self.import_from_content(content, tex_file_path)
+        except Exception as e:
+            self.errors.append(f"Error reading file: {str(e)}")
+            return None
+
+    def import_from_content(self, content, source_name="Unknown"):
+        """Import a complete theme from TeX content"""
+        self.extracted_theme = {
+            'name': Path(source_name).stem if source_name != "Unknown" else "Imported Theme",
+            'source': source_name,
+            'imported': datetime.now().isoformat(),
+            'categories': {},
+            'raw_preamble': '',
+            'full_document': content,
+            'errors': [],
+            'warnings': []
+        }
+
+        # Extract the preamble
+        preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+        if preamble_match:
+            preamble = preamble_match.group(1)
+            self.raw_preamble = preamble
+            self.extracted_theme['raw_preamble'] = preamble
+        else:
+            preamble = content
+            self.warnings.append("Could not find \\begin{document}, using entire content")
+            self.raw_preamble = preamble
+
+        # Extract EVERYTHING
+        self._extract_all(preamble)
+
+        # Store warnings and errors
+        self.extracted_theme['warnings'] = self.warnings
+        self.extracted_theme['errors'] = self.errors
+
+        # Generate a complete theme summary
+        self.extracted_theme['summary'] = self._generate_summary()
+
+        return self.extracted_theme
+
+    def _extract_all(self, preamble):
+        """Extract ALL elements from the preamble"""
+
+        # 1. Document class and options
+        self._extract_documentclass(preamble)
+
+        # 2. All packages with options
+        self._extract_packages(preamble)
+
+        # 3. All color definitions
+        self._extract_colors(preamble)
+
+        # 4. Beamer themes
+        self._extract_themes(preamble)
+
+        # 5. Beamer color settings
+        self._extract_beamercolors(preamble)
+
+        # 6. Beamer font settings
+        self._extract_beamerfonts(preamble)
+
+        # 7. Beamer templates (ALL of them)
+        self._extract_beamertemplates(preamble)
+
+        # 8. Custom commands
+        self._extract_custom_commands(preamble)
+
+        # 9. TikZ libraries
+        self._extract_tikz_libraries(preamble)
+
+        # 10. PGFPlots settings
+        self._extract_pgfplots_settings(preamble)
+
+        # 11. Spacing settings (all types)
+        self._extract_spacing(preamble)
+
+        # 12. Font sizes
+        self._extract_font_sizes(preamble)
+
+        # 13. Line spacing
+        self._extract_line_spacing(preamble)
+
+        # 14. Margins
+        self._extract_margins(preamble)
+
+        # 15. Item spacing
+        self._extract_item_spacing(preamble)
+
+        # 16. Block styles
+        self._extract_block_styles(preamble)
+
+        # 17. List styles
+        self._extract_list_styles(preamble)
+
+        # 18. Table styles
+        self._extract_table_styles(preamble)
+
+        # 19. Figure styles
+        self._extract_figure_styles(preamble)
+
+        # 20. Notes configuration
+        self._extract_notes(preamble)
+
+        # 21. Footer/Footline
+        self._extract_footer(preamble)
+
+        # 22. Header/Frametitle
+        self._extract_header(preamble)
+
+        # 23. Logo settings
+        self._extract_logo(preamble)
+
+        # 24. Title information
+        self._extract_title_info(preamble)
+
+        # 25. Progress bar
+        self._extract_progress_bar(preamble)
+
+        # 26. Navigation settings
+        self._extract_navigation(preamble)
+
+        # 27. Background settings
+        self._extract_background(preamble)
+
+        # 28. Hyperref settings
+        self._extract_hyperref(preamble)
+
+        # 29. Citation/Biblatex settings
+        self._extract_citation_styles(preamble)
+
+        # 30. Any other preamble content
+        self._extract_other_preamble(preamble)
+
+    def _extract_documentclass(self, preamble):
+        """Extract documentclass and all options"""
+        match = re.search(r'\\documentclass(?:\[([^\]]*)\])?\{([^}]+)\}', preamble)
+        if match:
+            options = match.group(1) or ""
+            class_type = match.group(2)
+
+            # Extract all options
+            option_list = []
+            if options:
+                # Split by comma but respect brackets
+                opt_parts = []
+                current = ""
+                bracket_count = 0
+                for char in options:
+                    if char == '[':
+                        bracket_count += 1
+                    elif char == ']':
+                        bracket_count -= 1
+                    elif char == ',' and bracket_count == 0:
+                        opt_parts.append(current.strip())
+                        current = ""
+                        continue
+                    current += char
+                if current:
+                    opt_parts.append(current.strip())
+                option_list = opt_parts
+
+            # Extract aspect ratio
+            aspect_match = re.search(r'aspectratio=(\d+)', options)
+            aspect = aspect_match.group(1) if aspect_match else "169"
+
+            # Extract font size
+            size_match = re.search(r'(\d+)pt', options)
+            font_size = size_match.group(1) if size_match else "11"
+
+            self.extracted_theme['categories']['documentclass'] = {
+                'class': class_type,
+                'options': options,
+                'option_list': option_list,
+                'aspect': aspect,
+                'font_size': font_size,
+                'raw': match.group(0)
+            }
+
+    def _extract_packages(self, preamble):
+        """Extract ALL packages with their options"""
+        packages = []
+
+        # Pattern for \usepackage
+        pattern1 = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        for match in re.finditer(pattern1, preamble):
+            options = match.group(1) or ""
+            pkg_list = [p.strip() for p in match.group(2).split(',')]
+            for pkg in pkg_list:
+                packages.append({
+                    'name': pkg,
+                    'options': options,
+                    'raw': match.group(0)
+                })
+
+        # Pattern for \RequirePackage
+        pattern2 = r'\\RequirePackage(?:\[([^\]]*)\])?\{([^}]+)\}'
+        for match in re.finditer(pattern2, preamble):
+            options = match.group(1) or ""
+            pkg_list = [p.strip() for p in match.group(2).split(',')]
+            for pkg in pkg_list:
+                packages.append({
+                    'name': pkg,
+                    'options': options,
+                    'raw': match.group(0),
+                    'type': 'require'
+                })
+
+        self.extracted_theme['categories']['packages'] = packages
+
+    def _extract_colors(self, preamble):
+        """Extract ALL color definitions"""
+        colors = []
+
+        # \definecolor{name}{model}{value}
+        pattern1 = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern1, preamble):
+            colors.append({
+                'type': 'definecolor',
+                'name': match.group(1),
+                'model': match.group(2),
+                'value': match.group(3),
+                'raw': match.group(0)
+            })
+
+        # \colorlet{name}{source}
+        pattern2 = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern2, preamble):
+            colors.append({
+                'type': 'colorlet',
+                'name': match.group(1),
+                'source': match.group(2),
+                'raw': match.group(0)
+            })
+
+        # \xdefinecolor{name}{model}{value}
+        pattern3 = r'\\xdefinecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern3, preamble):
+            colors.append({
+                'type': 'xdefinecolor',
+                'name': match.group(1),
+                'model': match.group(2),
+                'value': match.group(3),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['colors'] = colors
+
+    def _extract_themes(self, preamble):
+        """Extract Beamer themes"""
+        themes = []
+
+        # \usetheme{name}
+        pattern = r'\\usetheme\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            themes.append({
+                'type': 'theme',
+                'name': match.group(1),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['themes'] = themes
+
+        # Color themes
+        colorthemes = []
+        pattern = r'\\usecolortheme\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            colorthemes.append({
+                'name': match.group(1),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['colorthemes'] = colorthemes
+
+        # Font themes
+        fontthemes = []
+        pattern = r'\\usefonttheme\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            fontthemes.append({
+                'name': match.group(1),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['fontthemes'] = fontthemes
+
+    def _extract_beamercolors(self, preamble):
+        """Extract ALL Beamer color settings"""
+        colors = []
+        pattern = r'\\setbeamercolor\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            colors.append({
+                'name': match.group(1),
+                'settings': match.group(2),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['beamercolors'] = colors
+
+    def _extract_beamerfonts(self, preamble):
+        """Extract ALL Beamer font settings"""
+        fonts = []
+        pattern = r'\\setbeamerfont\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            fonts.append({
+                'name': match.group(1),
+                'settings': match.group(2),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['beamerfonts'] = fonts
+
+    def _extract_beamertemplates(self, preamble):
+        """Extract ALL Beamer template settings"""
+        templates = []
+        pattern = r'\\setbeamertemplate\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble, re.DOTALL):
+            templates.append({
+                'name': match.group(1),
+                'content': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        # Also capture template with options: \setbeamertemplate{name}[option]{...}
+        pattern2 = r'\\setbeamertemplate\{([^}]+)\}\[([^\]]+)\]\{([^}]+)\}'
+        for match in re.finditer(pattern2, preamble, re.DOTALL):
+            templates.append({
+                'name': match.group(1),
+                'option': match.group(2),
+                'content': match.group(3).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['beamertemplates'] = templates
+
+    def _extract_custom_commands(self, preamble):
+        """Extract ALL custom commands"""
+        commands = []
+
+        # \newcommand{\name}[n]{definition}
+        pattern1 = r'\\(?:re)?newcommand\{\\([^}]+)\}(?:\[(\d+)\])?\{([^}]+)\}'
+        for match in re.finditer(pattern1, preamble, re.DOTALL):
+            commands.append({
+                'type': 'newcommand',
+                'name': match.group(1),
+                'params': int(match.group(2)) if match.group(2) else 0,
+                'definition': match.group(3).strip(),
+                'raw': match.group(0)
+            })
+
+        # \def\name{definition}
+        pattern2 = r'\\def\\([a-zA-Z]+)\s*\{([^}]+)\}'
+        for match in re.finditer(pattern2, preamble, re.DOTALL):
+            commands.append({
+                'type': 'def',
+                'name': match.group(1),
+                'params': 0,
+                'definition': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        # \let\name = value
+        pattern3 = r'\\let\\([a-zA-Z]+)\s*=\s*([^\\\n]+)'
+        for match in re.finditer(pattern3, preamble):
+            commands.append({
+                'type': 'let',
+                'name': match.group(1),
+                'value': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        # \renewcommand{\name}{definition}
+        pattern4 = r'\\renewcommand\{\\([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern4, preamble, re.DOTALL):
+            commands.append({
+                'type': 'renewcommand',
+                'name': match.group(1),
+                'params': 0,
+                'definition': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['custom_commands'] = commands
+
+    def _extract_tikz_libraries(self, preamble):
+        """Extract TikZ library imports"""
+        libraries = []
+        pattern = r'\\usetikzlibrary\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            libs = [l.strip() for l in match.group(1).split(',')]
+            for lib in libs:
+                libraries.append({
+                    'name': lib,
+                    'raw': match.group(0)
+                })
+        self.extracted_theme['categories']['tikz_libraries'] = libraries
+
+    def _extract_pgfplots_settings(self, preamble):
+        """Extract PGFPlots settings"""
+        settings = []
+        pattern = r'\\pgfplotsset\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble, re.DOTALL):
+            settings.append({
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+        self.extracted_theme['categories']['pgfplots_settings'] = settings
+
+    def _extract_spacing(self, preamble):
+        """Extract ALL spacing settings"""
+        spacing = []
+
+        patterns = {
+            'parskip': r'\\setlength\{\\parskip\}\{([^}]+)\}',
+            'itemsep': r'\\setlength\{\\itemsep\}\{([^}]+)\}',
+            'topsep': r'\\setlength\{\\topsep\}\{([^}]+)\}',
+            'partopsep': r'\\setlength\{\\partopsep\}\{([^}]+)\}',
+            'abovedisplayskip': r'\\setlength\{\\abovedisplayskip\}\{([^}]+)\}',
+            'belowdisplayskip': r'\\setlength\{\\belowdisplayskip\}\{([^}]+)\}',
+            'abovedisplayshortskip': r'\\setlength\{\\abovedisplayshortskip\}\{([^}]+)\}',
+            'belowdisplayshortskip': r'\\setlength\{\\belowdisplayshortskip\}\{([^}]+)\}',
+            'arraycolsep': r'\\setlength\{\\arraycolsep\}\{([^}]+)\}',
+            'tabcolsep': r'\\setlength\{\\tabcolsep\}\{([^}]+)\}',
+            'arrayrulewidth': r'\\setlength\{\\arrayrulewidth\}\{([^}]+)\}',
+            'doublerulesep': r'\\setlength\{\\doublerulesep\}\{([^}]+)\}',
+            'arraystretch': r'\\renewcommand\{\\arraystretch\}\{([^}]+)\}',
+        }
+
+        for name, pattern in patterns.items():
+            match = re.search(pattern, preamble)
+            if match:
+                spacing.append({
+                    'name': name,
+                    'value': match.group(1),
+                    'raw': match.group(0)
+                })
+
+        self.extracted_theme['categories']['spacing'] = spacing
+
+    def _extract_font_sizes(self, preamble):
+        """Extract font size settings"""
+        font_sizes = []
+
+        # \fontsize{size}{skip}
+        pattern = r'\\fontsize\{([^}]+)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble):
+            font_sizes.append({
+                'size': match.group(1),
+                'skip': match.group(2),
+                'raw': match.group(0)
+            })
+
+        # Specific font size commands
+        size_commands = ['\\tiny', '\\scriptsize', '\\footnotesize', '\\small',
+                        '\\normalsize', '\\large', '\\Large', '\\LARGE', '\\huge', '\\Huge']
+        for cmd in size_commands:
+            if cmd in preamble:
+                font_sizes.append({
+                    'command': cmd,
+                    'raw': cmd
+                })
+
+        self.extracted_theme['categories']['font_sizes'] = font_sizes
+
+    def _extract_line_spacing(self, preamble):
+        """Extract line spacing settings"""
+        line_spacing = []
+
+        # \baselinestretch
+        match = re.search(r'\\renewcommand\{\\baselinestretch\}\{([^}]+)\}', preamble)
+        if match:
+            line_spacing.append({
+                'type': 'baselinestretch',
+                'value': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \linespread
+        match = re.search(r'\\linespread\{([^}]+)\}', preamble)
+        if match:
+            line_spacing.append({
+                'type': 'linespread',
+                'value': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['line_spacing'] = line_spacing
+
+    def _extract_margins(self, preamble):
+        """Extract margin settings"""
+        margins = []
+
+        # \geometry{margin=...}
+        match = re.search(r'\\geometry\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            margins.append({
+                'type': 'geometry',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # Individual margin settings
+        patterns = {
+            'leftmargin': r'\\setlength\{\\leftmargini\}\{([^}]+)\}',
+            'leftmarginii': r'\\setlength\{\\leftmarginii\}\{([^}]+)\}',
+            'leftmarginiii': r'\\setlength\{\\leftmarginiii\}\{([^}]+)\}',
+            'leftmarginiv': r'\\setlength\{\\leftmarginiv\}\{([^}]+)\}',
+            'labelsep': r'\\setlength\{\\labelsep\}\{([^}]+)\}',
+            'labelwidth': r'\\setlength\{\\labelwidth\}\{([^}]+)\}',
+        }
+
+        for name, pattern in patterns.items():
+            match = re.search(pattern, preamble)
+            if match:
+                margins.append({
+                    'name': name,
+                    'value': match.group(1),
+                    'raw': match.group(0)
+                })
+
+        self.extracted_theme['categories']['margins'] = margins
+
+    def _extract_item_spacing(self, preamble):
+        """Extract item spacing settings"""
+        item_spacing = []
+
+        patterns = {
+            'itemsep': r'\\setlength\{\\itemsep\}\{([^}]+)\}',
+            'parsep': r'\\setlength\{\\parsep\}\{([^}]+)\}',
+            'topsep': r'\\setlength\{\\topsep\}\{([^}]+)\}',
+            'partopsep': r'\\setlength\{\\partopsep\}\{([^}]+)\}',
+        }
+
+        for name, pattern in patterns.items():
+            match = re.search(pattern, preamble)
+            if match:
+                item_spacing.append({
+                    'name': name,
+                    'value': match.group(1),
+                    'raw': match.group(0)
+                })
+
+        self.extracted_theme['categories']['item_spacing'] = item_spacing
+
+    def _extract_block_styles(self, preamble):
+        """Extract block style settings"""
+        blocks = []
+
+        # \setbeamertemplate{block begin}{...}
+        pattern = r'\\setbeamertemplate\{block (begin|end|title)\}\{([^}]+)\}'
+        for match in re.finditer(pattern, preamble, re.DOTALL):
+            blocks.append({
+                'type': f'block_{match.group(1)}',
+                'content': match.group(2).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{block title}{...}
+        pattern = r'\\setbeamercolor\{block title\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            blocks.append({
+                'type': 'block_title_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{block body}{...}
+        pattern = r'\\setbeamercolor\{block body\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            blocks.append({
+                'type': 'block_body_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['block_styles'] = blocks
+
+    def _extract_list_styles(self, preamble):
+        """Extract list style settings"""
+        lists = []
+
+        # Itemize style
+        pattern = r'\\setbeamertemplate\{itemize items\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            lists.append({
+                'type': 'itemize_items',
+                'content': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # Enumerate style
+        pattern = r'\\setbeamertemplate\{enumerate items\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            lists.append({
+                'type': 'enumerate_items',
+                'content': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # Description style
+        pattern = r'\\setbeamertemplate\{description items\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            lists.append({
+                'type': 'description_items',
+                'content': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # Itemize color
+        pattern = r'\\setbeamercolor\{itemize item\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            lists.append({
+                'type': 'itemize_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['list_styles'] = lists
+
+    def _extract_table_styles(self, preamble):
+        """Extract table style settings"""
+        tables = []
+
+        # \setlength{\tabcolsep}{...}
+        pattern = r'\\setlength\{\\tabcolsep\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            tables.append({
+                'type': 'tabcolsep',
+                'value': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setlength{\arrayrulewidth}{...}
+        pattern = r'\\setlength\{\\arrayrulewidth\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            tables.append({
+                'type': 'arrayrulewidth',
+                'value': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setlength{\doublerulesep}{...}
+        pattern = r'\\setlength\{\\doublerulesep\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            tables.append({
+                'type': 'doublerulesep',
+                'value': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['table_styles'] = tables
+
+    def _extract_figure_styles(self, preamble):
+        """Extract figure style settings"""
+        figures = []
+
+        # \setbeamertemplate{caption}{...}
+        pattern = r'\\setbeamertemplate\{caption\}\{([^}]+)\}'
+        match = re.search(pattern, preamble, re.DOTALL)
+        if match:
+            figures.append({
+                'type': 'caption',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{caption}{...}
+        pattern = r'\\setbeamercolor\{caption\}\{([^}]+)\}'
+        match = re.search(pattern, preamble)
+        if match:
+            figures.append({
+                'type': 'caption_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['figure_styles'] = figures
+
+    def _extract_notes(self, preamble):
+        """Extract notes configuration"""
+        notes = []
+
+        # \setbeameroption{...}
+        match = re.search(r'\\setbeameroption\{([^}]+)\}', preamble)
+        if match:
+            notes.append({
+                'type': 'option',
+                'value': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setbeamertemplate{note page}{...}
+        match = re.search(r'\\setbeamertemplate\{note page\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            notes.append({
+                'type': 'template',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['notes'] = notes
+
+    def _extract_footer(self, preamble):
+        """Extract footer/footline settings"""
+        footers = []
+
+        # \setbeamertemplate{footline}{...}
+        match = re.search(r'\\setbeamertemplate\{footline\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            footers.append({
+                'type': 'footline',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamertemplate{footline}[...]
+        match = re.search(r'\\setbeamertemplate\{footline\}\[([^\]]+)\]', preamble)
+        if match:
+            footers.append({
+                'type': 'footline_style',
+                'style': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{footline}{...}
+        match = re.search(r'\\setbeamercolor\{footline\}\{([^}]+)\}', preamble)
+        if match:
+            footers.append({
+                'type': 'footline_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['footer'] = footers
+
+    def _extract_header(self, preamble):
+        """Extract header/frametitle settings"""
+        headers = []
+
+        # \setbeamertemplate{frametitle}{...}
+        match = re.search(r'\\setbeamertemplate\{frametitle\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            headers.append({
+                'type': 'frametitle',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamertemplate{frametitle}[...]
+        match = re.search(r'\\setbeamertemplate\{frametitle\}\[([^\]]+)\]', preamble)
+        if match:
+            headers.append({
+                'type': 'frametitle_style',
+                'style': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{frametitle}{...}
+        match = re.search(r'\\setbeamercolor\{frametitle\}\{([^}]+)\}', preamble)
+        if match:
+            headers.append({
+                'type': 'frametitle_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['header'] = headers
+
+    def _extract_logo(self, preamble):
+        """Extract logo settings"""
+        logos = []
+
+        # \logo{...}
+        match = re.search(r'\\logo\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            logos.append({
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['logo'] = logos
+
+    def _extract_title_info(self, preamble):
+        """Extract title page information"""
+        title_info = {}
+
+        patterns = {
+            'title': r'\\title\{([^}]+)\}',
+            'subtitle': r'\\subtitle\{([^}]+)\}',
+            'author': r'\\author\{([^}]+)\}',
+            'institute': r'\\institute\{([^}]+)\}',
+            'date': r'\\date\{([^}]+)\}',
+            'titlegraphic': r'\\titlegraphic\{([^}]+)\}',
+        }
+
+        for name, pattern in patterns.items():
+            match = re.search(pattern, preamble, re.DOTALL)
+            if match:
+                title_info[name] = {
+                    'value': match.group(1).strip(),
+                    'raw': match.group(0)
+                }
+
+        self.extracted_theme['categories']['title_info'] = title_info
+
+    def _extract_progress_bar(self, preamble):
+        """Extract progress bar configuration"""
+        progress = []
+
+        if '\\progressbar@progressbar' in preamble:
+            match = re.search(r'% Progress bar.*?\\makeatother', preamble, re.DOTALL)
+            if match:
+                progress.append({
+                    'type': 'custom_progress_bar',
+                    'content': match.group(0).strip(),
+                    'raw': match.group(0)
+                })
+
+        # Check for progress bar color
+        color_match = re.search(r'\\shade\[top color=([^,]+),bottom color=([^\]]+)\]', preamble)
+        if color_match:
+            progress.append({
+                'type': 'progress_colors',
+                'top_color': color_match.group(1),
+                'bottom_color': color_match.group(2),
+                'raw': color_match.group(0)
+            })
+
+        self.extracted_theme['categories']['progress_bar'] = progress
+
+    def _extract_navigation(self, preamble):
+        """Extract navigation settings"""
+        navigation = []
+
+        # \setbeamertemplate{navigation symbols}{...}
+        match = re.search(r'\\setbeamertemplate\{navigation symbols\}\{([^}]*)\}', preamble)
+        if match:
+            navigation.append({
+                'type': 'navigation_symbols',
+                'content': match.group(1) or 'hidden',
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{navigation symbols}{...}
+        match = re.search(r'\\setbeamercolor\{navigation symbols\}\{([^}]+)\}', preamble)
+        if match:
+            navigation.append({
+                'type': 'navigation_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['navigation'] = navigation
+
+    def _extract_background(self, preamble):
+        """Extract background settings"""
+        backgrounds = []
+
+        # \setbeamertemplate{background}{...}
+        match = re.search(r'\\setbeamertemplate\{background\}\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            backgrounds.append({
+                'type': 'background_template',
+                'content': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{background canvas}{...}
+        match = re.search(r'\\setbeamercolor\{background canvas\}\{([^}]+)\}', preamble)
+        if match:
+            backgrounds.append({
+                'type': 'background_color',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \setbeamercolor{background}{...}
+        match = re.search(r'\\setbeamercolor\{background\}\{([^}]+)\}', preamble)
+        if match:
+            backgrounds.append({
+                'type': 'background_color_alt',
+                'settings': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['background'] = backgrounds
+
+    def _extract_hyperref(self, preamble):
+        """Extract hyperref settings"""
+        hyperref = []
+
+        # \hypersetup{...}
+        match = re.search(r'\\hypersetup\{([^}]+)\}', preamble, re.DOTALL)
+        if match:
+            hyperref.append({
+                'type': 'hypersetup',
+                'settings': match.group(1).strip(),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['hyperref_settings'] = hyperref
+
+    def _extract_citation_styles(self, preamble):
+        """Extract citation/biblatex settings"""
+        citations = []
+
+        # \bibliographystyle{...}
+        match = re.search(r'\\bibliographystyle\{([^}]+)\}', preamble)
+        if match:
+            citations.append({
+                'type': 'bibliographystyle',
+                'style': match.group(1),
+                'raw': match.group(0)
+            })
+
+        # \usepackage{biblatex}
+        if '\\usepackage{biblatex}' in preamble:
+            citations.append({
+                'type': 'biblatex',
+                'raw': '\\usepackage{biblatex}'
+            })
+
+        # \addbibresource{...}
+        match = re.search(r'\\addbibresource\{([^}]+)\}', preamble)
+        if match:
+            citations.append({
+                'type': 'bibresource',
+                'resource': match.group(1),
+                'raw': match.group(0)
+            })
+
+        self.extracted_theme['categories']['citation_styles'] = citations
+
+    def _extract_other_preamble(self, preamble):
+        """Extract any other preamble content not captured"""
+        # Get all lines that weren't captured by other patterns
+        lines = preamble.split('\n')
+        captured_lines = set()
+
+        # Collect all captured raw lines
+        for category, data in self.extracted_theme['categories'].items():
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and 'raw' in item:
+                        captured_lines.add(item['raw'].strip())
+            elif isinstance(data, dict):
+                for key, value in data.items():
+                    if isinstance(value, dict) and 'raw' in value:
+                        captured_lines.add(value['raw'].strip())
+
+        # Find uncaptured lines
+        uncaptured = []
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('%'):
+                if line not in captured_lines and not any(line.startswith(cmd) for cmd in
+                    ['\\documentclass', '\\usepackage', '\\usetheme', '\\usecolortheme',
+                     '\\usefonttheme', '\\setbeamercolor', '\\setbeamerfont',
+                     '\\setbeamertemplate', '\\definecolor', '\\colorlet', '\\xdefinecolor',
+                     '\\newcommand', '\\renewcommand', '\\def', '\\let', '\\usetikzlibrary',
+                     '\\pgfplotsset', '\\setlength', '\\hypersetup', '\\logo', '\\title',
+                     '\\subtitle', '\\author', '\\institute', '\\date', '\\bibliographystyle',
+                     '\\addbibresource']):
+                    uncaptured.append(line)
+
+        if uncaptured:
+            self.extracted_theme['categories']['other_preamble'] = uncaptured
+
+    def _generate_summary(self):
+        """Generate a complete summary of the imported theme"""
+        summary = []
+        categories = self.extracted_theme['categories']
+
+        summary.append("=" * 60)
+        summary.append(f"THEME SUMMARY: {self.extracted_theme['name']}")
+        summary.append("=" * 60)
+        summary.append(f"Source: {self.extracted_theme['source']}")
+        summary.append(f"Imported: {self.extracted_theme['imported']}")
+        summary.append("")
+
+        # Count items in each category
+        total_items = 0
+        for cat_name, cat_data in categories.items():
+            if cat_data:
+                display_name = self.CATEGORIES.get(cat_name, cat_name)
+                if isinstance(cat_data, list):
+                    count = len(cat_data)
+                    summary.append(f"  • {display_name}: {count} item(s)")
+                    total_items += count
+                elif isinstance(cat_data, dict):
+                    count = len(cat_data)
+                    summary.append(f"  • {display_name}: {count} item(s)")
+                    total_items += count
+                else:
+                    summary.append(f"  • {display_name}: present")
+                    total_items += 1
+
+        summary.append("")
+        summary.append(f"Total items captured: {total_items}")
+        summary.append("=" * 60)
+
+        return '\n'.join(summary)
+
+    def generate_complete_preamble(self, theme_data=None):
+        """Generate a complete preamble that recreates the exact appearance"""
+        if theme_data is None:
+            theme_data = self.extracted_theme
+
+        if not theme_data:
+            return ""
+
+        lines = []
+        categories = theme_data.get('categories', {})
+
+        # 1. Document class
+        if 'documentclass' in categories:
+            doc = categories['documentclass']
+            if isinstance(doc, dict):
+                aspect = doc.get('aspect', '169')
+                font_size = doc.get('font_size', '11')
+                lines.append(f"\\documentclass[aspectratio={aspect},{font_size}pt]{{beamer}}")
+            lines.append("")
+
+        # 2. Essential packages first
+        essential_packages = ['hyperref', 'graphicx', 'amsmath', 'tikz', 'xcolor']
+        if 'packages' in categories:
+            pkg_list = categories['packages']
+            # Separate essential packages
+            essential = []
+            other = []
+            for pkg in pkg_list:
+                if pkg['name'] in essential_packages:
+                    essential.append(pkg)
+                else:
+                    other.append(pkg)
+
+            lines.append("% Essential packages")
+            for pkg in essential:
+                if pkg.get('options'):
+                    lines.append(f"\\usepackage[{pkg['options']}]{{{pkg['name']}}}")
+                else:
+                    lines.append(f"\\usepackage{{{pkg['name']}}}")
+            lines.append("")
+
+            if other:
+                lines.append("% Additional packages")
+                for pkg in other:
+                    if pkg.get('options'):
+                        lines.append(f"\\usepackage[{pkg['options']}]{{{pkg['name']}}}")
+                    else:
+                        lines.append(f"\\usepackage{{{pkg['name']}}}")
+                lines.append("")
+
+        # 3. TikZ libraries
+        if 'tikz_libraries' in categories and categories['tikz_libraries']:
+            lines.append("% TikZ libraries")
+            libs = [lib['name'] for lib in categories['tikz_libraries']]
+            lines.append(f"\\usetikzlibrary{{{', '.join(libs)}}}")
+            lines.append("")
+
+        # 4. PGFPlots settings
+        if 'pgfplots_settings' in categories and categories['pgfplots_settings']:
+            lines.append("% PGFPlots settings")
+            for setting in categories['pgfplots_settings']:
+                lines.append(f"\\pgfplotsset{{{setting['content']}}}")
+            lines.append("")
+
+        # 5. Color definitions
+        if 'colors' in categories and categories['colors']:
+            lines.append("% Color definitions")
+            for color in categories['colors']:
+                if color['type'] == 'definecolor':
+                    lines.append(f"\\definecolor{{{color['name']}}}{{{color['model']}}}{{{color['value']}}}")
+                elif color['type'] == 'colorlet':
+                    lines.append(f"\\colorlet{{{color['name']}}}{{{color['source']}}}")
+                elif color['type'] == 'xdefinecolor':
+                    lines.append(f"\\xdefinecolor{{{color['name']}}}{{{color['model']}}}{{{color['value']}}}")
+            lines.append("")
+
+        # 6. Beamer themes
+        if 'themes' in categories and categories['themes']:
+            lines.append("% Beamer themes")
+            for theme in categories['themes']:
+                lines.append(f"\\usetheme{{{theme['name']}}}")
+            lines.append("")
+
+        # 7. Color themes
+        if 'colorthemes' in categories and categories['colorthemes']:
+            lines.append("% Color themes")
+            for theme in categories['colorthemes']:
+                lines.append(f"\\usecolortheme{{{theme['name']}}}")
+            lines.append("")
+
+        # 8. Font themes
+        if 'fontthemes' in categories and categories['fontthemes']:
+            lines.append("% Font themes")
+            for theme in categories['fontthemes']:
+                lines.append(f"\\usefonttheme{{{theme['name']}}}")
+            lines.append("")
+
+        # 9. Beamer colors
+        if 'beamercolors' in categories and categories['beamercolors']:
+            lines.append("% Beamer color settings")
+            for color in categories['beamercolors']:
+                lines.append(f"\\setbeamercolor{{{color['name']}}}{{{color['settings']}}}")
+            lines.append("")
+
+        # 10. Beamer fonts
+        if 'beamerfonts' in categories and categories['beamerfonts']:
+            lines.append("% Beamer font settings")
+            for font in categories['beamerfonts']:
+                lines.append(f"\\setbeamerfont{{{font['name']}}}{{{font['settings']}}}")
+            lines.append("")
+
+        # 11. Beamer templates
+        if 'beamertemplates' in categories and categories['beamertemplates']:
+            lines.append("% Beamer templates")
+            for template in categories['beamertemplates']:
+                if 'option' in template:
+                    lines.append(f"\\setbeamertemplate{{{template['name']}}}[{template['option']}]{{{template['content']}}}")
+                else:
+                    lines.append(f"\\setbeamertemplate{{{template['name']}}}{{{template['content']}}}")
+            lines.append("")
+
+        # 12. Block styles
+        if 'block_styles' in categories and categories['block_styles']:
+            lines.append("% Block styles")
+            for block in categories['block_styles']:
+                if 'settings' in block:
+                    lines.append(f"\\setbeamercolor{{{block['type']}}}{{{block['settings']}}}")
+                else:
+                    lines.append(f"\\setbeamertemplate{{{block['type']}}}{{{block['content']}}}")
+            lines.append("")
+
+        # 13. List styles
+        if 'list_styles' in categories and categories['list_styles']:
+            lines.append("% List styles")
+            for lst in categories['list_styles']:
+                if 'settings' in lst:
+                    lines.append(f"\\setbeamercolor{{{lst['type']}}}{{{lst['settings']}}}")
+                else:
+                    lines.append(f"\\setbeamertemplate{{{lst['type']}}}{{{lst['content']}}}")
+            lines.append("")
+
+        # 14. Spacing
+        if 'spacing' in categories and categories['spacing']:
+            lines.append("% Spacing settings")
+            for spacing in categories['spacing']:
+                if spacing['name'] == 'arraystretch':
+                    lines.append(f"\\renewcommand{{\\arraystretch}}{{{spacing['value']}}}")
+                else:
+                    lines.append(f"\\setlength{{\\{spacing['name']}}}{{{spacing['value']}}}")
+            lines.append("")
+
+        # 15. Margins
+        if 'margins' in categories and categories['margins']:
+            lines.append("% Margin settings")
+            for margin in categories['margins']:
+                if margin['type'] == 'geometry':
+                    lines.append(f"\\geometry{{{margin['settings']}}}")
+                else:
+                    lines.append(f"\\setlength{{\\{margin['name']}}}{{{margin['value']}}}")
+            lines.append("")
+
+        # 16. Item spacing
+        if 'item_spacing' in categories and categories['item_spacing']:
+            lines.append("% Item spacing")
+            for item in categories['item_spacing']:
+                lines.append(f"\\setlength{{\\{item['name']}}}{{{item['value']}}}")
+            lines.append("")
+
+        # 17. Font sizes
+        if 'font_sizes' in categories and categories['font_sizes']:
+            lines.append("% Font size settings")
+            for fs in categories['font_sizes']:
+                if 'size' in fs:
+                    lines.append(f"\\fontsize{{{fs['size']}}}{{{fs['skip']}}}\\selectfont")
+                elif 'command' in fs:
+                    lines.append(fs['command'])
+            lines.append("")
+
+        # 18. Line spacing
+        if 'line_spacing' in categories and categories['line_spacing']:
+            lines.append("% Line spacing")
+            for ls in categories['line_spacing']:
+                if ls['type'] == 'baselinestretch':
+                    lines.append(f"\\renewcommand{{\\baselinestretch}}{{{ls['value']}}}")
+                elif ls['type'] == 'linespread':
+                    lines.append(f"\\linespread{{{ls['value']}}}")
+            lines.append("")
+
+        # 19. Table styles
+        if 'table_styles' in categories and categories['table_styles']:
+            lines.append("% Table styles")
+            for table in categories['table_styles']:
+                lines.append(f"\\setlength{{\\{table['type']}}}{{{table['value']}}}")
+            lines.append("")
+
+        # 20. Figure styles
+        if 'figure_styles' in categories and categories['figure_styles']:
+            lines.append("% Figure styles")
+            for fig in categories['figure_styles']:
+                if fig['type'] == 'caption':
+                    lines.append(f"\\setbeamertemplate{{caption}}{{{fig['content']}}}")
+                else:
+                    lines.append(f"\\setbeamercolor{{{fig['type']}}}{{{fig['settings']}}}")
+            lines.append("")
+
+        # 21. Hyperref settings
+        if 'hyperref_settings' in categories and categories['hyperref_settings']:
+            lines.append("% Hyperref settings")
+            for hr in categories['hyperref_settings']:
+                lines.append(f"\\hypersetup{{{hr['settings']}}}")
+            lines.append("")
+
+        # 22. Citation styles
+        if 'citation_styles' in categories and categories['citation_styles']:
+            lines.append("% Citation styles")
+            for cit in categories['citation_styles']:
+                if cit['type'] == 'bibliographystyle':
+                    lines.append(f"\\bibliographystyle{{{cit['style']}}}")
+                elif cit['type'] == 'biblatex':
+                    lines.append("\\usepackage{biblatex}")
+                elif cit['type'] == 'bibresource':
+                    lines.append(f"\\addbibresource{{{cit['resource']}}}")
+            lines.append("")
+
+        # 23. Title information
+        if 'title_info' in categories and categories['title_info']:
+            lines.append("% Title information")
+            for key, value in categories['title_info'].items():
+                if key == 'title':
+                    lines.append(f"\\title{{{value['value']}}}")
+                elif key == 'subtitle':
+                    lines.append(f"\\subtitle{{{value['value']}}}")
+                elif key == 'author':
+                    lines.append(f"\\author{{{value['value']}}}")
+                elif key == 'institute':
+                    lines.append(f"\\institute{{{value['value']}}}")
+                elif key == 'date':
+                    lines.append(f"\\date{{{value['value']}}}")
+                elif key == 'titlegraphic':
+                    lines.append(f"\\titlegraphic{{{value['value']}}}")
+            lines.append("")
+
+        # 24. Logo
+        if 'logo' in categories and categories['logo']:
+            lines.append("% Logo")
+            for logo in categories['logo']:
+                lines.append(f"\\logo{{{logo['content']}}}")
+            lines.append("")
+
+        # 25. Navigation
+        if 'navigation' in categories and categories['navigation']:
+            lines.append("% Navigation")
+            for nav in categories['navigation']:
+                if nav['type'] == 'navigation_symbols':
+                    lines.append(f"\\setbeamertemplate{{navigation symbols}}{{{nav['content']}}}")
+                else:
+                    lines.append(f"\\setbeamercolor{{{nav['type']}}}{{{nav['settings']}}}")
+            lines.append("")
+
+        # 26. Background
+        if 'background' in categories and categories['background']:
+            lines.append("% Background")
+            for bg in categories['background']:
+                if bg['type'] == 'background_template':
+                    lines.append(f"\\setbeamertemplate{{background}}{{{bg['content']}}}")
+                else:
+                    lines.append(f"\\setbeamercolor{{{bg['type']}}}{{{bg['settings']}}}")
+            lines.append("")
+
+        # 27. Notes
+        if 'notes' in categories and categories['notes']:
+            lines.append("% Notes configuration")
+            lines.append("\\usepackage{pgfpages}")
+            for note in categories['notes']:
+                if note['type'] == 'option':
+                    lines.append(f"\\setbeameroption{{{note['value']}}}")
+                elif note['type'] == 'template':
+                    lines.append(f"\\setbeamertemplate{{note page}}{{{note['content']}}}")
+            lines.append("")
+
+        # 28. Progress bar
+        if 'progress_bar' in categories and categories['progress_bar']:
+            lines.append("% Progress bar")
+            for pb in categories['progress_bar']:
+                if pb['type'] == 'custom_progress_bar':
+                    lines.append(pb['content'])
+                elif pb['type'] == 'progress_colors':
+                    # We already have the full progress bar from custom_progress_bar
+                    pass
+            lines.append("")
+
+        # 29. Custom commands
+        if 'custom_commands' in categories and categories['custom_commands']:
+            lines.append("% Custom commands")
+            for cmd in categories['custom_commands']:
+                if cmd['type'] == 'newcommand':
+                    if cmd['params'] > 0:
+                        lines.append(f"\\newcommand{{\\{cmd['name']}}}[{cmd['params']}]{{{cmd['definition']}}}")
+                    else:
+                        lines.append(f"\\newcommand{{\\{cmd['name']}}}{{{cmd['definition']}}}")
+                elif cmd['type'] == 'def':
+                    lines.append(f"\\def\\{cmd['name']}{{{cmd['definition']}}}")
+                elif cmd['type'] == 'let':
+                    lines.append(f"\\let\\{cmd['name']}={cmd['value']}")
+                elif cmd['type'] == 'renewcommand':
+                    lines.append(f"\\renewcommand{{\\{cmd['name']}}}{{{cmd['definition']}}}")
+            lines.append("")
+
+        # 30. Other preamble content
+        if 'other_preamble' in categories and categories['other_preamble']:
+            lines.append("% Other preamble content")
+            for item in categories['other_preamble']:
+                lines.append(item)
+            lines.append("")
+
+        # Begin document
+        lines.append("\\begin{document}")
+
+        return '\n'.join(lines)
+
+    def save_theme(self, theme_data, theme_name=None):
+        """Save the complete theme"""
+        if not theme_name:
+            theme_name = theme_data.get('name', 'Imported Theme')
+
+        clean_name = re.sub(r'[<>:"/\\|?*]', '', theme_name)
+        clean_name = clean_name.replace(' ', '_')
+
+        theme_path = ThemeManager.get_theme_path(clean_name)
+
+        save_data = {
+            'name': theme_name,
+            'created': datetime.now().isoformat(),
+            'source': theme_data.get('source', 'Unknown'),
+            'categories': theme_data.get('categories', {}),
+            'raw_preamble': theme_data.get('raw_preamble', ''),
+            'full_document': theme_data.get('full_document', ''),
+            'summary': theme_data.get('summary', ''),
+            'version': '2.0',
+            'type': 'complete_import'
+        }
+
+        with open(theme_path, 'w', encoding='utf-8') as f:
+            json.dump(save_data, f, indent=2, ensure_ascii=False)
+
+        return theme_path
+
+
+# ============================================================================
+# UPDATE THE THEME IMPORT DIALOG - Show complete preview
+# ============================================================================
+
+class CompleteThemeImportDialog(ctk.CTkToplevel):
+    """Complete theme import dialog with full preview"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Import Complete Theme from TeX File")
+        self.geometry("1000x700")
+        self.result = None
+
+        self.transient(parent)
+        self.grab_set()
+        WindowManager.ensure_on_top(self, parent)
+        WindowManager.center_on_parent(self, parent)
+
+        self.importer = CompleteThemeImporter(self)
+        self.create_widgets()
+
+    def create_widgets(self):
+        """Create the import dialog widgets"""
+
+        # Main container
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Title
+        ctk.CTkLabel(
+            main_frame,
+            text="Import Complete Theme from Beamer TeX File",
+            font=("Arial", 18, "bold")
+        ).pack(pady=(0, 10))
+
+        # Description
+        ctk.CTkLabel(
+            main_frame,
+            text="Extracts ALL settings: colors, fonts, layouts, spacing, templates, commands, and more",
+            font=("Arial", 12),
+            text_color="#4ECDC4"
+        ).pack(pady=(0, 10))
+
+        # File selection
+        file_frame = ctk.CTkFrame(main_frame)
+        file_frame.pack(fill="x", pady=10)
+
+        ctk.CTkLabel(file_frame, text="TeX File:").pack(side="left", padx=5)
+        self.file_entry = ctk.CTkEntry(file_frame, width=400)
+        self.file_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        browse_btn = ctk.CTkButton(
+            file_frame,
+            text="Browse...",
+            command=self.browse_file,
+            width=100
+        )
+        browse_btn.pack(side="left", padx=5)
+
+        # Theme name
+        name_frame = ctk.CTkFrame(main_frame)
+        name_frame.pack(fill="x", pady=10)
+
+        ctk.CTkLabel(name_frame, text="Theme Name:").pack(side="left", padx=5)
+        self.name_entry = ctk.CTkEntry(name_frame, width=300)
+        self.name_entry.pack(side="left", padx=5, fill="x", expand=True)
+        self.name_entry.insert(0, "Imported Theme")
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(main_frame)
+        btn_frame.pack(fill="x", pady=10)
+
+        import_btn = ctk.CTkButton(
+            btn_frame,
+            text="📥 Import & Preview",
+            command=self.import_and_preview,
+            width=150,
+            fg_color="#28a745",
+            hover_color="#218838"
+        )
+        import_btn.pack(side="left", padx=5)
+
+        save_btn = ctk.CTkButton(
+            btn_frame,
+            text="💾 Save Complete Theme",
+            command=self.save_theme,
+            width=180,
+            fg_color="#17a2b8",
+            hover_color="#138496"
+        )
+        save_btn.pack(side="left", padx=5)
+
+        close_btn = ctk.CTkButton(
+            btn_frame,
+            text="❌ Cancel",
+            command=self.destroy,
+            width=120,
+            fg_color="#dc3545",
+            hover_color="#c82333"
+        )
+        close_btn.pack(side="right", padx=5)
+
+        # Preview area with tabs
+        preview_frame = ctk.CTkFrame(main_frame)
+        preview_frame.pack(fill="both", expand=True, pady=10)
+
+        # Create tabs for different preview views
+        self.tab_view = ctk.CTkTabview(preview_frame)
+        self.tab_view.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Tab 1: Summary
+        self.summary_tab = self.tab_view.add("📊 Summary")
+        self.summary_text = ctk.CTkTextbox(self.summary_tab, font=("Courier", 10))
+        self.summary_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.summary_text.insert("1.0", "Select a TeX file and click 'Import & Preview'")
+        self.summary_text.configure(state="disabled")
+
+        # Tab 2: Categories
+        self.categories_tab = self.tab_view.add("📂 Categories")
+        self.categories_text = ctk.CTkTextbox(self.categories_tab, font=("Courier", 10))
+        self.categories_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.categories_text.insert("1.0", "Categories will appear here after import")
+        self.categories_text.configure(state="disabled")
+
+        # Tab 3: Generated Preamble
+        self.preamble_tab = self.tab_view.add("📝 Generated Preamble")
+        self.preamble_text = ctk.CTkTextbox(self.preamble_tab, font=("Courier", 10))
+        self.preamble_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.preamble_text.insert("1.0", "Generated preamble will appear here")
+        self.preamble_text.configure(state="disabled")
+
+        # Tab 4: Raw Preamble
+        self.raw_tab = self.tab_view.add("📄 Raw Preamble")
+        self.raw_text = ctk.CTkTextbox(self.raw_tab, font=("Courier", 10))
+        self.raw_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.raw_text.insert("1.0", "Raw preamble from the file will appear here")
+        self.raw_text.configure(state="disabled")
+
+        # Status
+        self.status_label = ctk.CTkLabel(main_frame, text="", font=("Arial", 10), text_color="#4ECDC4")
+        self.status_label.pack(fill="x", pady=5)
+
+    def browse_file(self):
+        """Browse for a TeX file"""
+        filename = DialogManager.askopenfilename(
+            parent=self,
+            title="Select Beamer TeX File",
+            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")]
+        )
+        if filename:
+            self.file_entry.delete(0, 'end')
+            self.file_entry.insert(0, filename)
+            base_name = Path(filename).stem
+            self.name_entry.delete(0, 'end')
+            self.name_entry.insert(0, base_name.replace('_', ' ').title())
+
+    def import_and_preview(self):
+        """Import the complete theme and show preview"""
+        file_path = self.file_entry.get().strip()
+        if not file_path:
+            WindowManager.show_message(self, "Error", "Please select a TeX file.", "error")
+            return
+
+        if not os.path.exists(file_path):
+            WindowManager.show_message(self, "Error", f"File not found: {file_path}", "error")
+            return
+
+        self.status_label.configure(text="Importing complete theme...", text_color="#FFB86C")
+        self.update()
+
+        # Import the theme
+        theme_data = self.importer.import_from_file(file_path)
+
+        if theme_data is None:
+            self.status_label.configure(text="✗ Import failed", text_color="#FF6B6B")
+            WindowManager.show_message(
+                self,
+                "Import Failed",
+                f"Failed to import theme.\n\nErrors:\n{chr(10).join(self.importer.errors)}",
+                "error"
+            )
+            return
+
+        # Store for later
+        self.current_theme = theme_data
+
+        # Update all preview tabs
+        self._update_summary(theme_data)
+        self._update_categories(theme_data)
+        self._update_preamble(theme_data)
+        self._update_raw(theme_data)
+
+        # Update status
+        cats = len(theme_data.get('categories', {}))
+        total_items = 0
+        for cat_data in theme_data.get('categories', {}).values():
+            if isinstance(cat_data, list):
+                total_items += len(cat_data)
+            elif isinstance(cat_data, dict):
+                total_items += len(cat_data)
+
+        self.status_label.configure(
+            text=f"✓ Imported {cats} categories with {total_items} items from {Path(file_path).name}",
+            text_color="#4ECDC4"
+        )
+
+    def _update_summary(self, theme_data):
+        """Update the summary tab"""
+        self.summary_text.configure(state="normal")
+        self.summary_text.delete("1.0", "end")
+
+        summary = theme_data.get('summary', 'No summary available')
+        self.summary_text.insert("1.0", summary)
+
+        self.summary_text.configure(state="disabled")
+
+    def _update_categories(self, theme_data):
+        """Update the categories tab"""
+        self.categories_text.configure(state="normal")
+        self.categories_text.delete("1.0", "end")
+
+        categories = theme_data.get('categories', {})
+        if not categories:
+            self.categories_text.insert("1.0", "No categories found")
+        else:
+            for cat_name, cat_data in categories.items():
+                display_name = CompleteThemeImporter.CATEGORIES.get(cat_name, cat_name)
+                self.categories_text.insert("end", f"\n{display_name}:\n")
+                self.categories_text.insert("end", "-" * len(display_name) + "\n")
+
+                if isinstance(cat_data, list):
+                    for item in cat_data:
+                        if isinstance(item, dict):
+                            # Show key fields
+                            fields = []
+                            if 'name' in item:
+                                fields.append(f"name: {item['name']}")
+                            if 'type' in item:
+                                fields.append(f"type: {item['type']}")
+                            if 'value' in item:
+                                fields.append(f"value: {item['value']}")
+                            if 'settings' in item:
+                                fields.append(f"settings: {item['settings'][:50]}...")
+                            if 'content' in item:
+                                fields.append(f"content: {item['content'][:50]}...")
+                            if fields:
+                                self.categories_text.insert("end", f"  • {', '.join(fields)}\n")
+                            else:
+                                self.categories_text.insert("end", f"  • {str(item)[:50]}...\n")
+                        else:
+                            self.categories_text.insert("end", f"  • {str(cat_data)[:50]}...\n")
+                elif isinstance(cat_data, dict):
+                    for key, value in cat_data.items():
+                        if isinstance(value, dict):
+                            if 'value' in value:
+                                self.categories_text.insert("end", f"  • {key}: {value['value'][:50]}...\n")
+                            else:
+                                self.categories_text.insert("end", f"  • {key}: {str(value)[:50]}...\n")
+                        else:
+                            self.categories_text.insert("end", f"  • {key}: {str(value)[:50]}...\n")
+                else:
+                    self.categories_text.insert("end", f"  • {str(cat_data)[:50]}...\n")
+
+        self.categories_text.configure(state="disabled")
+
+    def _update_preamble(self, theme_data):
+        """Update the generated preamble tab"""
+        self.preamble_text.configure(state="normal")
+        self.preamble_text.delete("1.0", "end")
+
+        preamble = self.importer.generate_complete_preamble(theme_data)
+        self.preamble_text.insert("1.0", preamble)
+
+        self.preamble_text.configure(state="disabled")
+
+    def _update_raw(self, theme_data):
+        """Update the raw preamble tab"""
+        self.raw_text.configure(state="normal")
+        self.raw_text.delete("1.0", "end")
+
+        raw = theme_data.get('raw_preamble', 'No raw preamble available')
+        self.raw_text.insert("1.0", raw)
+
+        self.raw_text.configure(state="disabled")
+
+    def save_theme(self):
+        """Save the complete imported theme"""
+        if not hasattr(self, 'current_theme') or not self.current_theme:
+            WindowManager.show_message(
+                self,
+                "No Theme",
+                "Please import a theme first using 'Import & Preview'.",
+                "warning"
+            )
+            return
+
+        theme_name = self.name_entry.get().strip()
+        if not theme_name:
+            WindowManager.show_message(self, "Error", "Please enter a theme name.", "error")
+            return
+
+        try:
+            theme_path = self.importer.save_theme(self.current_theme, theme_name)
+            WindowManager.show_message(
+                self,
+                "Theme Saved",
+                f"Complete theme '{theme_name}' saved successfully!\n\n"
+                f"Location: {theme_path}\n\n"
+                f"All settings have been captured and can be fully reapplied.",
+                "info"
+            )
+            self.status_label.configure(text=f"✓ Complete theme '{theme_name}' saved", text_color="#4ECDC4")
+
+            self.result = {
+                'name': theme_name,
+                'path': theme_path,
+                'data': self.current_theme
+            }
+            self.destroy()
+
+        except Exception as e:
+            WindowManager.show_message(
+                self,
+                "Error",
+                f"Error saving theme:\n{str(e)}",
+                "error"
+            )
+
+
+# ============================================================================
+# THEME IMPORT DIALOG
+# ============================================================================
+
+class ThemeImportDialog(ctk.CTkToplevel):
+    """Dialog for importing themes from TeX files"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Import Theme from TeX File")
+        self.geometry("800x600")
+        self.result = None
+
+        self.transient(parent)
+        self.grab_set()
+        WindowManager.ensure_on_top(self, parent)
+        WindowManager.center_on_parent(self, parent)
+
+        self.importer = ThemeImporter(self)
+        self.create_widgets()
+
+    def create_widgets(self):
+        """Create the import dialog widgets"""
+
+        # Main container
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Title
+        ctk.CTkLabel(
+            main_frame,
+            text="Import Theme from Beamer TeX File",
+            font=("Arial", 18, "bold")
+        ).pack(pady=(0, 10))
+
+        # File selection
+        file_frame = ctk.CTkFrame(main_frame)
+        file_frame.pack(fill="x", pady=10)
+
+        ctk.CTkLabel(file_frame, text="TeX File:").pack(side="left", padx=5)
+        self.file_entry = ctk.CTkEntry(file_frame, width=400)
+        self.file_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        browse_btn = ctk.CTkButton(
+            file_frame,
+            text="Browse...",
+            command=self.browse_file,
+            width=100
+        )
+        browse_btn.pack(side="left", padx=5)
+
+        # Theme name
+        name_frame = ctk.CTkFrame(main_frame)
+        name_frame.pack(fill="x", pady=10)
+
+        ctk.CTkLabel(name_frame, text="Theme Name:").pack(side="left", padx=5)
+        self.name_entry = ctk.CTkEntry(name_frame, width=300)
+        self.name_entry.pack(side="left", padx=5, fill="x", expand=True)
+        self.name_entry.insert(0, "Imported Theme")
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(main_frame)
+        btn_frame.pack(fill="x", pady=10)
+
+        import_btn = ctk.CTkButton(
+            btn_frame,
+            text="📥 Import & Preview",
+            command=self.import_and_preview,
+            width=150,
+            fg_color="#28a745",
+            hover_color="#218838"
+        )
+        import_btn.pack(side="left", padx=5)
+
+        save_btn = ctk.CTkButton(
+            btn_frame,
+            text="💾 Save Theme",
+            command=self.save_theme,
+            width=150,
+            fg_color="#17a2b8",
+            hover_color="#138496"
+        )
+        save_btn.pack(side="left", padx=5)
+
+        close_btn = ctk.CTkButton(
+            btn_frame,
+            text="❌ Cancel",
+            command=self.destroy,
+            width=120,
+            fg_color="#dc3545",
+            hover_color="#c82333"
+        )
+        close_btn.pack(side="right", padx=5)
+
+        # Preview area
+        preview_frame = ctk.CTkFrame(main_frame)
+        preview_frame.pack(fill="both", expand=True, pady=10)
+
+        ctk.CTkLabel(preview_frame, text="Preview:", font=("Arial", 12, "bold")).pack(anchor="w", padx=5)
+
+        self.preview_text = ctk.CTkTextbox(preview_frame, font=("Courier", 10))
+        self.preview_text.pack(fill="both", expand=True, padx=5, pady=5)
+        self.preview_text.insert("1.0", "Select a TeX file and click 'Import & Preview'")
+        self.preview_text.configure(state="disabled")
+
+        # Status
+        self.status_label = ctk.CTkLabel(main_frame, text="", font=("Arial", 10), text_color="#4ECDC4")
+        self.status_label.pack(fill="x", pady=5)
+
+    def import_and_preview(self):
+        """Import the theme and show preview"""
+        file_path = self.file_entry.get().strip()
+        if not file_path:
+            WindowManager.show_message(self, "Error", "Please select a TeX file.", "error")
+            return
+
+        if not os.path.exists(file_path):
+            WindowManager.show_message(self, "Error", f"File not found: {file_path}", "error")
+            return
+
+        self.status_label.configure(text="Importing theme...", text_color="#FFB86C")
+        self.update()
+
+        # Import the theme
+        theme_data = self.importer.import_from_file(file_path)
+
+        if theme_data is None:
+            self.status_label.configure(text="✗ Import failed", text_color="#FF6B6B")
+            WindowManager.show_message(
+                self,
+                "Import Failed",
+                f"Failed to import theme.\n\nErrors:\n{chr(10).join(self.importer.errors)}",
+                "error"
+            )
+            return
+
+        # Store for later
+        self.current_theme = theme_data
+
+        # Show preview
+        self.preview_text.configure(state="normal")
+        self.preview_text.delete("1.0", "end")
+
+        summary = self.importer.get_theme_summary(theme_data)
+        self.preview_text.insert("1.0", summary + "\n\n")
+
+        # Show the generated preamble preview
+        if theme_data.get('categories'):
+            self.preview_text.insert("end", "="*50 + "\n")
+            self.preview_text.insert("end", "Generated Preamble Preview:\n")
+            self.preview_text.insert("end", "="*50 + "\n")
+            preamble = self.importer.generate_preamble_from_theme(theme_data)
+            self.preview_text.insert("end", preamble[:500] + "\n... (truncated)")
+
+        self.preview_text.configure(state="disabled")
+
+        # Update status
+        cats = len(theme_data.get('categories', {}))
+        self.status_label.configure(
+            text=f"✓ Imported {cats} categories from {Path(file_path).name}",
+            text_color="#4ECDC4"
+        )
+
+    def save_theme(self):
+        """Save the imported theme"""
+        if not hasattr(self, 'current_theme') or not self.current_theme:
+            WindowManager.show_message(
+                self,
+                "No Theme",
+                "Please import a theme first using 'Import & Preview'.",
+                "warning"
+            )
+            return
+
+        theme_name = self.name_entry.get().strip()
+        if not theme_name:
+            WindowManager.show_message(self, "Error", "Please enter a theme name.", "error")
+            return
+
+        try:
+            theme_path = self.importer.save_theme(self.current_theme, theme_name)
+            WindowManager.show_message(
+                self,
+                "Theme Saved",
+                f"Theme '{theme_name}' saved successfully!\n\n"
+                f"Location: {theme_path}",
+                "info"
+            )
+            self.status_label.configure(text=f"✓ Theme '{theme_name}' saved", text_color="#4ECDC4")
+
+            # Return the theme data
+            self.result = {
+                'name': theme_name,
+                'path': theme_path,
+                'data': self.current_theme
+            }
+            self.destroy()
+
+        except Exception as e:
+            WindowManager.show_message(
+                self,
+                "Error",
+                f"Error saving theme:\n{str(e)}",
+                "error"
+            )
+
+    # ============================================================================
+    # UPDATE ThemeImportDialog - Use DialogManager for file browsing
+    # ============================================================================
+
+    def browse_file(self):
+        """Browse for a TeX file - with proper file dialog"""
+        filename = DialogManager.askopenfilename(
+            parent=self,
+            title="Select Beamer TeX File",
+            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")]
+        )
+        if filename:
+            self.file_entry.delete(0, 'end')
+            self.file_entry.insert(0, filename)
+            # Auto-set theme name from filename
+            base_name = Path(filename).stem
+            self.name_entry.delete(0, 'end')
+            self.name_entry.insert(0, base_name.replace('_', ' ').title())
+
+# ============================================================================
+# COMPLETE THEME APPLICATION SYSTEM - Priority to imported/loaded theme
+# ============================================================================
+
+class ThemeApplicationSystem:
+    """
+    Applies themes with priority to imported/loaded theme.
+    Only undefined elements fall back to defaults.
+    """
+
+    @staticmethod
+    def apply_theme_to_preamble(preamble, theme_data, preserve_undefined=True):
+        """
+        Apply a theme to a preamble with priority to the theme.
+
+        Args:
+            preamble: Current preamble string
+            theme_data: Loaded theme data (imported or saved)
+            preserve_undefined: If True, keep elements not defined in theme
+
+        Returns:
+            Modified preamble string
+        """
+        import re
+
+        # Extract categories from theme
+        categories = theme_data.get('categories', {})
+        if not categories:
+            return preamble
+
+        # Start with the theme's raw preamble if available
+        if 'raw_preamble' in theme_data and theme_data['raw_preamble']:
+            # Use the theme's raw preamble as the base
+            new_preamble = theme_data['raw_preamble']
+        else:
+            # Generate from categories
+            importer = CompleteThemeImporter()
+            new_preamble = importer.generate_complete_preamble(theme_data)
+
+        # If preserve_undefined, merge undefined elements from original preamble
+        if preserve_undefined:
+            new_preamble = ThemeApplicationSystem._merge_undefined_elements(
+                preamble, new_preamble, categories
+            )
+
+        # Ensure the preamble has \begin{document}
+        if '\\begin{document}' not in new_preamble:
+            new_preamble = new_preamble + '\n\\begin{document}'
+
+        return new_preamble
+
+    @staticmethod
+    def _merge_undefined_elements(original_preamble, theme_preamble, theme_categories):
+        """
+        Merge elements from original preamble that are NOT defined in the theme.
+        """
+        import re
+
+        # Define elements that should be checked
+        elements_to_check = {
+            'colors': {
+                'pattern': r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}',
+                'extract': lambda m: m.group(1),  # color name
+                'check': lambda name, theme: name not in [c.get('name') for c in theme.get('colors', [])]
+            },
+            'colorlets': {
+                'pattern': r'\\colorlet\{([^}]+)\}\{([^}]+)\}',
+                'extract': lambda m: m.group(1),  # color name
+                'check': lambda name, theme: name not in [c.get('name') for c in theme.get('colors', [])]
+            },
+            'packages': {
+                'pattern': r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}',
+                'extract': lambda m: m.group(2).split(',')[0].strip(),  # package name
+                'check': lambda name, theme: name not in [p.get('name') for p in theme.get('packages', [])]
+            },
+            'custom_commands': {
+                'pattern': r'\\(?:re)?newcommand\{\\([^}]+)\}(?:\[(\d+)\])?\{([^}]+)\}',
+                'extract': lambda m: m.group(1),  # command name
+                'check': lambda name, theme: name not in [c.get('name') for c in theme.get('custom_commands', [])]
+            },
+            'beamercolors': {
+                'pattern': r'\\setbeamercolor\{([^}]+)\}\{([^}]+)\}',
+                'extract': lambda m: m.group(1),  # color name
+                'check': lambda name, theme: name not in [c.get('name') for c in theme.get('beamercolors', [])]
+            },
+            'beamerfonts': {
+                'pattern': r'\\setbeamerfont\{([^}]+)\}\{([^}]+)\}',
+                'extract': lambda m: m.group(1),  # font name
+                'check': lambda name, theme: name not in [f.get('name') for f in theme.get('beamerfonts', [])]
+            },
+            'beamertemplates': {
+                'pattern': r'\\setbeamertemplate\{([^}]+)\}\{([^}]+)\}',
+                'extract': lambda m: m.group(1),  # template name
+                'check': lambda name, theme: name not in [t.get('name') for t in theme.get('beamertemplates', [])]
+            },
+            'tikz_libraries': {
+                'pattern': r'\\usetikzlibrary\{([^}]+)\}',
+                'extract': lambda m: m.group(1).split(',')[0].strip(),  # library name
+                'check': lambda name, theme: name not in [l.get('name') for l in theme.get('tikz_libraries', [])]
+            }
+        }
+
+        # Extract original elements
+        original_elements = {}
+        for category, info in elements_to_check.items():
+            original_elements[category] = []
+            matches = re.finditer(info['pattern'], original_preamble, re.DOTALL)
+            for match in matches:
+                name = info['extract'](match)
+                original_elements[category].append({
+                    'name': name,
+                    'full': match.group(0)
+                })
+
+        # Extract theme elements for quick lookup
+        theme_elements = {}
+        for category, info in elements_to_check.items():
+            theme_elements[category] = set()
+            for item in theme_categories.get(category, []):
+                if isinstance(item, dict) and 'name' in item:
+                    theme_elements[category].add(item['name'])
+                elif isinstance(item, str):
+                    theme_elements[category].add(item)
+
+        # Find undefined elements and add them
+        undefined_elements = []
+        for category, elements in original_elements.items():
+            theme_names = theme_elements.get(category, set())
+            for elem in elements:
+                if elem['name'] not in theme_names:
+                    undefined_elements.append(elem['full'])
+
+        # Merge undefined elements into theme preamble
+        if undefined_elements:
+            # Find insertion point
+            lines = theme_preamble.split('\n')
+            insert_index = len(lines)
+
+            # Find where to insert (before \begin{document})
+            for i, line in enumerate(lines):
+                if '\\begin{document}' in line:
+                    insert_index = i
+                    break
+
+            # Also look for color definitions section
+            color_section_found = False
+            for i, line in enumerate(lines):
+                if '% Color definitions' in line:
+                    # Insert after color definitions
+                    insert_index = i + 1
+                    color_section_found = True
+                    break
+
+            if not color_section_found:
+                # Look for any package section
+                for i, line in enumerate(lines):
+                    if '\\usepackage' in line:
+                        insert_index = i + 1
+                        break
+
+            # Insert undefined elements
+            if undefined_elements:
+                # Add a comment to mark merged elements
+                lines.insert(insert_index, '\n% --- Merged from original preamble (not in theme) ---')
+                insert_index += 1
+
+                for elem in undefined_elements:
+                    lines.insert(insert_index, elem)
+                    insert_index += 1
+
+                lines.insert(insert_index, '% --- End of merged elements ---')
+
+            theme_preamble = '\n'.join(lines)
+
+        return theme_preamble
+
+    @staticmethod
+    def apply_theme_to_file(file_path, theme_data, preserve_undefined=True):
+        """
+        Apply a theme to a file with priority to the theme.
+        """
+        try:
+            # Read the file
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Extract document body
+            import re
+            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if not doc_match:
+                return False
+
+            preamble = doc_match.group(1)
+            document_body = content[doc_match.end():]
+
+            # Apply the theme
+            new_preamble = ThemeApplicationSystem.apply_theme_to_preamble(
+                preamble, theme_data, preserve_undefined
+            )
+
+            # Rebuild the file
+            new_content = new_preamble + '\n\n' + document_body
+
+            # Write back
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            return True
+
+        except Exception as e:
+            print(f"Error applying theme to file: {e}")
+            return False
 
 
 # ============================================================================
@@ -1712,6 +5202,36 @@ class ThemeManager:
 
         return preamble
 
+    @classmethod
+    def get_imported_themes(cls):
+        """Get only imported themes"""
+        all_themes = cls.list_themes()
+        imported = []
+        for theme in all_themes:
+            try:
+                with open(theme['path'], 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if data.get('type') == 'imported':
+                        imported.append(theme)
+            except:
+                pass
+        return imported
+
+    @classmethod
+    def apply_imported_theme(cls, theme_name, preamble):
+        """Apply an imported theme to a preamble"""
+        theme_data = cls.load_theme(theme_name)
+        if not theme_data:
+            return preamble
+
+        # Use the importer to generate the preamble
+        importer = ThemeImporter()
+        return importer.generate_preamble_from_theme(theme_data)
+
+
+#=============================================================================
+# TeX to TEXT impot Manager
+#=============================================================================
 
 # ============================================================================
 # PRESET THEMES - Add this after ThemeManager
@@ -1878,16 +5398,24 @@ class PresetThemes:
 # COMPLETE FIXED ENHANCED THEME & STYLE DIALOG
 # ============================================================================
 
+# ============================================================================
+# ENHANCED THEME & STYLE DIALOG - With Foreground, Title, and Title Background Colors
+# ============================================================================
+
 class EnhancedThemeStyleDialog(ctk.CTkToplevel):
     """
     Complete Theme & Style Dialog with:
     - Visual dashboard preview
     - All theme settings
+    - Background, Foreground, Title, and Title Background color selection
+    - Footer logo with color customization
     - Content scaling
     - Preset themes
     - Save/Load custom themes
     - Live preview updates
-    - Proper window management
+    - Footer override from Presentation Settings
+    - Auto-inversion for background colors (XOR rule)
+    - Proper window management with all dialogs on top
     """
 
     # Scaling factors for different aspect ratios
@@ -1903,19 +5431,38 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
     def __init__(self, parent, current_preamble=None):
         super().__init__(parent)
         self.title("Theme & Style Settings")
-        self.geometry("1300x800")
+        self.geometry("1350x900")  # Slightly larger for new controls
         self.parent = parent
         self.result = None
         self.current_preamble = current_preamble or ""
         self._is_applying = False
         self._current_theme_name = None
+        self._tooltips = []  # Track tooltips for cleanup
+
+        # Get presentation info from parent
+        self.presentation_info = {}
+        if hasattr(parent, 'presentation_info'):
+            self.presentation_info = parent.presentation_info.copy()
+        else:
+            self.presentation_info = {
+                'title': 'Presentation',
+                'subtitle': '',
+                'author': 'Author',
+                'institution': 'Institution',
+                'short_institute': 'Short Inst',
+                'date': '\\today'
+            }
 
         # Store current values from preamble
         self.current_values = self._extract_current_settings(self.current_preamble)
 
-        # Window management
+        # Window management - ensure dialog is on top
         self.transient(parent)
         self.grab_set()
+        self.lift()
+        self.focus_force()
+        self.attributes('-topmost', True)
+        self.after(100, lambda: self.attributes('-topmost', False))
         WindowManager.ensure_on_top(self, parent)
         self.center_window()
 
@@ -1927,6 +5474,23 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         # Load theme list
         self.refresh_theme_list()
 
+        # Bind cleanup on close
+        self.protocol("WM_DELETE_WINDOW", self._cleanup_and_close)
+
+    def _cleanup_and_close(self):
+        """Clean up tooltips and close window"""
+        self._hide_all_tooltips()
+        self.destroy()
+
+    def _hide_all_tooltips(self):
+        """Hide all active tooltips"""
+        for tooltip in self._tooltips:
+            try:
+                tooltip.destroy()
+            except:
+                pass
+        self._tooltips.clear()
+
     def _extract_current_settings(self, preamble: str) -> dict:
         """Extract current settings from the preamble"""
         settings = {
@@ -1935,6 +5499,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             'fonttheme': 'default',
             'aspect': '169',
             'bg_color': 'white',
+            'fg_color': 'black',  # New: foreground/text color
+            'title_color': 'white',  # New: title color
+            'title_bg_color': '#2980b9',  # New: title background color
             'bg_image': '',
             'bg_opacity': 0.3,
             'progress': True,
@@ -1946,6 +5513,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             'table_width': 0.92,
             'image_width': 0.7,
             'content_margin': 0.04,
+            'show_footer': True,
+            'footer_logo': '',
+            'footer_logo_color': '',
         }
 
         if not preamble:
@@ -1978,10 +5548,40 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         if bg_match:
             settings['bg_color'] = bg_match.group(1)
 
+        # Extract foreground color (normal text)
+        fg_match = re.search(r'\\setbeamercolor\{normal text\}\{fg=([^}]+)\}', preamble)
+        if fg_match:
+            settings['fg_color'] = fg_match.group(1)
+
+        # Extract title color
+        title_color_match = re.search(r'\\setbeamercolor\{frametitle\}\{fg=([^,}]+)', preamble)
+        if title_color_match:
+            settings['title_color'] = title_color_match.group(1)
+
+        # Extract title background color
+        title_bg_match = re.search(r'\\setbeamercolor\{frametitle\}\{[^}]*bg=([^,}]+)', preamble)
+        if title_bg_match:
+            settings['title_bg_color'] = title_bg_match.group(1)
+
         # Extract background image
         img_match = re.search(r'\\includegraphics\[.*?\]\{([^}]+)\}', preamble)
         if img_match and 'background' in preamble.lower():
             settings['bg_image'] = img_match.group(1)
+
+        # Extract logo
+        logo_match = re.search(r'\\logo\{([^}]*)\}', preamble)
+        if logo_match:
+            settings['footer_logo'] = logo_match.group(1)
+            # Extract color from logo if present
+            color_match = re.search(r'\\textcolor\{([^}]+)\}', logo_match.group(1))
+            if color_match:
+                settings['footer_logo_color'] = color_match.group(1)
+
+        # Check for footer override
+        if '\\def\\insertshortinstitute' in preamble:
+            settings['show_footer'] = True
+        else:
+            settings['show_footer'] = False
 
         # Check for progress bar
         if '\\progressbar@progressbar' in preamble:
@@ -2018,16 +5618,55 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
     def center_window(self):
         """Center the dialog on screen"""
-        WindowManager.center_on_parent(self, self.parent)
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        x = (self.winfo_screenwidth() - width) // 2
+        y = (self.winfo_screenheight() - height) // 2
+        if x < 0:
+            x = 50
+        if y < 0:
+            y = 50
+        self.geometry(f"+{x}+{y}")
+
+    def create_tooltip(self, widget, text):
+        """Create tooltip for widget - with cleanup tracking"""
+        def show_tooltip(event):
+            # Hide any existing tooltips first
+            self._hide_all_tooltips()
+
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            tooltip.attributes('-topmost', True)
+
+            label = tk.Label(tooltip, text=text, justify='left',
+                           background="#ffffe0", relief='solid', borderwidth=1,
+                           font=("Arial", 10))
+            label.pack()
+
+            widget.tooltip = tooltip
+            self._tooltips.append(tooltip)
+
+        def hide_tooltip(event):
+            if hasattr(widget, 'tooltip') and widget.tooltip in self._tooltips:
+                try:
+                    widget.tooltip.destroy()
+                    self._tooltips.remove(widget.tooltip)
+                except:
+                    pass
+
+        widget.bind('<Enter>', show_tooltip)
+        widget.bind('<Leave>', hide_tooltip)
 
     def create_widgets(self):
-        """Create all widgets"""
+        """Create all widgets with footer override control"""
 
         # Main container
         main_container = ctk.CTkFrame(self)
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Top toolbar with theme management
+        # ========== TOP TOOLBAR ==========
         toolbar = ctk.CTkFrame(main_container)
         toolbar.pack(fill="x", padx=5, pady=5)
 
@@ -2055,6 +5694,30 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         load_theme_btn.pack(side="left", padx=5)
         self.create_tooltip(load_theme_btn, "Load a saved custom theme")
 
+        # Import Theme button
+        import_theme_btn = ctk.CTkButton(
+            toolbar,
+            text="📥 Import Theme",
+            command=self.import_theme,
+            width=130,
+            fg_color="#6f42c1",
+            hover_color="#5a2d91"
+        )
+        import_theme_btn.pack(side="left", padx=5)
+        self.create_tooltip(import_theme_btn, "Import a theme from a Beamer TeX file")
+
+        # Complete Import Theme button
+        complete_import_btn = ctk.CTkButton(
+            toolbar,
+            text="📥 Import Complete Theme",
+            command=self.import_complete_theme,
+            width=180,
+            fg_color="#8B008B",
+            hover_color="#6B006B"
+        )
+        complete_import_btn.pack(side="left", padx=5)
+        self.create_tooltip(complete_import_btn, "Import EVERYTHING from a Beamer TeX file (colors, fonts, layouts, etc.)")
+
         # Delete theme button
         delete_theme_btn = ctk.CTkButton(toolbar, text="🗑 Delete Theme", command=self.delete_custom_theme,
                                          width=120, fg_color="#dc3545", hover_color="#c82333")
@@ -2068,12 +5731,12 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.theme_name_label = ctk.CTkLabel(toolbar, text="", font=("Arial", 10), text_color="#4ECDC4")
         self.theme_name_label.pack(side="right", padx=10)
 
-        # Split into left (settings) and right (preview)
+        # ========== SPLIT VIEW ==========
         split_frame = ctk.CTkFrame(main_container)
         split_frame.pack(fill="both", expand=True, pady=5)
 
         # LEFT PANEL - Settings (scrollable)
-        settings_panel = ctk.CTkScrollableFrame(split_frame, width=700)
+        settings_panel = ctk.CTkScrollableFrame(split_frame, width=780)
         settings_panel.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
         # RIGHT PANEL - Preview
@@ -2118,7 +5781,165 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.fonttheme_menu.grid(row=2, column=1, padx=5, pady=5)
         self.create_tooltip(self.fonttheme_menu, "Choose a font theme for your presentation")
 
-        # 2. ASPECT RATIO GROUP
+        # 2. COLOR SETTINGS GROUP (New - expanded)
+        color_group = self.create_group_frame(settings_panel, "🎨 Color Settings")
+        color_grid = ctk.CTkFrame(color_group)
+        color_grid.pack(fill="x", padx=5, pady=5)
+
+        # Background Color
+        ctk.CTkLabel(color_grid, text="Background Color:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.bg_color_var = ctk.StringVar(value=self.current_values['bg_color'])
+        bg_entry = ctk.CTkEntry(color_grid, textvariable=self.bg_color_var, width=150)
+        bg_entry.grid(row=0, column=1, padx=5, pady=5)
+        bg_entry.bind('<KeyRelease>', self._on_bg_color_changed)
+        self.create_tooltip(bg_entry, "Background color (e.g., white, #F5F5F5)")
+
+        bg_picker_btn = ctk.CTkButton(
+            color_grid,
+            text="🎨 Pick",
+            command=lambda: self._pick_color('bg_color'),
+            width=60,
+            fg_color="#3498db"
+        )
+        bg_picker_btn.grid(row=0, column=2, padx=5, pady=5)
+        self.create_tooltip(bg_picker_btn, "Open color picker for background")
+
+        # Foreground (Text) Color - NEW
+        ctk.CTkLabel(color_grid, text="Text Color:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.fg_color_var = ctk.StringVar(value=self.current_values.get('fg_color', 'black'))
+        fg_entry = ctk.CTkEntry(color_grid, textvariable=self.fg_color_var, width=150)
+        fg_entry.grid(row=1, column=1, padx=5, pady=5)
+        fg_entry.bind('<KeyRelease>', self.on_setting_changed)
+        self.create_tooltip(fg_entry, "Text/foreground color (e.g., black, white, #333333)")
+
+        fg_picker_btn = ctk.CTkButton(
+            color_grid,
+            text="🎨 Pick",
+            command=lambda: self._pick_color('fg_color'),
+            width=60,
+            fg_color="#2ecc71"
+        )
+        fg_picker_btn.grid(row=1, column=2, padx=5, pady=5)
+        self.create_tooltip(fg_picker_btn, "Open color picker for text")
+
+        # Title Color - NEW
+        ctk.CTkLabel(color_grid, text="Title Color:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.title_color_var = ctk.StringVar(value=self.current_values.get('title_color', 'white'))
+        title_entry = ctk.CTkEntry(color_grid, textvariable=self.title_color_var, width=150)
+        title_entry.grid(row=2, column=1, padx=5, pady=5)
+        title_entry.bind('<KeyRelease>', self.on_setting_changed)
+        self.create_tooltip(title_entry, "Title text color")
+
+        title_picker_btn = ctk.CTkButton(
+            color_grid,
+            text="🎨 Pick",
+            command=lambda: self._pick_color('title_color'),
+            width=60,
+            fg_color="#e67e22"
+        )
+        title_picker_btn.grid(row=2, column=2, padx=5, pady=5)
+        self.create_tooltip(title_picker_btn, "Open color picker for title")
+
+        # Title Background Color - NEW
+        ctk.CTkLabel(color_grid, text="Title Background:", font=("Arial", 12)).grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        self.title_bg_color_var = ctk.StringVar(value=self.current_values.get('title_bg_color', '#2980b9'))
+        title_bg_entry = ctk.CTkEntry(color_grid, textvariable=self.title_bg_color_var, width=150)
+        title_bg_entry.grid(row=3, column=1, padx=5, pady=5)
+        title_bg_entry.bind('<KeyRelease>', self.on_setting_changed)
+        self.create_tooltip(title_bg_entry, "Title background color")
+
+        title_bg_picker_btn = ctk.CTkButton(
+            color_grid,
+            text="🎨 Pick",
+            command=lambda: self._pick_color('title_bg_color'),
+            width=60,
+            fg_color="#9b59b6"
+        )
+        title_bg_picker_btn.grid(row=3, column=2, padx=5, pady=5)
+        self.create_tooltip(title_bg_picker_btn, "Open color picker for title background")
+
+        # 3. FOOTER SETTINGS GROUP
+        footer_group = self.create_group_frame(settings_panel, "📌 Footer Settings")
+        footer_grid = ctk.CTkFrame(footer_group)
+        footer_grid.pack(fill="x", padx=5, pady=5)
+
+        # Footer override toggle
+        self.show_footer_var = ctk.BooleanVar(value=self.current_values.get('show_footer', True))
+        footer_check = ctk.CTkCheckBox(
+            footer_grid,
+            text="Show Footer from Presentation Settings",
+            variable=self.show_footer_var,
+            command=self.on_setting_changed
+        )
+        footer_check.grid(row=0, column=0, columnspan=3, padx=5, pady=5, sticky="w")
+        self.create_tooltip(footer_check,
+            "Force footer to use the author, title, and institution from Presentation Settings\n"
+            "Overrides any footer defined in the imported theme")
+
+        # Footer Logo - NEW
+        ctk.CTkLabel(footer_grid, text="Footer Logo:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.footer_logo_var = ctk.StringVar(value=self.current_values.get('footer_logo', ''))
+        logo_entry = ctk.CTkEntry(footer_grid, textvariable=self.footer_logo_var, width=200)
+        logo_entry.grid(row=1, column=1, padx=5, pady=5)
+        logo_entry.bind('<KeyRelease>', self.on_setting_changed)
+        self.create_tooltip(logo_entry, "Path to logo image for footer")
+
+        logo_browse_btn = ctk.CTkButton(
+            footer_grid,
+            text="Browse...",
+            command=self.browse_footer_logo,
+            width=80
+        )
+        logo_browse_btn.grid(row=1, column=2, padx=5, pady=5)
+        self.create_tooltip(logo_browse_btn, "Browse for logo image file")
+
+        # Footer Logo Color - NEW
+        ctk.CTkLabel(footer_grid, text="Logo Color:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.footer_logo_color_var = ctk.StringVar(value=self.current_values.get('footer_logo_color', ''))
+        logo_color_entry = ctk.CTkEntry(footer_grid, textvariable=self.footer_logo_color_var, width=150)
+        logo_color_entry.grid(row=2, column=1, padx=5, pady=5)
+        logo_color_entry.bind('<KeyRelease>', self.on_setting_changed)
+        self.create_tooltip(logo_color_entry, "Color for the logo (e.g., white, #FFFFFF)")
+
+        logo_color_picker = ctk.CTkButton(
+            footer_grid,
+            text="🎨 Pick",
+            command=lambda: self._pick_color('footer_logo_color'),
+            width=60,
+            fg_color="#e74c3c"
+        )
+        logo_color_picker.grid(row=2, column=2, padx=5, pady=5)
+        self.create_tooltip(logo_color_picker, "Pick color for the footer logo")
+
+        # Display current footer info
+        footer_info = ctk.CTkFrame(footer_grid)
+        footer_info.grid(row=3, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
+
+        info_text = f"Author: {self.presentation_info.get('author', 'N/A')}\n"
+        info_text += f"Institute: {self.presentation_info.get('short_institute', self.presentation_info.get('institution', 'N/A'))}\n"
+        info_text += f"Title: {self.presentation_info.get('title', 'N/A')[:50]}..."
+
+        info_label = ctk.CTkLabel(
+            footer_info,
+            text=info_text,
+            font=("Arial", 10),
+            justify="left",
+            text_color="#4ECDC4"
+        )
+        info_label.pack(anchor="w", padx=5, pady=2)
+
+        # Update footer button
+        update_footer_btn = ctk.CTkButton(
+            footer_grid,
+            text="Update from Presentation Settings",
+            command=self.update_footer_from_settings,
+            width=200,
+            fg_color="#28a745",
+            hover_color="#218838"
+        )
+        update_footer_btn.grid(row=4, column=0, columnspan=3, padx=5, pady=5)
+
+        # 4. ASPECT RATIO GROUP
         aspect_group = self.create_group_frame(settings_panel, "📏 Aspect Ratio")
         aspect_frame = ctk.CTkFrame(aspect_group)
         aspect_frame.pack(fill="x", padx=5, pady=5)
@@ -2136,7 +5957,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.scaling_info.grid(row=len(aspect_options), column=0, padx=10, pady=5, sticky="w")
         self.update_scaling_info()
 
-        # 3. CONTENT SCALING GROUP
+        # 5. CONTENT SCALING GROUP
         scaling_group = self.create_group_frame(settings_panel, "📐 Content Scaling")
         scaling_grid = ctk.CTkFrame(scaling_group)
         scaling_grid.pack(fill="x", padx=5, pady=5)
@@ -2189,7 +6010,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         margin_menu.grid(row=4, column=1, padx=5, pady=5)
         self.create_tooltip(margin_menu, "Margin around content")
 
-        # 4. HEADER & FOOTER GROUP
+        # 6. HEADER & FOOTER GROUP
         header_group = self.create_group_frame(settings_panel, "📐 Header & Footer")
         header_grid = ctk.CTkFrame(header_group)
         header_grid.pack(fill="x", padx=5, pady=5)
@@ -2206,42 +6027,34 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         nav_check.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="w")
         self.create_tooltip(nav_check, "Show navigation symbols at the bottom of slides")
 
-        # 5. BACKGROUND GROUP
+        # 7. BACKGROUND GROUP
         bg_group = self.create_group_frame(settings_panel, "🖼️ Background")
         bg_grid = ctk.CTkFrame(bg_group)
         bg_grid.pack(fill="x", padx=5, pady=5)
 
-        # Background color - FIXED: Use a simple StringVar without trace issues
-        ctk.CTkLabel(bg_grid, text="Background Color:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
-        self.bg_color_var = ctk.StringVar(value=self.current_values['bg_color'])
-        bg_entry = ctk.CTkEntry(bg_grid, textvariable=self.bg_color_var, width=150)
-        bg_entry.grid(row=0, column=1, padx=5, pady=5)
-        bg_entry.bind('<KeyRelease>', self._on_bg_color_changed)
-        self.create_tooltip(bg_entry, "Background color (e.g., white, #F5F5F5)")
-
         # Background image
-        ctk.CTkLabel(bg_grid, text="Background Image:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        ctk.CTkLabel(bg_grid, text="Background Image:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
         self.bg_image_var = ctk.StringVar(value=self.current_values['bg_image'])
         bg_image_entry = ctk.CTkEntry(bg_grid, textvariable=self.bg_image_var, width=200)
-        bg_image_entry.grid(row=1, column=1, padx=5, pady=5)
+        bg_image_entry.grid(row=0, column=1, padx=5, pady=5)
         bg_image_entry.bind('<KeyRelease>', self.on_setting_changed)
         self.create_tooltip(bg_image_entry, "Path to background image file")
 
         bg_browse_btn = ctk.CTkButton(bg_grid, text="Browse...", command=self.browse_bg_image, width=80)
-        bg_browse_btn.grid(row=1, column=2, padx=5, pady=5)
+        bg_browse_btn.grid(row=0, column=2, padx=5, pady=5)
         self.create_tooltip(bg_browse_btn, "Browse for an image file")
 
         # Background opacity
-        ctk.CTkLabel(bg_grid, text="Opacity:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        ctk.CTkLabel(bg_grid, text="Opacity:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
         self.bg_opacity_var = ctk.DoubleVar(value=self.current_values['bg_opacity'])
         bg_opacity_slider = ctk.CTkSlider(bg_grid, from_=0.0, to=1.0, variable=self.bg_opacity_var, width=150,
                                           command=self.on_setting_changed)
-        bg_opacity_slider.grid(row=2, column=1, padx=5, pady=5)
+        bg_opacity_slider.grid(row=1, column=1, padx=5, pady=5)
         bg_opacity_label = ctk.CTkLabel(bg_grid, textvariable=self.bg_opacity_var, width=40)
-        bg_opacity_label.grid(row=2, column=2, padx=5, pady=5)
+        bg_opacity_label.grid(row=1, column=2, padx=5, pady=5)
         self.create_tooltip(bg_opacity_slider, "Opacity of the background image")
 
-        # 6. NOTES GROUP
+        # 8. NOTES GROUP
         notes_group = self.create_group_frame(settings_panel, "📝 Notes")
         notes_grid = ctk.CTkFrame(notes_group)
         notes_grid.pack(fill="x", padx=5, pady=5)
@@ -2254,7 +6067,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         notes_menu.grid(row=0, column=1, padx=5, pady=5)
         self.create_tooltip(notes_menu, "How to display speaker notes in the output")
 
-        # 7. SPACING GROUP
+        # 9. SPACING GROUP
         spacing_group = self.create_group_frame(settings_panel, "📏 Spacing")
         spacing_grid = ctk.CTkFrame(spacing_group)
         spacing_grid.pack(fill="x", padx=5, pady=5)
@@ -2266,11 +6079,11 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         tight_check.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="w")
         self.create_tooltip(tight_check, "Reduce spacing to fit more content on slides")
 
-        # 8. STATUS
+        # 10. STATUS
         self.status_label = ctk.CTkLabel(main_container, text="", font=("Arial", 10), text_color="#4ECDC4")
         self.status_label.pack(fill="x", pady=5)
 
-        # 9. BUTTONS
+        # 11. BUTTONS
         button_frame = ctk.CTkFrame(main_container)
         button_frame.pack(fill="x", padx=5, pady=10)
 
@@ -2290,49 +6103,160 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                       fg_color="#ffc107", hover_color="#e0a800", text_color="black").pack(side="left", padx=5)
         self.create_tooltip(button_frame.winfo_children()[-1], "Reset all settings to default values")
 
-        ctk.CTkButton(button_frame, text="❌ Cancel", command=self.destroy, width=120,
+        ctk.CTkButton(button_frame, text="❌ Cancel", command=self._cleanup_and_close, width=120,
                       fg_color="#dc3545", hover_color="#c82333").pack(side="right", padx=5)
         self.create_tooltip(button_frame.winfo_children()[-1], "Cancel changes and close")
 
+    def _pick_color(self, target_var):
+        """Open color picker and set the target variable"""
+        result = ColorPickerDialog.pick_color(self)
+        if result:
+            if target_var == 'bg_color':
+                self.bg_color_var.set(result['name'])
+                self._on_bg_color_changed(None)
+            elif target_var == 'fg_color':
+                self.fg_color_var.set(result['name'])
+            elif target_var == 'title_color':
+                self.title_color_var.set(result['name'])
+            elif target_var == 'title_bg_color':
+                self.title_bg_color_var.set(result['name'])
+            elif target_var == 'footer_logo_color':
+                self.footer_logo_color_var.set(result['name'])
+            self.on_setting_changed()
+
+    def browse_footer_logo(self):
+        """Browse for footer logo image"""
+        filename = DialogManager.askopenfilename(
+            parent=self,
+            title="Select Footer Logo Image",
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.pdf"), ("All files", "*.*")]
+        )
+        if filename:
+            self.footer_logo_var.set(filename)
+            self.on_setting_changed()
+
+    def update_footer_from_settings(self):
+        """Update the footer definitions from presentation settings"""
+        try:
+            author = self.presentation_info.get('author', 'Author')
+            short_institute = self.presentation_info.get('short_institute',
+                self.presentation_info.get('institution', 'Institute'))
+            title = self.presentation_info.get('title', 'Presentation')
+
+            footer_defs = [
+                f"\\def\\insertshortinstitute{{{short_institute}}}",
+                f"\\def\\insertshortauthor{{{author.split(',')[0] if ',' in author else author[:30]}}}",
+                f"\\def\\insertshorttitle{{{title[:40] if len(title) > 40 else title}}}",
+                "\\def\\insertshortdate{\\today}"
+            ]
+
+            if self.current_preamble:
+                import re
+                for cmd in ['insertshortinstitute', 'insertshortauthor', 'insertshorttitle', 'insertshortdate']:
+                    pattern = rf'\\def\\{cmd}{{[^}}]*}}'
+                    self.current_preamble = re.sub(pattern, '', self.current_preamble)
+
+                doc_pos = self.current_preamble.find('\\begin{document}')
+                if doc_pos != -1:
+                    insert_text = '\n'.join(footer_defs) + '\n'
+                    self.current_preamble = (self.current_preamble[:doc_pos] +
+                                            insert_text +
+                                            self.current_preamble[doc_pos:])
+                else:
+                    self.current_preamble += '\n' + '\n'.join(footer_defs)
+
+                self.show_footer_var.set(True)
+                self.status_message("✅ Footer updated from Presentation Settings")
+                self.update_preview()
+            else:
+                self.status_message("⚠️ No preamble to update", "red")
+
+        except Exception as e:
+            self.status_message(f"❌ Error updating footer: {str(e)}", "red")
+
+    def get_footer_text(self) -> str:
+        """Generate footer text for preview based on settings"""
+        if not self.show_footer_var.get():
+            return ""
+
+        author = self.presentation_info.get('author', 'Author')
+        short_inst = self.presentation_info.get('short_institute',
+            self.presentation_info.get('institution', 'Institute'))
+        title = self.presentation_info.get('title', 'Presentation')
+
+        # Clean the text for display (remove LaTeX commands for preview)
+        clean_author = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', author)
+        clean_inst = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', short_inst)
+        clean_title = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', title)
+
+        # Remove any remaining braces
+        clean_author = clean_author.replace('{', '').replace('}', '')
+        clean_inst = clean_inst.replace('{', '').replace('}', '')
+        clean_title = clean_title.replace('{', '').replace('}', '')
+
+        footer_text = f"{clean_author[:20]} ({clean_inst[:15]}) | {clean_title[:25]}"
+
+        # Add logo if present
+        logo_path = self.footer_logo_var.get().strip()
+        if logo_path:
+            logo_color = self.footer_logo_color_var.get().strip()
+            if logo_color:
+                footer_text = f"[Logo] {footer_text}"
+            else:
+                footer_text = f"📷 {footer_text}"
+
+        return footer_text
+
+    # ========== AUTO-INVERSION METHODS ==========
+
+    def _is_dark_color(self, color):
+        """Determine if a color is dark (needs white text)"""
+        if not color:
+            return True
+
+        dark_colors = [
+            'black', 'dark', 'night', 'midnight', 'navy', 'darkblue',
+            'darkgreen', 'darkred', 'darkgray', 'darkgrey', 'charcoal',
+            'myblue', 'myred', 'mygreen', 'myteal', 'mypurple',
+            'primary', 'secondary', 'accent', 'forest', 'teal',
+            'greenbiodiv', 'blueai', 'redwarning', 'brown',
+            'maroon', 'olive', 'navy', 'slate', 'steel'
+        ]
+
+        color_lower = color.lower()
+        for dark in dark_colors:
+            if dark in color_lower:
+                return True
+
+        if color.startswith('#'):
+            hex_color = color.lstrip('#')
+            try:
+                if len(hex_color) == 3:
+                    r = int(hex_color[0]*2, 16)
+                    g = int(hex_color[1]*2, 16)
+                    b = int(hex_color[2]*2, 16)
+                elif len(hex_color) == 6:
+                    r = int(hex_color[0:2], 16)
+                    g = int(hex_color[2:4], 16)
+                    b = int(hex_color[4:6], 16)
+                else:
+                    return True
+                luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                return luminance < 128
+            except:
+                return True
+
+        return True
+
     def _on_bg_color_changed(self, event):
-        """Handle background color change separately to avoid truncation"""
+        """Handle background color change with auto-inversion"""
         value = self.bg_color_var.get().strip()
-        # Don't modify the value, just update preview
         self.on_setting_changed()
-
-    def create_group_frame(self, parent, title):
-        """Create a styled group frame with title"""
-        group = ctk.CTkFrame(parent)
-        group.pack(fill="x", padx=5, pady=8)
-
-        header = ctk.CTkFrame(group, fg_color="#2F3542", height=30)
-        header.pack(fill="x", padx=2, pady=(2, 5))
-        header.pack_propagate(False)
-
-        title_label = ctk.CTkLabel(header, text=title, font=("Arial", 13, "bold"), text_color="#4ECDC4")
-        title_label.pack(side="left", padx=10, pady=5)
-
-        return group
-
-    def create_visual_dashboard(self, parent):
-        """Create the visual dashboard"""
-        ctk.CTkLabel(parent, text="📊 Live Preview", font=("Arial", 16, "bold")).pack(pady=(0, 10))
-        ctk.CTkLabel(parent, text="Settings update in real-time", font=("Arial", 10),
-                    text_color="#888888").pack(pady=(0, 10))
-
-        dashboard_frame = ctk.CTkFrame(parent, fg_color="#1a1a2e", corner_radius=10)
-        dashboard_frame.pack(fill="both", expand=True, padx=10, pady=5)
-
-        self.dashboard_canvas = ctk.CTkCanvas(dashboard_frame, bg="#1a1a2e", highlightthickness=0)
-        self.dashboard_canvas.pack(fill="both", expand=True, padx=5, pady=5)
-        self.dashboard_canvas.bind('<Configure>', self.on_dashboard_resize)
-        self.after(100, self.draw_dashboard)
-
-    def on_dashboard_resize(self, event):
-        self.draw_dashboard()
+        if hasattr(self, 'dashboard_canvas'):
+            self.draw_dashboard()
 
     def draw_dashboard(self):
-        """Draw the slide dashboard - FIXED color handling"""
+        """Draw the slide dashboard with auto-inversion support and all color settings"""
         canvas = self.dashboard_canvas
         canvas.delete("all")
 
@@ -2341,7 +6265,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         if width < 10 or height < 10:
             return
 
-        # Get aspect ratio
         aspect = self.aspect_var.get() if hasattr(self, 'aspect_var') else "169"
         if aspect == "43":
             slide_ratio = 4/3
@@ -2359,57 +6282,70 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         x_offset = (width - slide_width) / 2
         y_offset = (height - slide_height) / 2
 
-        # Get scaling factors
         factors = self.SCALING_FACTORS.get(aspect, self.SCALING_FACTORS['169'])
         margin = factors.get('content_margin', 0.04) * slide_width
         header_height = factors.get('header_height', 0.12) * slide_height
         footer_height = factors.get('footer_height', 0.08) * slide_height
 
-        # ============================================================
-        # DRAW SLIDE BACKGROUND - FIXED COLOR HANDLING
-        # ============================================================
+        # Get colors from settings
         bg_color = self.bg_color_var.get() if hasattr(self, 'bg_color_var') else "white"
-
-        # Ensure color is valid
         if not bg_color or bg_color.strip() == "":
             bg_color = "white"
 
-        # Fix: If the color is being truncated, use the full value
-        # This can happen if the StringVar is being modified
+        fg_color = self.fg_color_var.get() if hasattr(self, 'fg_color_var') else "black"
+        if not fg_color or fg_color.strip() == "":
+            fg_color = "black"
+
+        title_color = self.title_color_var.get() if hasattr(self, 'title_color_var') else "white"
+        if not title_color or title_color.strip() == "":
+            title_color = "white"
+
+        title_bg_color = self.title_bg_color_var.get() if hasattr(self, 'title_bg_color_var') else "#2980b9"
+        if not title_bg_color or title_bg_color.strip() == "":
+            title_bg_color = "#2980b9"
+
+        is_dark = self._is_dark_color(bg_color)
+        text_color = "#FFFFFF" if is_dark else "#000000"
+        content_color = "#D4D4D4" if is_dark else "#333333"
+
+        # Draw slide background
         try:
-            # Test if it's a valid Tkinter color
             canvas.create_rectangle(x_offset, y_offset, x_offset + slide_width, y_offset + slide_height,
                                    fill=bg_color, outline="#444444", width=2, tags="slide_bg")
         except Exception as e:
-            # If invalid, use white
             bg_color = "white"
             canvas.create_rectangle(x_offset, y_offset, x_offset + slide_width, y_offset + slide_height,
                                    fill=bg_color, outline="#444444", width=2, tags="slide_bg")
 
-        # Draw header
+        # Header (Title area)
         header_y = y_offset + 5
         header_x = x_offset + margin
-        theme = self.theme_var.get() if hasattr(self, 'theme_var') else "Madrid"
-        theme_colors = {"Madrid": "#2980b9", "Berkeley": "#2c3e50", "Copenhagen": "#3498db",
-                        "Frankfurt": "#2c3e50", "Ilmenau": "#2980b9", "Malmoe": "#2c3e50",
-                        "Warsaw": "#c0392b", "CambridgeUS": "#2980b9", "PaloAlto": "#2c3e50",
-                        "Boadilla": "#27ae60", "Pittsburgh": "#2c3e50", "Rochester": "#c0392b"}
-        header_color = theme_colors.get(theme, "#2980b9")
 
-        canvas.create_rectangle(header_x, header_y, x_offset + slide_width - margin, header_y + header_height,
-                               fill=header_color, outline="", tags="header_bg")
+        # Use title background color
+        try:
+            canvas.create_rectangle(header_x, header_y, x_offset + slide_width - margin, header_y + header_height,
+                                   fill=title_bg_color, outline="", tags="header_bg")
+        except:
+            canvas.create_rectangle(header_x, header_y, x_offset + slide_width - margin, header_y + header_height,
+                                   fill="#2980b9", outline="", tags="header_bg")
 
-        # Header text with scaling
+        # Title text - use title color
         font_scale = factors.get('font_scale', 1.0)
         header_font_size = max(10, int(font_scale * 14))
-        canvas.create_text(header_x + 20, header_y + header_height/2, text="Slide Title",
-                          fill="white", font=("Arial", header_font_size, "bold"), anchor="w", tags="header_text")
 
-        # Header label
+        # Determine title text color (use title_color if set, otherwise auto-detect)
+        if title_color and title_color != "":
+            title_text_color = title_color
+        else:
+            title_text_color = self._is_dark_color(title_bg_color) and "white" or "black"
+
+        canvas.create_text(header_x + 20, header_y + header_height/2, text="Slide Title",
+                          fill=title_text_color, font=("Arial", header_font_size, "bold"), anchor="w", tags="header_text")
+
         self.create_region_label(canvas, "HEADER", header_x + 5, header_y - 20,
                                  x_offset + slide_width - margin - 5, header_y + header_height, "#4ECDC4")
 
-        # Draw content
+        # Content area
         content_y = header_y + header_height + 10
         content_height = slide_height - header_height - footer_height - 30
         content_x = x_offset + margin
@@ -2418,35 +6354,82 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         line_spacing = float(self.line_spacing_var.get()) if hasattr(self, 'line_spacing_var') else 1.2
         line_height = bullet_font_size * line_spacing
 
+        # Use foreground color for content
+        if fg_color and fg_color != "":
+            content_text_color = fg_color
+        else:
+            content_text_color = text_color
+
         bullet_lines = ["• Main point or key concept", "• Supporting information", "• Additional details", "• Conclusion"]
         for i, line in enumerate(bullet_lines):
             y_pos = content_y + 15 + i * line_height
             if y_pos < content_y + content_height - 10:
-                canvas.create_text(content_x + 10, y_pos, text=line, fill="#d4d4d4",
+                canvas.create_text(content_x + 10, y_pos, text=line, fill=content_text_color,
                                   font=("Arial", bullet_font_size), anchor="w", tags="content_text")
 
-        # Draw table preview
+        # Table placeholder
         table_width = factors.get('table_width', 0.92) * (slide_width - 2*margin)
         table_y = content_y + content_height - 40
         if table_width > 100:
             canvas.create_rectangle(content_x, table_y, content_x + table_width, table_y + 25,
-                                   outline="#4ECDC4", fill="#1a1a2e", width=1, dash=(3, 3), tags="table_preview")
+                                   outline="#4ECDC4" if is_dark else "#2C3E50",
+                                   fill=bg_color, width=1, dash=(3, 3), tags="table_preview")
             canvas.create_text(content_x + table_width/2, table_y + 12,
                               text=f"Table ({factors.get('table_width', 0.92)*100:.0f}% width)",
-                              fill="#4ECDC4", font=("Arial", max(7, bullet_font_size-2)), tags="table_label")
+                              fill=content_text_color,
+                              font=("Arial", max(7, bullet_font_size-2)), tags="table_label")
 
-        # Content label
         self.create_region_label(canvas, "CONTENT", content_x - 5, content_y - 20,
                                  x_offset + slide_width - margin - 5, content_y + content_height, "#FFB86C")
 
-        # Draw footer
+        # Footer
         footer_y = content_y + content_height + 10
         footer_x = x_offset + margin
+        footer_bg = "#2F3542" if is_dark else "#E8E8E8"
+
+        show_footer = self.show_footer_var.get() if hasattr(self, 'show_footer_var') else True
+        if show_footer:
+            footer_bg = "#1a3a4a" if is_dark else "#D0D8E0"
+
         canvas.create_rectangle(footer_x, footer_y, x_offset + slide_width - margin, footer_y + footer_height,
-                               fill="#2F3542", outline="", tags="footer_bg")
+                               fill=footer_bg, outline="", tags="footer_bg")
         footer_font_size = max(7, int(font_scale * 9))
-        canvas.create_text(footer_x + 20, footer_y + footer_height/2, text="© airis4D Labs",
-                          fill="#888888", font=("Arial", footer_font_size), anchor="w", tags="footer_text")
+
+        if show_footer:
+            footer_text = self.get_footer_text()
+
+            # Check if footer has logo color markup
+            logo_path = self.footer_logo_var.get().strip()
+            logo_color = self.footer_logo_color_var.get().strip()
+
+            if footer_text:
+                # Clean up any markup for display
+                display_footer = footer_text
+                if logo_path:
+                    if logo_color:
+                        display_footer = f"[Logo] {display_footer.split(' ', 1)[1] if ' ' in display_footer else display_footer}"
+                    else:
+                        display_footer = f"📷 {display_footer.split(' ', 1)[1] if ' ' in display_footer else display_footer}"
+
+                footer_text_color = text_color
+                canvas.create_text(footer_x + 20, footer_y + footer_height/2, text=display_footer,
+                                  fill=footer_text_color, font=("Arial", footer_font_size, "bold"), anchor="w", tags="footer_text")
+
+                # Show logo indicator
+                if logo_path:
+                    canvas.create_text(footer_x + slide_width - margin - 100, footer_y + footer_height/2,
+                                      text="🖼️ Logo", fill="#4ECDC4",
+                                      font=("Arial", footer_font_size-2), anchor="e", tags="logo_indicator")
+
+                canvas.create_text(footer_x + slide_width - margin - 10, footer_y + footer_height/2,
+                                  text="📌 From Settings", fill="#4ECDC4",
+                                  font=("Arial", footer_font_size-2), anchor="e", tags="footer_indicator")
+            else:
+                canvas.create_text(footer_x + 20, footer_y + footer_height/2, text="© airis4D Labs",
+                                  fill="#888888", font=("Arial", footer_font_size), anchor="w", tags="footer_text")
+        else:
+            canvas.create_text(footer_x + 20, footer_y + footer_height/2, text="© airis4D Labs",
+                              fill="#888888", font=("Arial", footer_font_size), anchor="w", tags="footer_text")
 
         # Progress bar
         if hasattr(self, 'progress_var') and self.progress_var.get():
@@ -2455,13 +6438,13 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             pb_x = x_offset + margin + 20
             pb_y = footer_y + footer_height - pb_height - 5
             canvas.create_rectangle(pb_x, pb_y, pb_x + pb_width, pb_y + pb_height, fill="#444444", tags="progress_bg")
-            canvas.create_rectangle(pb_x, pb_y, pb_x + pb_width * 0.6, pb_y + pb_height, fill="#4ECDC4", tags="progress_fill")
+            canvas.create_rectangle(pb_x, pb_y, pb_x + pb_width * 0.6, pb_y + pb_height,
+                                   fill="#4ECDC4" if is_dark else "#2C3E50", tags="progress_fill")
 
-        # Footer label
         self.create_region_label(canvas, "FOOTER", footer_x + 5, footer_y - 20,
-                                 x_offset + slide_width - margin - 5, footer_y + footer_height, "#FF6B6B")
+                                 x_offset + slide_width - margin - 5, footer_y + footer_height,
+                                 "#4ECDC4" if show_footer else "#FF6B6B")
 
-        # Aspect ratio label
         aspect_labels = {"169": "16:9", "43": "4:3", "141": "14:1"}
         canvas.create_text(x_offset + slide_width - 10, y_offset + slide_height + 15,
                           text=f"Aspect: {aspect_labels.get(aspect, '16:9')}", fill="#666666",
@@ -2471,26 +6454,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         """Create a labeled region on the dashboard"""
         canvas.create_rectangle(x1, y1, x2, y2, outline=color, dash=(4, 4), width=1, tags="region_border")
         canvas.create_text(x1 + 5, y1 + 2, text=text, fill=color, font=("Arial", 8, "bold"), anchor="nw", tags="region_label")
-
-    def create_tooltip(self, widget, text):
-        """Create tooltip for widget"""
-        def show_tooltip(event):
-            tooltip = tk.Toplevel()
-            tooltip.wm_overrideredirect(True)
-            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
-            tooltip.attributes('-topmost', True)
-            label = tk.Label(tooltip, text=text, justify='left',
-                           background="#ffffe0", relief='solid', borderwidth=1,
-                           font=("Arial", 10))
-            label.pack()
-            widget.tooltip = tooltip
-
-        def hide_tooltip(event):
-            if hasattr(widget, 'tooltip'):
-                widget.tooltip.destroy()
-
-        widget.bind('<Enter>', show_tooltip)
-        widget.bind('<Leave>', hide_tooltip)
 
     def update_scaling_info(self):
         """Update the scaling info label"""
@@ -2505,7 +6468,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.update_scaling_info()
         self.update_preview()
         self.update_info_label()
-        # Clear theme name when settings change
         self._current_theme_name = None
         self.theme_name_label.configure(text="")
 
@@ -2541,6 +6503,12 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             changes.append(f"Content Margin ({self.current_values.get('content_margin', 0.04):.0%} → {self.margin_var.get()})")
         if hasattr(self, 'bg_color_var') and self.bg_color_var.get() != self.current_values['bg_color']:
             changes.append(f"Background Color ({self.current_values['bg_color']} → {self.bg_color_var.get()})")
+        if hasattr(self, 'fg_color_var') and self.fg_color_var.get() != self.current_values.get('fg_color', 'black'):
+            changes.append(f"Text Color ({self.current_values.get('fg_color', 'black')} → {self.fg_color_var.get()})")
+        if hasattr(self, 'title_color_var') and self.title_color_var.get() != self.current_values.get('title_color', 'white'):
+            changes.append(f"Title Color ({self.current_values.get('title_color', 'white')} → {self.title_color_var.get()})")
+        if hasattr(self, 'title_bg_color_var') and self.title_bg_color_var.get() != self.current_values.get('title_bg_color', '#2980b9'):
+            changes.append(f"Title Background ({self.current_values.get('title_bg_color', '#2980b9')} → {self.title_bg_color_var.get()})")
         if hasattr(self, 'bg_image_var') and self.bg_image_var.get() != self.current_values['bg_image']:
             changes.append(f"Background Image")
         if hasattr(self, 'bg_opacity_var') and self.bg_opacity_var.get() != self.current_values['bg_opacity']:
@@ -2553,6 +6521,12 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             changes.append(f"Notes Mode ({self.current_values['notes_mode']} → {self.notes_mode_var.get()})")
         if hasattr(self, 'tight_spacing_var') and self.tight_spacing_var.get() != self.current_values['tight_spacing']:
             changes.append(f"Tight Spacing")
+        if hasattr(self, 'show_footer_var') and self.show_footer_var.get() != self.current_values.get('show_footer', True):
+            changes.append(f"Footer from Settings")
+        if hasattr(self, 'footer_logo_var') and self.footer_logo_var.get() != self.current_values.get('footer_logo', ''):
+            changes.append(f"Footer Logo")
+        if hasattr(self, 'footer_logo_color_var') and self.footer_logo_color_var.get() != self.current_values.get('footer_logo_color', ''):
+            changes.append(f"Logo Color")
 
         return changes
 
@@ -2562,8 +6536,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.update_info_label()
 
     def browse_bg_image(self):
-        """Browse for background image file"""
-        filename = filedialog.askopenfilename(
+        """Browse for background image file - with proper file dialog on top"""
+        filename = DialogManager.askopenfilename(
+            parent=self,
             title="Select Background Image",
             filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.pdf"), ("All files", "*.*")]
         )
@@ -2584,20 +6559,32 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             self.image_width_var.set("70%")
             self.margin_var.set("4%")
             self.bg_color_var.set("white")
+            self.fg_color_var.set("black")
+            self.title_color_var.set("white")
+            self.title_bg_color_var.set("#2980b9")
             self.bg_image_var.set("")
             self.bg_opacity_var.set(0.3)
             self.tight_spacing_var.set(True)
             self.progress_var.set(True)
             self.nav_var.set(True)
             self.notes_mode_var.set("Slides + Notes")
+            self.show_footer_var.set(True)
+            self.footer_logo_var.set("")
+            self.footer_logo_color_var.set("")
             self._current_theme_name = None
             self.theme_name_label.configure(text="")
             self.update_preview()
             self.status_message("Settings reset to default values")
 
-    def status_message(self, message):
+    def status_message(self, message, color="green"):
         """Show a status message"""
-        self.status_label.configure(text=message, text_color="#4ECDC4")
+        color_map = {
+            "green": "#4ECDC4",
+            "red": "#FF6B6B",
+            "yellow": "#FFB86C",
+            "cyan": "#45B7D1"
+        }
+        self.status_label.configure(text=message, text_color=color_map.get(color, "#4ECDC4"))
         self.after(3000, lambda: self.status_label.configure(text=""))
 
     def load_current_settings(self):
@@ -2616,6 +6603,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             'fonttheme': self.fonttheme_var.get() if hasattr(self, 'fonttheme_var') else 'default',
             'aspect': self.aspect_var.get() if hasattr(self, 'aspect_var') else '169',
             'bg_color': self.bg_color_var.get() if hasattr(self, 'bg_color_var') else 'white',
+            'fg_color': self.fg_color_var.get() if hasattr(self, 'fg_color_var') else 'black',
+            'title_color': self.title_color_var.get() if hasattr(self, 'title_color_var') else 'white',
+            'title_bg_color': self.title_bg_color_var.get() if hasattr(self, 'title_bg_color_var') else '#2980b9',
             'bg_image': self.bg_image_var.get() if hasattr(self, 'bg_image_var') else '',
             'bg_opacity': self.bg_opacity_var.get() if hasattr(self, 'bg_opacity_var') else 0.3,
             'progress': self.progress_var.get() if hasattr(self, 'progress_var') else True,
@@ -2627,6 +6617,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             'table_width': float(self.table_width_var.get().replace('%', '')) / 100 if hasattr(self, 'table_width_var') else 0.92,
             'image_width': float(self.image_width_var.get().replace('%', '')) / 100 if hasattr(self, 'image_width_var') else 0.7,
             'content_margin': float(self.margin_var.get().replace('%', '')) / 100 if hasattr(self, 'margin_var') else 0.04,
+            'show_footer': self.show_footer_var.get() if hasattr(self, 'show_footer_var') else True,
+            'footer_logo': self.footer_logo_var.get() if hasattr(self, 'footer_logo_var') else '',
+            'footer_logo_color': self.footer_logo_color_var.get() if hasattr(self, 'footer_logo_color_var') else '',
         }
 
     def refresh_theme_list(self):
@@ -2642,7 +6635,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         if not preset:
             return
 
-        # Apply preset settings
         if 'theme' in preset:
             self.theme_var.set(preset['theme'])
         if 'colortheme' in preset:
@@ -2671,6 +6663,8 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             self.image_width_var.set(f"{int(preset['image_width'] * 100)}%")
         if 'content_margin' in preset:
             self.margin_var.set(f"{int(preset['content_margin'] * 100)}%")
+        if 'show_footer' in preset:
+            self.show_footer_var.set(preset['show_footer'])
 
         self._current_theme_name = preset_name
         self.theme_name_label.configure(text=f"Preset: {preset_name}")
@@ -2678,7 +6672,8 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.status_message(f"Applied preset theme: {preset_name}")
 
     def save_custom_theme(self):
-        """Save current settings as a custom theme"""
+        """Save current settings as a custom theme - with proper file dialog on top"""
+        from tkinter import simpledialog
         theme_name = simpledialog.askstring(
             "Save Theme",
             "Enter a name for this theme:",
@@ -2690,11 +6685,8 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             return
 
         settings = self.get_current_settings()
-
-        # Get the current preamble
         preamble = self.current_preamble
 
-        # Save the theme
         try:
             theme_path = ThemeManager.save_theme(theme_name, settings, preamble)
             self._current_theme_name = theme_name
@@ -2715,63 +6707,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 "error"
             )
 
-    def load_custom_theme(self):
-        """Load a saved custom theme"""
-        themes = ThemeManager.list_themes()
-
-        if not themes:
-            WindowManager.show_message(
-                self,
-                "No Themes",
-                "No saved themes found.\n\n"
-                "Save a theme first using 'Save Theme'.",
-                "info"
-            )
-            return
-
-        # Create selection dialog
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Load Theme")
-        dialog.geometry("500x400")
-        dialog.transient(self)
-        dialog.grab_set()
-        WindowManager.ensure_on_top(dialog, self)
-        WindowManager.center_on_parent(dialog, self)
-
-        # List themes
-        list_frame = ctk.CTkScrollableFrame(dialog)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        for theme in themes:
-            theme_frame = ctk.CTkFrame(list_frame)
-            theme_frame.pack(fill="x", padx=5, pady=3)
-
-            name_label = ctk.CTkLabel(theme_frame, text=theme['name'], font=("Arial", 13, "bold"))
-            name_label.pack(side="left", padx=10)
-
-            # Show when it was created
-            created = theme.get('created', 'Unknown')
-            if created != 'Unknown':
-                try:
-                    dt = datetime.fromisoformat(created)
-                    created_str = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    created_str = created
-            else:
-                created_str = "Unknown"
-
-            date_label = ctk.CTkLabel(theme_frame, text=f"Created: {created_str}", font=("Arial", 10), text_color="#888888")
-            date_label.pack(side="right", padx=10)
-
-            load_btn = ctk.CTkButton(theme_frame, text="Load", width=60,
-                                     command=lambda t=theme['name']: self._load_theme_and_close(dialog, t))
-            load_btn.pack(side="right", padx=5)
-
-        # Cancel button
-        cancel_btn = ctk.CTkButton(dialog, text="Cancel", command=dialog.destroy, width=100,
-                                   fg_color="#dc3545", hover_color="#c82333")
-        cancel_btn.pack(pady=10)
-
     def _load_theme_and_close(self, dialog, theme_name):
         """Load a theme and close the dialog"""
         theme_data = ThemeManager.load_theme(theme_name)
@@ -2782,7 +6717,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
         settings = theme_data.get('settings', {})
 
-        # Apply settings
         if 'theme' in settings:
             self.theme_var.set(settings['theme'])
         if 'colortheme' in settings:
@@ -2793,6 +6727,12 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             self.aspect_var.set(settings['aspect'])
         if 'bg_color' in settings:
             self.bg_color_var.set(settings['bg_color'])
+        if 'fg_color' in settings:
+            self.fg_color_var.set(settings.get('fg_color', 'black'))
+        if 'title_color' in settings:
+            self.title_color_var.set(settings.get('title_color', 'white'))
+        if 'title_bg_color' in settings:
+            self.title_bg_color_var.set(settings.get('title_bg_color', '#2980b9'))
         if 'bg_image' in settings:
             self.bg_image_var.set(settings.get('bg_image', ''))
         if 'bg_opacity' in settings:
@@ -2813,8 +6753,13 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             self.image_width_var.set(f"{int(settings['image_width'] * 100)}%")
         if 'content_margin' in settings:
             self.margin_var.set(f"{int(settings['content_margin'] * 100)}%")
+        if 'show_footer' in settings:
+            self.show_footer_var.set(settings['show_footer'])
+        if 'footer_logo' in settings:
+            self.footer_logo_var.set(settings.get('footer_logo', ''))
+        if 'footer_logo_color' in settings:
+            self.footer_logo_color_var.set(settings.get('footer_logo_color', ''))
 
-        # Store the preamble if available
         if 'preamble' in theme_data and theme_data['preamble']:
             self.current_preamble = theme_data['preamble']
 
@@ -2837,7 +6782,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             )
             return
 
-        # Create selection dialog
         dialog = ctk.CTkToplevel(self)
         dialog.title("Delete Theme")
         dialog.geometry("500x400")
@@ -2846,7 +6790,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         WindowManager.ensure_on_top(dialog, self)
         WindowManager.center_on_parent(dialog, self)
 
-        # List themes
         list_frame = ctk.CTkScrollableFrame(dialog)
         list_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -2862,7 +6805,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                                        command=lambda t=theme['name']: self._delete_theme_and_close(dialog, t))
             delete_btn.pack(side="right", padx=5)
 
-        # Cancel button
         cancel_btn = ctk.CTkButton(dialog, text="Cancel", command=dialog.destroy, width=100,
                                    fg_color="#6c757d", hover_color="#5a6268")
         cancel_btn.pack(pady=10)
@@ -2887,18 +6829,15 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 WindowManager.show_message(self, "Error", f"Could not delete theme '{theme_name}'.", "error")
 
     # ============================================================================
-    # SAFE APPLY SETTINGS - FIXED VERSION
+    # SAFE APPLY SETTINGS
     # ============================================================================
 
     def _apply_settings_safe(self):
-        """Apply settings with proper error handling and regex escaping"""
+        """Apply settings with proper error handling"""
         try:
-            # Ensure bg_color is not truncated
             if hasattr(self, 'bg_color_var'):
                 current_bg = self.bg_color_var.get()
-                # If it's truncated (like "bla" instead of "black"), fix it
                 if current_bg in ['bla', 'bl', 'b', 'wh', 'whi', 'whit']:
-                    # Restore from current_values if possible
                     self.bg_color_var.set(self.current_values.get('bg_color', 'white'))
             self.apply_settings()
         except Exception as e:
@@ -2913,7 +6852,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             )
 
     def apply_settings(self):
-        """Apply only the settings that the user changed - ALL REGEX FIXED"""
+        """Apply settings - generate preamble from current state and store it."""
         if self._is_applying:
             return
 
@@ -2934,25 +6873,15 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self._is_applying = True
 
         try:
-            # Get the current preamble
             preamble = self.current_preamble
 
-            # Show progress
-            progress_dialog = WindowManager.create_progress_dialog(
-                self,
-                "Applying Settings",
-                "Updating theme settings..."
-            )
+            if self._current_theme_name:
+                theme_data = ThemeManager.load_theme(self._current_theme_name)
+                if theme_data and 'raw_preamble' in theme_data:
+                    preamble = theme_data['raw_preamble']
 
-            total = len(changes)
-            for i, change in enumerate(changes):
-                progress = (i + 1) / total * 100
-                WindowManager.update_progress_dialog(
-                    progress_dialog,
-                    progress,
-                    f"Applying: {change[:50]}..."
-                )
-
+            # Apply all changes
+            for change in changes:
                 if "Theme" in change and not "Color" in change and not "Font" in change:
                     preamble = self._apply_theme_change(preamble, self.theme_var.get())
                 elif "Color Theme" in change:
@@ -2962,34 +6891,34 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 elif "Aspect Ratio" in change:
                     preamble = self._apply_aspect_change(preamble, self.aspect_var.get())
                 elif "Background Color" in change:
-                    # Get the full color value, not truncated
                     bg_value = self.bg_color_var.get().strip()
-                    # If it's truncated, fix it
                     if bg_value in ['bla', 'bl', 'b', 'wh', 'whi', 'whit', 'wh']:
                         bg_value = self.current_values.get('bg_color', 'white')
                         self.bg_color_var.set(bg_value)
-                    preamble = self._apply_bgcolor_change_safe(preamble, bg_value)
-                elif "Background Image" in change:
-                    preamble = self._apply_bgimage_change(preamble, self.bg_image_var.get())
-                elif "Opacity" in change:
-                    preamble = self._apply_opacity_change(preamble, self.bg_opacity_var.get())
-                elif "Progress Bar" in change:
-                    preamble = self._apply_progress_change(preamble, self.progress_var.get())
-                elif "Navigation" in change:
-                    preamble = self._apply_nav_change(preamble, self.nav_var.get())
-                elif "Notes Mode" in change:
-                    preamble = self._apply_notes_change(preamble, self.notes_mode_var.get())
-                elif "Tight Spacing" in change:
-                    preamble = self._apply_tight_spacing_change(preamble, self.tight_spacing_var.get())
+                    preamble = self._apply_background_color(preamble, bg_value)
+                elif "Text Color" in change:
+                    preamble = self._apply_text_color(preamble, self.fg_color_var.get())
+                elif "Title Color" in change:
+                    preamble = self._apply_title_color(preamble, self.title_color_var.get())
+                elif "Title Background" in change:
+                    preamble = self._apply_title_background(preamble, self.title_bg_color_var.get())
+                elif "Footer from Settings" in change:
+                    preamble = self._apply_footer_change(preamble, self.show_footer_var.get())
+                elif "Footer Logo" in change:
+                    preamble = self._apply_footer_logo(preamble, self.footer_logo_var.get())
+                elif "Logo Color" in change:
+                    preamble = self._apply_footer_logo_color(preamble, self.footer_logo_color_var.get())
 
-            # Close progress dialog
-            WindowManager.close_progress_dialog(progress_dialog)
-
-            # Store the result and close
             self.result = preamble
             self._is_applying = False
+
+            if hasattr(self.master, 'current_file') and self.master.current_file:
+                success = self.master._apply_preamble_to_file(self.master.current_file, preamble)
+                if success:
+                    self.master.write("✓ Theme settings applied to file\n", "green")
+
             WindowManager.show_message(self, "Success", "Theme settings applied successfully!", "info")
-            self.destroy()
+            self._cleanup_and_close()
 
         except Exception as e:
             self._is_applying = False
@@ -2998,76 +6927,135 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             WindowManager.show_message(self, "Error", f"Error applying settings:\n{str(e)}", "error")
 
     # ============================================================================
-    # COMPLETE FIXED APPLY METHODS - Replace all of these in your class
+    # APPLY METHODS FOR NEW COLOR SETTINGS
     # ============================================================================
 
-    def _apply_bgcolor_change_safe(self, preamble, value):
-        """Apply background color change - COMPLETELY FIXED"""
+    def _apply_text_color(self, preamble: str, text_color: str) -> str:
+        """Apply text/foreground color"""
+        import re
+        if not text_color or text_color == "":
+            return preamble
+
+        preamble = re.sub(r'\\setbeamercolor\{normal text\}\{[^}]*\}', '', preamble)
+        preamble = re.sub(r'\\setbeamercolor\{itemize item\}\{[^}]*\}', '', preamble)
+
+        doc_pos = preamble.find('\\begin{document}')
+        if doc_pos == -1:
+            return preamble + f'\n\\setbeamercolor{{normal text}}{{fg={text_color}}}\n'
+
+        if '\\setbeamercolor{normal text}' in preamble:
+            preamble = re.sub(r'\\setbeamercolor\{normal text\}\{[^}]*\}', f'\\setbeamercolor{{normal text}}{{fg={text_color}}}', preamble)
+        else:
+            preamble = preamble[:doc_pos] + f'\n\\setbeamercolor{{normal text}}{{fg={text_color}}}\n' + preamble[doc_pos:]
+
+        return preamble
+
+    def _apply_title_color(self, preamble: str, title_color: str) -> str:
+        """Apply title color"""
+        import re
+        if not title_color or title_color == "":
+            return preamble
+
+        preamble = re.sub(r'\\setbeamercolor\{frametitle\}\{[^}]*\}', '', preamble)
+
+        doc_pos = preamble.find('\\begin{document}')
+        if doc_pos == -1:
+            return preamble + f'\n\\setbeamercolor{{frametitle}}{{fg={title_color}}}\n'
+
+        if '\\setbeamercolor{frametitle}' in preamble:
+            # Try to preserve any bg setting
+            bg_match = re.search(r'\\setbeamercolor\{frametitle\}\{[^}]*bg=([^,}]+)', preamble)
+            if bg_match:
+                bg = bg_match.group(1)
+                preamble = re.sub(r'\\setbeamercolor\{frametitle\}\{[^}]*\}', f'\\setbeamercolor{{frametitle}}{{fg={title_color},bg={bg}}}', preamble)
+            else:
+                preamble = re.sub(r'\\setbeamercolor\{frametitle\}\{[^}]*\}', f'\\setbeamercolor{{frametitle}}{{fg={title_color}}}', preamble)
+        else:
+            preamble = preamble[:doc_pos] + f'\n\\setbeamercolor{{frametitle}}{{fg={title_color}}}\n' + preamble[doc_pos:]
+
+        return preamble
+
+    def _apply_title_background(self, preamble: str, title_bg_color: str) -> str:
+        """Apply title background color"""
+        import re
+        if not title_bg_color or title_bg_color == "":
+            return preamble
+
+        preamble = re.sub(r'\\setbeamercolor\{frametitle\}\{[^}]*\}', '', preamble)
+
+        doc_pos = preamble.find('\\begin{document}')
+        if doc_pos == -1:
+            return preamble + f'\n\\setbeamercolor{{frametitle}}{{bg={title_bg_color}}}\n'
+
+        # Try to preserve any fg setting
+        fg_match = re.search(r'\\setbeamercolor\{frametitle\}\{[^}]*fg=([^,}]+)', preamble)
+        if fg_match:
+            fg = fg_match.group(1)
+            preamble = re.sub(r'\\setbeamercolor\{frametitle\}\{[^}]*\}', f'\\setbeamercolor{{frametitle}}{{fg={fg},bg={title_bg_color}}}', preamble)
+        else:
+            if '\\setbeamercolor{frametitle}' in preamble:
+                preamble = re.sub(r'\\setbeamercolor\{frametitle\}\{[^}]*\}', f'\\setbeamercolor{{frametitle}}{{bg={title_bg_color}}}', preamble)
+            else:
+                preamble = preamble[:doc_pos] + f'\n\\setbeamercolor{{frametitle}}{{bg={title_bg_color}}}\n' + preamble[doc_pos:]
+
+        return preamble
+
+    def _apply_footer_logo_color(self, preamble: str, logo_color: str) -> str:
+        """Apply footer logo color"""
+        import re
+        if not logo_color or logo_color == "":
+            return preamble
+
+        # Find existing logo and wrap with textcolor
+        logo_match = re.search(r'\\logo\{([^}]*)\}', preamble)
+        if logo_match:
+            logo_content = logo_match.group(1)
+            # Remove any existing textcolor
+            logo_content = re.sub(r'\\textcolor\{[^}]*\}\{', '', logo_content)
+            logo_content = re.sub(r'\}$', '', logo_content)
+            new_logo = f'\\logo{{\\textcolor{{{logo_color}}}{{{logo_content}}}}}'
+            preamble = preamble.replace(logo_match.group(0), new_logo)
+        else:
+            # No logo found, add one with color
+            doc_pos = preamble.find('\\begin{document}')
+            if doc_pos != -1:
+                preamble = preamble[:doc_pos] + f'\n\\logo{{\\textcolor{{{logo_color}}}{{\\includegraphics[height=1cm]{{logo.png}}}}}}\n' + preamble[doc_pos:]
+
+        return preamble
+
+    def _apply_background_color(self, preamble: str, bg_color: str) -> str:
+        """Apply background color"""
         import re
 
-        # Ensure value is valid
-        if not value or value in ['bla', 'bl', 'b', 'wh', 'whi', 'whit', 'wh']:
-            value = 'white'
+        preamble = re.sub(r'\\setbeamercolor\{background canvas\}\{[^}]*\}', '', preamble)
 
-        # Use a simple string replacement approach instead of regex
-        # This avoids all regex escaping issues
+        doc_pos = preamble.find('\\begin{document}')
+        if doc_pos == -1:
+            return preamble + f'\n\\setbeamercolor{{background canvas}}{{bg={bg_color}}}\n'
 
-        # Look for the exact pattern in the preamble
-        lines = preamble.split('\n')
-        modified = False
+        if '\\setbeamercolor{background canvas}' in preamble:
+            preamble = re.sub(r'\\setbeamercolor\{background canvas\}\{[^}]*\}', f'\\setbeamercolor{{background canvas}}{{bg={bg_color}}}', preamble)
+        else:
+            preamble = preamble[:doc_pos] + f'\n\\setbeamercolor{{background canvas}}{{bg={bg_color}}}\n' + preamble[doc_pos:]
 
-        for i, line in enumerate(lines):
-            # Check for background canvas
-            if '\\setbeamercolor{background canvas}' in line and 'bg=' in line:
-                # Replace the bg value
-                import re
-                lines[i] = re.sub(r'bg=[^}]*', f'bg={value}', line)
-                modified = True
-            # Check for background (without canvas)
-            elif '\\setbeamercolor{background}' in line and 'bg=' in line:
-                lines[i] = re.sub(r'bg=[^}]*', f'bg={value}', line)
-                modified = True
-
-        if modified:
-            return '\n'.join(lines)
-
-        # If no background was found, add it
-        for i, line in enumerate(lines):
-            if '\\begin{document}' in line:
-                lines.insert(i, f'\\setbeamercolor{{background canvas}}{{bg={value}}}')
-                modified = True
-                break
-
-        if modified:
-            return '\n'.join(lines)
-
-        # Fallback: just append
-        return preamble + f'\n\\setbeamercolor{{background canvas}}{{bg={value}}}\n'
-
+        return preamble
 
     def _apply_theme_change(self, preamble, value):
-        """Apply theme change - COMPLETELY FIXED"""
-        import re
+        """Apply theme change"""
         lines = preamble.split('\n')
-
         for i, line in enumerate(lines):
             if line.strip().startswith('\\usetheme{'):
                 lines[i] = f'\\usetheme{{{value}}}'
                 return '\n'.join(lines)
-
-        # Not found, add it
         for i, line in enumerate(lines):
             if '\\begin{document}' in line:
                 lines.insert(i, f'\\usetheme{{{value}}}')
                 return '\n'.join(lines)
-
         return preamble
 
-
     def _apply_colortheme_change(self, preamble, value):
-        """Apply color theme change - COMPLETELY FIXED"""
+        """Apply color theme change"""
         lines = preamble.split('\n')
-
         for i, line in enumerate(lines):
             if line.strip().startswith('\\usecolortheme{'):
                 if value == 'default':
@@ -3075,21 +7063,16 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 else:
                     lines[i] = f'\\usecolortheme{{{value}}}'
                 return '\n'.join(lines)
-
-        # Not found
         if value != 'default':
             for i, line in enumerate(lines):
                 if '\\begin{document}' in line:
                     lines.insert(i, f'\\usecolortheme{{{value}}}')
                     return '\n'.join(lines)
-
         return preamble
 
-
     def _apply_fonttheme_change(self, preamble, value):
-        """Apply font theme change - COMPLETELY FIXED"""
+        """Apply font theme change"""
         lines = preamble.split('\n')
-
         for i, line in enumerate(lines):
             if line.strip().startswith('\\usefonttheme{'):
                 if value == 'default':
@@ -3097,206 +7080,645 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 else:
                     lines[i] = f'\\usefonttheme{{{value}}}'
                 return '\n'.join(lines)
-
-        # Not found
         if value != 'default':
             for i, line in enumerate(lines):
                 if '\\begin{document}' in line:
                     lines.insert(i, f'\\usefonttheme{{{value}}}')
                     return '\n'.join(lines)
-
         return preamble
 
-
     def _apply_aspect_change(self, preamble, value):
-        """Apply aspect ratio change - COMPLETELY FIXED"""
+        """Apply aspect ratio change"""
         import re
         lines = preamble.split('\n')
-
         for i, line in enumerate(lines):
             if '\\documentclass' in line and 'beamer' in line:
                 if 'aspectratio=' in line:
-                    # Replace existing aspectratio
                     lines[i] = re.sub(r'aspectratio=\d+', f'aspectratio={value}', line)
                 else:
-                    # Add aspectratio
                     if '[' in line and ']' in line:
                         lines[i] = line.replace(']', f',aspectratio={value}]')
                     else:
                         lines[i] = line.replace('{beamer}', f'[aspectratio={value}]{{beamer}}')
                 return '\n'.join(lines)
+        return preamble
+
+    def _apply_footer_change(self, preamble: str, value: bool) -> str:
+        """Apply footer override change - FIXED to ensure footer actually displays"""
+        import re
+
+        # First, remove ALL existing footer definitions to avoid conflicts
+        for cmd in ['insertshortinstitute', 'insertshortauthor', 'insertshorttitle', 'insertshortdate']:
+            pattern1 = rf'\\def\\{cmd}{{[^}}]*}}'
+            pattern2 = rf'\\newcommand{{\\{cmd}}}{{[^}}]*}}'
+            preamble = re.sub(pattern1, '', preamble)
+            preamble = re.sub(pattern2, '', preamble)
+
+        # Remove any existing footline templates
+        preamble = re.sub(r'% ========== FOOTLINE TEMPLATE ==========.*?% ========================================', '', preamble, flags=re.DOTALL)
+
+        if value:
+            # Get values with proper escaping
+            author = self.presentation_info.get('author', 'Author')
+            short_institute = self.presentation_info.get('short_institute',
+                self.presentation_info.get('institution', 'Institute'))
+            title = self.presentation_info.get('title', 'Presentation')
+
+            def clean_for_def(text: str) -> str:
+                if not text:
+                    return ""
+                text = str(text)
+                # ============================================================
+                # CRITICAL FIX: Handle \textbf{...} commands properly
+                # ============================================================
+                if '\\textbf' in text:
+                    # Case 1: \textbf{BioAI-Repository} - already has braces
+                    if re.search(r'\\textbf\{[^}]*\}', text):
+                        # Ensure it has a closing brace
+                        if text.count('{') > text.count('}'):
+                            text = text + '}'
+                        return text
+                    # Case 2: \textbfBioAI-Repository - missing braces
+                    elif '\\textbf' in text and not re.search(r'\\textbf\{', text):
+                        # Find what follows \textbf
+                        match = re.search(r'\\textbf([A-Za-z][A-Za-z\-]*)', text)
+                        if match:
+                            content = match.group(1)
+                            text = text.replace(match.group(0), f'\\textbf{{{content}}}')
+                            return text
+                    # Case 3: \textbf{BioAI-Repository without closing brace
+                    elif re.search(r'\\textbf\{[^}]*$', text):
+                        text = text + '}'
+                        return text
+                    # Default: return as-is but ensure balanced braces
+                    else:
+                        # Count braces and balance them
+                        open_count = text.count('{')
+                        close_count = text.count('}')
+                        if open_count > close_count:
+                            text = text + '}' * (open_count - close_count)
+                        return text
+
+                # For non-\textbf text, clean it
+                text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
+                text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)
+                text = text.replace('{', '').replace('}', '')
+                text = re.sub(r'\s+', ' ', text).strip()
+                text = text.replace('&', '\\&').replace('%', '\\%').replace('#', '\\#')
+                text = text.replace('_', '\\_').replace('~', '\\textasciitilde')
+                text = text.replace('^', '\\textasciicircum').replace('$', '').replace('\\', '')
+                if len(text) > 80:
+                    text = text[:77] + '...'
+                return text
+
+            title_clean = clean_for_def(title)
+            author_clean = clean_for_def(author)
+            short_institute_clean = clean_for_def(short_institute)
+
+            # Build footer definitions
+            footer_defs = [
+                f"\\def\\insertshortinstitute{{{short_institute_clean}}}",
+                f"\\def\\insertshortauthor{{{author_clean}}}",
+                f"\\def\\insertshorttitle{{{title_clean}}}",
+                "\\def\\insertshortdate{\\today}"
+            ]
+
+            # ============================================================
+            # CRITICAL FIX: Balance braces in the footer definitions
+            # ============================================================
+            for i, def_line in enumerate(footer_defs):
+                open_count = def_line.count('{')
+                close_count = def_line.count('}')
+                if open_count != close_count:
+                    if open_count > close_count:
+                        footer_defs[i] = def_line + '}' * (open_count - close_count)
+                    elif close_count > open_count:
+                        # Remove extra closing braces from the end
+                        while footer_defs[i].endswith('}') and footer_defs[i].count('}') > footer_defs[i].count('{'):
+                            footer_defs[i] = footer_defs[i][:-1]
+
+            # Get logo path
+            logo_path = self.footer_logo_var.get().strip() if hasattr(self, 'footer_logo_var') else ""
+
+            # Add logo if it exists
+            if logo_path and os.path.exists(logo_path):
+                footer_defs.append(f"\\logo{{\\includegraphics[height=0.6cm]{{{logo_path}}}}}")
+
+            # Build the complete footline template
+            footline_template = r"""
+    % ========== FOOTLINE TEMPLATE ==========
+    \makeatletter
+    \setbeamertemplate{footline}{%
+      \leavevmode%
+      \hbox{%
+        \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+          \usebeamerfont{author in head/foot}\insertshortauthor{} (\insertshortinstitute)%
+        \end{beamercolorbox}%
+        \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+          \usebeamerfont{title in head/foot}\insertshorttitle%
+        \end{beamercolorbox}%
+        \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
+          \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
+          \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
+        \end{beamercolorbox}}%
+      \vskip0pt%
+    }
+    \makeatother
+    % ========================================
+    """
+
+            # ============================================================
+            # Insert at the correct position
+            # ============================================================
+            doc_pos = preamble.find('\\begin{document}')
+
+            # Try to find a good insertion point after the title page section
+            title_page_end = preamble.find('% --- Title Page ---')
+            if title_page_end != -1:
+                # Find the end of the title page section
+                next_section = preamble.find('%', title_page_end + 1)
+                if next_section != -1:
+                    after_title = preamble.find('\n', preamble.find('\\end{frame}', title_page_end) if '\\end{frame}' in preamble[title_page_end:next_section] else title_page_end)
+                    if after_title != -1:
+                        insert_pos = after_title + 1
+                    else:
+                        insert_pos = next_section
+                else:
+                    insert_pos = doc_pos if doc_pos != -1 else len(preamble)
+            else:
+                insert_pos = doc_pos if doc_pos != -1 else len(preamble)
+
+            # Build the complete text to insert
+            insert_text = '\n'.join(footer_defs) + '\n' + footline_template + '\n'
+
+            # Insert at the found position
+            if insert_pos != -1 and insert_pos < len(preamble):
+                preamble = preamble[:insert_pos] + insert_text + preamble[insert_pos:]
+            else:
+                preamble += '\n' + insert_text
 
         return preamble
 
+    def _clean_text_for_def(self, text: str) -> str:
+        """
+        Clean text for use in \def commands.
+        Removes problematic characters that could cause runaway definitions.
+        """
+        if not text:
+            return ""
 
-    def _apply_bgimage_change(self, preamble, value):
-        """Apply background image change - COMPLETELY FIXED"""
-        if not value:
+        import re
+
+        # Convert to string
+        text = str(text)
+
+        # Handle special case for \textbf{...} - preserve it but fix braces
+        if '\\textbf' in text:
+            # Extract the text inside \textbf{...}
+            match = re.search(r'\\textbf\{([^}]*)\}', text)
+            if match:
+                inner_text = match.group(1)
+                # If the inner text contains braces, we need to be careful
+                # For titles like "{\textbfBioAI-Repository}", clean it up
+                if text.startswith('{') and text.endswith('}'):
+                    text = text[1:-1]  # Remove outer braces
+                # Ensure \textbf has proper braces
+                if '\\textbf' in text and not re.search(r'\\textbf\{', text):
+                    text = re.sub(r'\\textbf([A-Za-z])', r'\\textbf{\1}', text)
+                # Fix the specific case: \textbfBioAI-Repository -> \textbf{BioAI-Repository}
+                if '\\textbfBioAI' in text:
+                    text = text.replace('\\textbfBioAI', '\\textbf{BioAI')
+                return text
+
+        # Remove any LaTeX commands that might have malformed braces
+        # First, handle \textcolor{...}{...} by extracting the text
+        text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
+        # Handle \textbf{...}
+        text = re.sub(r'\\textbf\{([^}]*)\}', r'\1', text)
+        # Handle \textit{...}
+        text = re.sub(r'\\textit\{([^}]*)\}', r'\1', text)
+        # Handle \emph{...}
+        text = re.sub(r'\\emph\{([^}]*)\}', r'\1', text)
+
+        # Remove any remaining backslash commands but keep the text
+        text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)
+
+        # Remove any remaining braces
+        text = text.replace('{', '').replace('}', '')
+
+        # Remove excessive spaces
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        # Escape special characters that could break \def
+        text = text.replace('&', '\\&')
+        text = text.replace('%', '\\%')
+        text = text.replace('#', '\\#')
+        text = text.replace('_', '\\_')
+        text = text.replace('~', '\\textasciitilde')
+        text = text.replace('^', '\\textasciicircum')
+
+        # Remove any problematic characters
+        text = text.replace('$', '')
+        text = text.replace('\\', '')
+
+        # Limit length to prevent runaway definitions
+        if len(text) > 80:
+            text = text[:77] + '...'
+
+        return text
+
+    def _apply_footer_logo(self, preamble: str, logo_path: str) -> str:
+        """Apply footer logo - FIXED to work with the footer template"""
+        import re
+
+        # Remove existing logo definitions
+        preamble = re.sub(r'\\logo\{[^}]*\}', '', preamble)
+
+        if not logo_path or logo_path == "":
             return preamble
 
-        # Build the template with proper escaping
-        bg_template = (
-            '% Background image\n'
-            '\\setbeamertemplate{background}{\n'
-            '\\begin{tikzpicture}[remember picture,overlay]\n'
-            f'\\node[opacity=0.3] at (current page.center) {{\n'
-            f'    \\includegraphics[width=\\paperwidth,height=\\paperheight,keepaspectratio]{{{value}}}\n'
-            '}};\n'
-            '\\end{tikzpicture}\n'
-            '}'
-        )
+        # Clean the logo path
+        logo_path = logo_path.strip()
+        if not logo_path:
+            return preamble
 
-        # Check if background template already exists
-        if '% Background image' in preamble:
-            lines = preamble.split('\n')
-            new_lines = []
-            skip = False
-            for line in lines:
-                if '% Background image' in line:
-                    skip = True
-                    new_lines.append(bg_template)
-                    continue
-                if skip and '}' in line and '\\setbeamertemplate{background}' in line:
-                    skip = False
-                    continue
-                if not skip:
-                    new_lines.append(line)
-            return '\n'.join(new_lines)
+        # Get logo color if set
+        logo_color = self.footer_logo_color_var.get().strip() if hasattr(self, 'footer_logo_color_var') else ""
 
-        # Add before \begin{document}
-        lines = preamble.split('\n')
-        for i, line in enumerate(lines):
-            if '\\begin{document}' in line:
-                lines.insert(i, bg_template)
-                return '\n'.join(lines)
-
-        return preamble + '\n' + bg_template
-
-
-    def _apply_opacity_change(self, preamble, value):
-        """Apply opacity change - COMPLETELY FIXED"""
-        import re
-        lines = preamble.split('\n')
-
-        for i, line in enumerate(lines):
-            if '\\node[opacity=' in line:
-                lines[i] = re.sub(r'opacity=[\d.]+', f'opacity={value}', line)
-                return '\n'.join(lines)
-
-        return preamble
-
-
-    def _apply_progress_change(self, preamble, value):
-        """Apply progress bar change - COMPLETELY FIXED"""
-        if not value:
-            # Remove progress bar
-            lines = preamble.split('\n')
-            new_lines = []
-            skip = False
-            for line in lines:
-                if '% Progress bar' in line:
-                    skip = True
-                    continue
-                if skip and '\\makeatother' in line:
-                    skip = False
-                    continue
-                if not skip:
-                    new_lines.append(line)
-            return '\n'.join(new_lines)
-        return preamble
-
-
-    def _apply_nav_change(self, preamble, value):
-        """Apply navigation change - COMPLETELY FIXED"""
-        import re
-        lines = preamble.split('\n')
-
-        if not value:
-            # Hide navigation symbols
-            for i, line in enumerate(lines):
-                if '\\setbeamertemplate{navigation symbols}' in line:
-                    lines[i] = '\\setbeamertemplate{navigation symbols}{}'
-                    return '\n'.join(lines)
-            # Not found, add it
-            for i, line in enumerate(lines):
-                if '\\begin{document}' in line:
-                    lines.insert(i, '\\setbeamertemplate{navigation symbols}{}')
-                    return '\n'.join(lines)
+        # Build the logo command
+        if logo_color and logo_color != "":
+            logo_cmd = f'\\logo{{\\textcolor{{{logo_color}}}{{\\includegraphics[height=0.6cm]{{{logo_path}}}}}}}'
         else:
-            # Show navigation symbols - remove the hide line
-            new_lines = [line for line in lines if '\\setbeamertemplate{navigation symbols}{}' not in line]
-            return '\n'.join(new_lines)
+            logo_cmd = f'\\logo{{\\includegraphics[height=0.6cm]{{{logo_path}}}}}'
 
-        return preamble
-
-
-    def _apply_notes_change(self, preamble, value):
-        """Apply notes mode change - COMPLETELY FIXED"""
-        notes_map = {
-            "Slides Only": "hide notes",
-            "Notes Only": "show only notes",
-            "Slides + Notes": "show notes on second screen=right"
-        }
-        notes_option = notes_map.get(value, "show notes on second screen=right")
-
-        lines = preamble.split('\n')
-
-        for i, line in enumerate(lines):
-            if '\\setbeameroption{' in line:
-                lines[i] = f'\\setbeameroption{{{notes_option}}}'
-                return '\n'.join(lines)
-
-        # Not found, add it
-        for i, line in enumerate(lines):
-            if '\\begin{document}' in line:
-                # Check if pgfpages is loaded
-                has_pgfpages = any('\\usepackage{pgfpages}' in l for l in lines)
-                if not has_pgfpages:
-                    lines.insert(i, '\\usepackage{pgfpages}')
-                    lines.insert(i+1, f'\\setbeameroption{{{notes_option}}}')
-                else:
-                    lines.insert(i, f'\\setbeameroption{{{notes_option}}}')
-                return '\n'.join(lines)
-
-        return preamble
-
-
-    def _apply_tight_spacing_change(self, preamble, value):
-        """Apply tight spacing change - COMPLETELY FIXED"""
-        if not value:
-            # Remove tight spacing
-            lines = preamble.split('\n')
-            new_lines = []
-            skip = False
-            for line in lines:
-                if '% Tight spacing' in line:
-                    skip = True
-                    continue
-                if skip and '\\setlength{\\topsep}' in line:
-                    skip = False
-                    continue
-                if not skip:
-                    new_lines.append(line)
-            return '\n'.join(new_lines)
+        # Insert before \begin{document}
+        doc_pos = preamble.find('\\begin{document}')
+        if doc_pos != -1:
+            preamble = preamble[:doc_pos] + f'\n{logo_cmd}\n' + preamble[doc_pos:]
         else:
-            # Add tight spacing
-            spacing_template = [
-                '% Tight spacing',
-                '\\setlength{\\parskip}{0.12em}',
-                '\\setlength{\\itemsep}{0.04em}',
-                '\\setlength{\\topsep}{0.04em}',
-                ''
-            ]
-            lines = preamble.split('\n')
-            for i, line in enumerate(lines):
-                if '\\begin{document}' in line:
-                    for j, sl in enumerate(spacing_template):
-                        lines.insert(i + j, sl)
-                    return '\n'.join(lines)
-            return preamble + '\n' + '\n'.join(spacing_template)
+            preamble += f'\n{logo_cmd}\n'
 
+        return preamble
 
+    def import_theme(self):
+        """Open the theme import dialog"""
+        dialog = ThemeImportDialog(self)
+        self.wait_window(dialog)
 
+        if dialog.result:
+            self.refresh_theme_list()
+            if WindowManager.show_message(
+                self,
+                "Theme Imported",
+                f"Theme '{dialog.result['name']}' imported successfully!\n\n"
+                "Would you like to apply it now?",
+                "yesno"
+            ):
+                theme_name = dialog.result['name']
+                theme_data = ThemeManager.load_theme(theme_name)
+                if theme_data:
+                    settings = theme_data.get('settings', {})
+                    for key in ['theme', 'colortheme', 'fonttheme', 'aspect', 'bg_color', 'bg_opacity',
+                               'progress', 'nav', 'notes_mode', 'font_size', 'line_spacing',
+                               'table_width', 'image_width', 'content_margin', 'show_footer']:
+                        if key in settings:
+                            var_name = f"{key}_var"
+                            if hasattr(self, var_name):
+                                getattr(self, var_name).set(settings[key])
+                    self._current_theme_name = theme_name
+                    self.theme_name_label.configure(text=f"Imported: {theme_name}")
+                    self.update_preview()
+                    self.status_message(f"Applied imported theme: {theme_name}")
+
+    def import_complete_theme(self):
+        """Open the complete theme import dialog"""
+        dialog = CompleteThemeImportDialog(self)
+        self.wait_window(dialog)
+
+        if dialog.result:
+            self.refresh_theme_list()
+            if WindowManager.show_message(
+                self,
+                "Theme Imported",
+                f"Complete theme '{dialog.result['name']}' imported successfully!\n\n"
+                "Would you like to apply it now?",
+                "yesno"
+            ):
+                theme_name = dialog.result['name']
+                theme_data = ThemeManager.load_theme(theme_name)
+                if theme_data:
+                    categories = theme_data.get('categories', {})
+                    if 'themes' in categories and categories['themes']:
+                        for theme in categories['themes']:
+                            self.theme_var.set(theme['name'])
+                            break
+                    if 'colorthemes' in categories and categories['colorthemes']:
+                        for theme in categories['colorthemes']:
+                            self.colortheme_var.set(theme['name'])
+                            break
+                    if 'fontthemes' in categories and categories['fontthemes']:
+                        for theme in categories['fontthemes']:
+                            self.fonttheme_var.set(theme['name'])
+                            break
+                    if 'documentclass' in categories:
+                        doc = categories['documentclass']
+                        if isinstance(doc, dict):
+                            if 'aspect' in doc:
+                                self.aspect_var.set(doc['aspect'])
+                            if 'font_size' in doc:
+                                self.font_size_var.set(f"{doc['font_size']}pt")
+                    if 'background' in categories:
+                        for bg in categories['background']:
+                            if bg['type'] == 'background_color':
+                                import re
+                                match = re.search(r'bg=([^,}]+)', bg['settings'])
+                                if match:
+                                    self.bg_color_var.set(match.group(1))
+                    self._current_theme_name = theme_name
+                    self.theme_name_label.configure(text=f"Imported: {theme_name}")
+                    self.update_preview()
+                    self.status_message(f"Applied imported theme: {theme_name}")
+
+    def apply_loaded_theme(self, theme_name):
+        """Apply a loaded theme with priority to the theme settings"""
+        theme_data = ThemeManager.load_theme(theme_name)
+        if not theme_data:
+            return False
+
+        try:
+            self.sync_ui_with_theme(theme_data)
+            self._current_theme_name = theme_name
+            self.theme_name_label.configure(text=f"Loaded: {theme_name}")
+            self.update_preview()
+            self.status_message(f"Applied theme: {theme_name}")
+            return True
+        except Exception as e:
+            WindowManager.show_message(self, "Error", f"Error applying theme:\n{str(e)}", "error")
+            return False
+
+    def load_custom_theme(self):
+        """Load a saved custom theme with priority to theme settings"""
+        themes = ThemeManager.list_themes()
+        if not themes:
+            WindowManager.show_message(
+                self,
+                "No Themes",
+                "No saved themes found.\n\n"
+                "Save a theme first using 'Save Theme' or 'Import Theme'.",
+                "info"
+            )
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Load Theme")
+        dialog.geometry("600x450")
+        dialog.transient(self)
+        dialog.grab_set()
+        WindowManager.ensure_on_top(dialog, self)
+        WindowManager.center_on_parent(dialog, self)
+
+        header_frame = ctk.CTkFrame(dialog)
+        header_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(header_frame, text="Select Theme to Load", font=("Arial", 16, "bold")).pack(side="left", padx=10)
+        ctk.CTkLabel(header_frame, text="Theme settings take priority, undefined elements preserved",
+                    font=("Arial", 10), text_color="#4ECDC4").pack(side="left", padx=20)
+
+        list_frame = ctk.CTkScrollableFrame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        for theme in themes:
+            theme_frame = ctk.CTkFrame(list_frame)
+            theme_frame.pack(fill="x", padx=5, pady=3)
+
+            name_label = ctk.CTkLabel(theme_frame, text=f"📁 {theme['name']}", font=("Arial", 14, "bold"))
+            name_label.pack(side="left", padx=10)
+
+            theme_type = "Imported" if 'imported' in str(theme) else "Custom"
+            type_label = ctk.CTkLabel(theme_frame, text=theme_type, font=("Arial", 10), text_color="#888888")
+            type_label.pack(side="left", padx=5)
+
+            created = theme.get('created', 'Unknown')
+            if created != 'Unknown':
+                try:
+                    dt = datetime.fromisoformat(created)
+                    created_str = dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    created_str = created
+            else:
+                created_str = "Unknown"
+
+            date_label = ctk.CTkLabel(theme_frame, text=f"Created: {created_str}", font=("Arial", 10), text_color="#888888")
+            date_label.pack(side="right", padx=10)
+
+            load_btn = ctk.CTkButton(theme_frame, text="Apply Theme", width=100,
+                                    fg_color="#28a745", hover_color="#218838",
+                                    command=lambda t=theme['name']: self._apply_theme_and_close(dialog, t))
+            load_btn.pack(side="right", padx=5)
+
+            preview_btn = ctk.CTkButton(theme_frame, text="Preview", width=80,
+                                       fg_color="#17a2b8", hover_color="#138496",
+                                       command=lambda t=theme['name']: self._preview_theme(t))
+            preview_btn.pack(side="right", padx=5)
+
+        cancel_btn = ctk.CTkButton(dialog, text="Cancel", command=dialog.destroy, width=100,
+                                   fg_color="#dc3545", hover_color="#c82333")
+        cancel_btn.pack(pady=10)
+
+    def _apply_theme_and_close(self, dialog, theme_name):
+        """Apply the theme and close the dialog"""
+        if self.apply_loaded_theme(theme_name):
+            dialog.destroy()
+            WindowManager.show_message(self, "Theme Applied", f"Theme '{theme_name}' applied successfully!", "info")
+
+    def _preview_theme(self, theme_name):
+        """Preview a theme without applying it"""
+        theme_data = ThemeManager.load_theme(theme_name)
+        if not theme_data:
+            return
+
+        preview_dialog = ctk.CTkToplevel(self)
+        preview_dialog.title(f"Theme Preview: {theme_name}")
+        preview_dialog.geometry("700x500")
+        preview_dialog.transient(self)
+        preview_dialog.grab_set()
+        WindowManager.ensure_on_top(preview_dialog, self)
+        WindowManager.center_on_parent(preview_dialog, self)
+
+        main_frame = ctk.CTkFrame(preview_dialog)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        info_frame = ctk.CTkFrame(main_frame)
+        info_frame.pack(fill="x", pady=5)
+
+        ctk.CTkLabel(info_frame, text=f"Theme: {theme_name}", font=("Arial", 16, "bold")).pack(anchor="w", padx=10, pady=5)
+        source = theme_data.get('source', 'Unknown')
+        ctk.CTkLabel(info_frame, text=f"Source: {source}", font=("Arial", 12)).pack(anchor="w", padx=10)
+
+        categories = theme_data.get('categories', {})
+        total_items = 0
+        for cat_name, cat_data in categories.items():
+            if cat_data:
+                if isinstance(cat_data, list):
+                    total_items += len(cat_data)
+                elif isinstance(cat_data, dict):
+                    total_items += len(cat_data)
+
+        ctk.CTkLabel(info_frame, text=f"Total items: {total_items}", font=("Arial", 12), text_color="#4ECDC4").pack(anchor="w", padx=10, pady=5)
+
+        preview_frame = ctk.CTkFrame(main_frame)
+        preview_frame.pack(fill="both", expand=True, pady=5)
+
+        preview_text = ctk.CTkTextbox(preview_frame, font=("Courier", 10))
+        preview_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+        if 'summary' in theme_data:
+            preview_text.insert("1.0", theme_data['summary'])
+        else:
+            importer = CompleteThemeImporter()
+            summary = importer._generate_summary()
+            preview_text.insert("1.0", summary)
+
+        preview_text.configure(state="disabled")
+
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", pady=10)
+
+        apply_btn = ctk.CTkButton(button_frame, text="Apply Theme",
+                                 command=lambda: self._apply_theme_and_close(preview_dialog, theme_name),
+                                 width=120, fg_color="#28a745", hover_color="#218838")
+        apply_btn.pack(side="left", padx=5)
+
+        close_btn = ctk.CTkButton(button_frame, text="Close", command=preview_dialog.destroy, width=100,
+                                  fg_color="#dc3545", hover_color="#c82333")
+        close_btn.pack(side="right", padx=5)
+
+    def sync_ui_with_theme(self, theme_data):
+        """Synchronize all UI controls with the loaded theme data."""
+        if not theme_data:
+            return
+
+        categories = theme_data.get('categories', {})
+
+        if 'themes' in categories and categories['themes']:
+            for theme in categories['themes']:
+                if 'name' in theme:
+                    self.theme_var.set(theme['name'])
+                    break
+
+        if 'colorthemes' in categories and categories['colorthemes']:
+            for theme in categories['colorthemes']:
+                if 'name' in theme:
+                    self.colortheme_var.set(theme['name'])
+                    break
+
+        if 'fontthemes' in categories and categories['fontthemes']:
+            for theme in categories['fontthemes']:
+                if 'name' in theme:
+                    self.fonttheme_var.set(theme['name'])
+                    break
+
+        if 'documentclass' in categories:
+            doc = categories['documentclass']
+            if isinstance(doc, dict):
+                if 'aspect' in doc:
+                    self.aspect_var.set(doc['aspect'])
+                if 'font_size' in doc:
+                    self.font_size_var.set(f"{doc['font_size']}pt")
+
+        bg_color = None
+        if 'beamercolors' in categories:
+            for color in categories['beamercolors']:
+                if isinstance(color, dict) and color.get('name') in ['background canvas', 'background']:
+                    import re
+                    match = re.search(r'bg=([^,}]+)', color.get('settings', ''))
+                    if match:
+                        bg_color = match.group(1)
+                        break
+
+        if not bg_color and 'background' in categories:
+            for bg in categories['background']:
+                if isinstance(bg, dict) and bg.get('type') == 'background_color':
+                    import re
+                    match = re.search(r'bg=([^,}]+)', bg.get('settings', ''))
+                    if match:
+                        bg_color = match.group(1)
+                        break
+
+        if bg_color:
+            self.bg_color_var.set(bg_color)
+
+        if 'progress_bar' in categories and categories['progress_bar']:
+            self.progress_var.set(True)
+        else:
+            if 'beamertemplates' in categories:
+                for template in categories['beamertemplates']:
+                    if isinstance(template, dict) and template.get('name') == 'frametitle':
+                        if 'progressbar' in template.get('content', ''):
+                            self.progress_var.set(True)
+                            break
+
+        if 'navigation' in categories:
+            for nav in categories['navigation']:
+                if isinstance(nav, dict) and nav.get('type') == 'navigation_symbols':
+                    if nav.get('content') == 'hidden' or nav.get('content') == '':
+                        self.nav_var.set(False)
+                    else:
+                        self.nav_var.set(True)
+                    break
+
+        # Extract logo and logo color
+        if 'logo' in categories and categories['logo']:
+            for logo in categories['logo']:
+                if isinstance(logo, dict):
+                    logo_content = logo.get('content', '')
+                    if logo_content:
+                        self.footer_logo_var.set(logo_content)
+                        color_match = re.search(r'\\textcolor\{([^}]+)\}', logo_content)
+                        if color_match:
+                            self.footer_logo_color_var.set(color_match.group(1))
+                        break
+
+        if 'raw_preamble' in theme_data and theme_data['raw_preamble']:
+            self.current_preamble = theme_data['raw_preamble']
+        elif 'preamble' in theme_data and theme_data['preamble']:
+            self.current_preamble = theme_data['preamble']
+
+        self.update_preview()
+        self.update_info_label()
+
+    # ========== VISUAL DASHBOARD SETUP ==========
+
+    def create_visual_dashboard(self, parent):
+        """Create the visual dashboard"""
+        ctk.CTkLabel(parent, text="📊 Live Preview", font=("Arial", 16, "bold")).pack(pady=(0, 10))
+        ctk.CTkLabel(parent, text="Settings update in real-time", font=("Arial", 10),
+                    text_color="#888888").pack(pady=(0, 10))
+
+        dashboard_frame = ctk.CTkFrame(parent, fg_color="#1a1a2e", corner_radius=10)
+        dashboard_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.dashboard_canvas = ctk.CTkCanvas(dashboard_frame, bg="#1a1a2e", highlightthickness=0)
+        self.dashboard_canvas.pack(fill="both", expand=True, padx=5, pady=5)
+        self.dashboard_canvas.bind('<Configure>', self.on_dashboard_resize)
+        self.after(100, self.draw_dashboard)
+
+    def on_dashboard_resize(self, event):
+        self.draw_dashboard()
+
+    def create_group_frame(self, parent, title):
+        """Create a styled group frame with title"""
+        group = ctk.CTkFrame(parent)
+        group.pack(fill="x", padx=5, pady=8)
+
+        header = ctk.CTkFrame(group, fg_color="#2F3542", height=30)
+        header.pack(fill="x", padx=2, pady=(2, 5))
+        header.pack_propagate(False)
+
+        title_label = ctk.CTkLabel(header, text=title, font=("Arial", 13, "bold"), text_color="#4ECDC4")
+        title_label.pack(side="left", padx=10, pady=5)
+
+        return group
 
 class PreambleConflictResolver:
     """Handle conflicts when merging preambles with user choice"""
@@ -6355,11 +10777,12 @@ class NotesToolbar(ctk.CTkFrame):
     def __init__(self, parent, notes_editor, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)
         self.notes_editor = notes_editor
+        self._tooltips = []  # Track tooltips for cleanup
 
         # Initialize dynamic toolbar
         self.dynamic_toolbar = None
 
-        # Templates (PRESERVED)
+        # Templates
         self.templates = {
             "Key Points": "• Key points:\n  - \n  - \n  - \n",
             "Time Markers": "• Timing guide:\n  0:00 - Introduction\n  0:00 - Main points\n  0:00 - Conclusion",
@@ -6370,166 +10793,51 @@ class NotesToolbar(ctk.CTkFrame):
 
         self.create_toolbar()
 
-    def create_toolbar(self):
-        """Create the notes toolbar with dynamic layout - ALL FEATURES PRESERVED"""
+        # Bind cleanup on destroy
+        self.bind('<Destroy>', self._cleanup_tooltips)
 
-        # Initialize dynamic toolbar for this frame
-        self.dynamic_toolbar = DynamicToolbar(self)
-
-        # ========== TEMPLATE DROPDOWN (Priority: 100 - Highest) ==========
-        template_frame = ctk.CTkFrame(self)
-
-        ctk.CTkLabel(template_frame, text="Template:").pack(side="left", padx=2)
-
-        self.template_var = tk.StringVar(value="Select Template")
-        template_menu = ctk.CTkOptionMenu(
-            template_frame,
-            values=list(self.templates.keys()),
-            variable=self.template_var,
-            command=self.insert_template,
-            width=150
-        )
-        template_menu.pack(side="left", padx=2)
-
-        # Add template frame to dynamic toolbar
-        self.dynamic_toolbar.add_frame(template_frame, priority=100, pack_kwargs={'side': 'left', 'padx': 5, 'pady': 2})
-
-        # ========== SEPARATOR (Priority: 90) ==========
-        separator = ttk.Separator(self, orient="vertical")
-        self.dynamic_toolbar.add_button(separator, priority=90, pack_kwargs={'side': 'left', 'padx': 5, 'fill': 'y', 'pady': 2})
-
-        # ========== FORMATTING BUTTONS (Priority: 80) ==========
-        formatting_frame = ctk.CTkFrame(self)
-
-        # ALL formatting buttons preserved exactly as in original
-        formatting_buttons = [
-            ("B", self.add_bold, "Bold"),
-            ("I", self.add_italic, "Italic"),
-            ("C", self.add_color, "Color"),
-            ("⚡", self.add_highlight, "Highlight"),
-            ("•", self.add_bullet, "Bullet point"),
-            ("⏱", self.add_timestamp, "Timestamp"),
-            ("⚠", self.add_alert, "Alert"),
-            ("💡", self.add_tip, "Tip")
-        ]
-
-        for text, command, tooltip in formatting_buttons:
-            btn = ctk.CTkButton(
-                formatting_frame,
-                text=text,
-                command=command,
-                width=30,
-                height=30
-            )
-            btn.pack(side="left", padx=2)
-            self.create_tooltip(btn, tooltip)  # Tooltips preserved
-
-        # Add formatting frame to dynamic toolbar
-        self.dynamic_toolbar.add_frame(formatting_frame, priority=80, pack_kwargs={'side': 'left', 'padx': 5, 'pady': 2})
-
-        # ========== PACK ALL ITEMS DYNAMICALLY ==========
-        self.dynamic_toolbar.pack_all()
-
-        # Add resize handling for the parent window
-        def on_parent_resize(event=None):
-            if self.dynamic_toolbar and self.winfo_exists():
-                self.dynamic_toolbar.update_layout()
-
-        # Bind to parent's configure event
-        if hasattr(self, 'master'):
-            self.master.bind('<Configure>', on_parent_resize)
-
-        # Also bind to this frame's configure event
-        self.bind('<Configure>', on_parent_resize)
-
-    # ========== ALL ORIGINAL METHODS PRESERVED BELOW ==========
+    def _cleanup_tooltips(self, event=None):
+        """Clean up all tooltips when toolbar is destroyed"""
+        for tooltip in self._tooltips:
+            try:
+                tooltip.destroy()
+            except:
+                pass
+        self._tooltips.clear()
 
     def create_tooltip(self, widget, text):
-        """Create tooltip for buttons - PRESERVED"""
+        """Create tooltip for buttons - with cleanup tracking"""
         def show_tooltip(event):
+            # Hide any existing tooltips first
+            self._cleanup_tooltips()
+
             x, y, _, _ = widget.bbox("insert")
             x += widget.winfo_rootx() + 25
             y += widget.winfo_rooty() + 20
 
-            # Create tooltip window
-            self.tooltip = tk.Toplevel(widget)
-            self.tooltip.wm_overrideredirect(True)
-            self.tooltip.wm_geometry(f"+{x}+{y}")
+            tooltip = tk.Toplevel(widget)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{x}+{y}")
+            tooltip.attributes('-topmost', True)
 
-            label = tk.Label(self.tooltip, text=text,
+            label = tk.Label(tooltip, text=text,
                            justify='left',
                            background="#ffffe0", relief='solid', borderwidth=1)
             label.pack()
 
+            widget.tooltip = tooltip
+            self._tooltips.append(tooltip)
+
         def hide_tooltip(event):
-            if hasattr(self, 'tooltip'):
-                self.tooltip.destroy()
+            if hasattr(widget, 'tooltip') and widget.tooltip in self._tooltips:
+                try:
+                    widget.tooltip.destroy()
+                    self._tooltips.remove(widget.tooltip)
+                except:
+                    pass
 
         widget.bind('<Enter>', show_tooltip)
         widget.bind('<Leave>', hide_tooltip)
-
-    def insert_template(self, choice):
-        """Insert selected template - PRESERVED"""
-        if choice in self.templates:
-            self.notes_editor.insert('insert', self.templates[choice])
-            self.template_var.set("Select Template")  # Reset dropdown
-
-    def add_bold(self):
-        """Add bold text - PRESERVED"""
-        self.wrap_selection(r'\textbf{', '}')
-
-    def add_italic(self):
-        """Add italic text - PRESERVED"""
-        self.wrap_selection(r'\textit{', '}')
-
-    def add_color(self):
-        """Add colored text - PRESERVED"""
-        colors = ['red', 'blue', 'green', 'orange', 'purple']
-        color = simpledialog.askstring(
-            "Color",
-            "Enter color name or RGB values:",
-            initialvalue=colors[0]
-        )
-        if color:
-            self.wrap_selection(f'\\textcolor{{{color}}}{{', '}')
-
-    def add_highlight(self):
-        """Add highlighted text - PRESERVED"""
-        self.wrap_selection('\\hl{', '}')
-
-    def add_bullet(self):
-        """Add bullet point - PRESERVED"""
-        self.notes_editor.insert('insert', '\n• ')
-
-    def add_timestamp(self):
-        """Add timestamp - PRESERVED"""
-        timestamp = simpledialog.askstring(
-            "Timestamp",
-            "Enter timestamp (MM:SS):",
-            initialvalue="00:00"
-        )
-        if timestamp:
-            self.notes_editor.insert('insert', f'[{timestamp}] ')
-
-    def add_alert(self):
-        """Add alert note - PRESERVED"""
-        self.notes_editor.insert('insert', '⚠ Important: ')
-
-    def add_tip(self):
-        """Add tip - PRESERVED"""
-        self.notes_editor.insert('insert', '💡 Tip: ')
-
-    def wrap_selection(self, prefix, suffix):
-        """Wrap selected text with prefix and suffix - PRESERVED"""
-        try:
-            selection = self.notes_editor.get('sel.first', 'sel.last')
-            self.notes_editor.delete('sel.first', 'sel.last')
-            self.notes_editor.insert('insert', f'{prefix}{selection}{suffix}')
-        except tk.TclError:  # No selection
-            self.notes_editor.insert('insert', f'{prefix}{suffix}')
-            # Move cursor inside braces
-            current_pos = self.notes_editor.index('insert')
-            self.notes_editor.mark_set('insert', f'{current_pos}-{len(suffix)}c')
 
 class EnhancedNotesEditor(ctk.CTkFrame):
     """Enhanced notes editor with toolbar and templates"""
@@ -7413,28 +11721,62 @@ class PreambleEditor(ctk.CTkToplevel):
         # Store whether this is a custom preamble
         self.is_custom = is_custom
         self.preamble = None
+        self.syntax_highlighter = None
 
         # Store the default preamble
-        self.default_preamble = get_beamer_preamble(
-            "Title", "Subtitle", "Author", "Institution", "Short Inst", "\\today"
-        )
+        try:
+            from BeamerSlideGenerator import get_beamer_preamble
+            self.default_preamble = get_beamer_preamble(
+                "Title", "Subtitle", "Author", "Institution", "Short Inst", "\\today"
+            )
+        except Exception as e:
+            print(f"Error getting default preamble: {e}")
+            # Fallback preamble
+            self.default_preamble = r"""\documentclass[aspectratio=169]{beamer}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tikz}
+\usepackage{hyperref}
+\usetheme{Madrid}
+\title{Presentation}
+\author{airis4D}
+\institute{Artificial Intelligence Research and Intelligent Systems (airis4D)}
+\date{\today}
+\begin{document}
+"""
 
-        # Create UI
+        # Create UI - DO THIS FIRST
         self.create_editor()
         self.create_toolbar()
         self.create_status_bar()
 
-        # Load current preamble if provided, else load default
-        if current_preamble:
+        # Now load content
+        if current_preamble and current_preamble.strip():
             self.editor.delete('1.0', 'end')
             self.editor.insert('1.0', current_preamble)
             self.is_custom = True if current_preamble != self.default_preamble else False
         else:
-            self.reset_to_default()
+            # Load default preamble
+            self.editor.delete('1.0', 'end')
+            self.editor.insert('1.0', self.default_preamble)
+            self.is_custom = False
 
         # Update status
         self.modified = False
         self.update_status()
+
+        # Apply syntax highlighting after content is loaded
+        self.after(100, self._apply_highlighting)
+
+    def _apply_highlighting(self):
+        """Apply syntax highlighting safely"""
+        try:
+            if self.syntax_highlighter:
+                self.syntax_highlighter.highlight()
+        except Exception as e:
+            print(f"Warning: Could not apply syntax highlighting: {e}")
 
     def create_editor(self):
         """Create the preamble text editor"""
@@ -7451,7 +11793,11 @@ class PreambleEditor(ctk.CTkToplevel):
         self.editor.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Add syntax highlighting
-        self.syntax_highlighter = BeamerSyntaxHighlighter(self.editor)
+        try:
+            self.syntax_highlighter = BeamerSyntaxHighlighter(self.editor)
+        except Exception as e:
+            print(f"Warning: Could not create syntax highlighter: {e}")
+            self.syntax_highlighter = None
 
         # Bind key events for status update
         self.editor.bind('<KeyRelease>', self.on_text_change)
@@ -7534,10 +11880,17 @@ class PreambleEditor(ctk.CTkToplevel):
 
         self.editor.delete('1.0', 'end')
         self.editor.insert('1.0', self.default_preamble)
-        self.syntax_highlighter.highlight()
         self.modified = False
         self.is_custom = False
         self.update_status()
+
+        # Apply highlighting after reset
+        try:
+            if self.syntax_highlighter:
+                self.syntax_highlighter.highlight()
+        except Exception as e:
+            print(f"Warning: Could not apply highlighting after reset: {e}")
+
         self.write("Reset to default preamble\n", "cyan")
 
     def save_custom(self):
@@ -7576,10 +11929,17 @@ class PreambleEditor(ctk.CTkToplevel):
                     content = f.read()
                     self.editor.delete('1.0', 'end')
                     self.editor.insert('1.0', content)
-                    self.syntax_highlighter.highlight()
                     self.modified = True
                     self.is_custom = True
                     self.update_status()
+
+                    # Apply highlighting after load
+                    try:
+                        if self.syntax_highlighter:
+                            self.syntax_highlighter.highlight()
+                    except Exception as e:
+                        print(f"Warning: Could not apply highlighting after load: {e}")
+
                     self.write(f"✓ Loaded custom preamble from: {file_path}\n", "green")
             except Exception as e:
                 messagebox.showerror("Error", f"Error loading preamble: {str(e)}")
@@ -7933,8 +12293,9 @@ class ThemeStyleDialog(ctk.CTkToplevel):
             self.bg_color_var.set(result['name'])
 
     def browse_bg_image(self):
-        """Browse for background image file"""
-        filename = filedialog.askopenfilename(
+        """Browse for background image file - with proper file dialog"""
+        filename = DialogManager.askopenfilename(
+            parent=self,
             title="Select Background Image",
             filetypes=[
                 ("Image files", "*.png *.jpg *.jpeg *.gif *.pdf"),
@@ -7943,6 +12304,8 @@ class ThemeStyleDialog(ctk.CTkToplevel):
         )
         if filename:
             self.bg_image_var.set(filename)
+            self.on_setting_changed()
+
 
     def add_color_definition(self, color_id, hex_color):
         """Add a color definition to the preview"""
@@ -12795,9 +17158,11 @@ class BeamerSlideEditor(ctk.CTk):
     # FIX: Improved load_tex_file with better error handling
     # ============================================================
 
+
     def load_tex_file(self) -> None:
-        """Load and convert a Beamer .tex file to IDE format with conflict resolution"""
-        tex_file = filedialog.askopenfilename(
+        """Load and convert a Beamer .tex file to IDE format - with proper file dialog"""
+        tex_file = DialogManager.askopenfilename(
+            parent=self,
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
             title="Select Beamer TeX File to Load"
         )
@@ -12809,7 +17174,6 @@ class BeamerSlideEditor(ctk.CTk):
             self.write(f"\n📄 Loading TeX file: {os.path.basename(tex_file)}\n", "cyan")
             self.write("="*60 + "\n", "cyan")
 
-            # Use the static method
             result = BeamerSlideEditor.convert_beamer_tex_to_simple_text(tex_file)
 
             if isinstance(result, tuple):
@@ -12828,16 +17192,14 @@ class BeamerSlideEditor(ctk.CTk):
                             self.write(f"  • Line {err.get('line', '?')}: {err.get('message', str(err))}\n", "red")
                         else:
                             self.write(f"  • {err}\n", "red")
-                messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.")
+                messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.", parent=self)
                 return
 
-            # ========== LOAD THE FILE (this will trigger merge_preamble_with_file) ==========
             self.load_file(text_file)
 
             self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
             self.write(f"  Loaded {len(self.slides)} slides\n", "green")
 
-            # Show errors if any
             if errors:
                 self.write(f"\n⚠ Found {len(errors)} issue(s) during conversion:\n", "yellow")
                 for err in errors:
@@ -12846,11 +17208,13 @@ class BeamerSlideEditor(ctk.CTk):
                     else:
                         self.write(f"   {err}\n", "yellow")
 
-            # Ask if user wants to generate PDF
-            if self.slides and messagebox.askyesno("Success",
-                                                   f"TeX file converted successfully!\n\n"
-                                                   f"Loaded {len(self.slides)} slides.\n\n"
-                                                   "Would you like to generate PDF now?"):
+            if self.slides and messagebox.askyesno(
+                "Success",
+                f"TeX file converted successfully!\n\n"
+                f"Loaded {len(self.slides)} slides.\n\n"
+                "Would you like to generate PDF now?",
+                parent=self
+            ):
                 self.generate_pdf()
 
         except Exception as e:
@@ -12858,7 +17222,8 @@ class BeamerSlideEditor(ctk.CTk):
             self.write(f"✗ {error_msg}\n", "red")
             import traceback
             traceback.print_exc()
-            messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.")
+            messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.", parent=self)
+
 
     def extract_preamble_info_safe(self, content: str) -> dict:
         """Extract preamble information with safer regex patterns"""
@@ -15718,9 +20083,11 @@ Created by {self.__author__}
                 f"{error_msg}\n\n"
                 "You can still launch BSG-IDE from the command line using 'bsg-ide'.")
 
+
     def get_source_from_tex(self) -> None:
-        """Convert a tex file back to source text format using simple converter"""
-        tex_file = filedialog.askopenfilename(
+        """Convert a tex file back to source text format - with proper file dialog"""
+        tex_file = DialogManager.askopenfilename(
+            parent=self,
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
             title="Select TeX File to Convert"
         )
@@ -15729,20 +20096,19 @@ Created by {self.__author__}
             return
 
         try:
-            # Use the standalone converter
             output_file = convert_beamer_tex_to_simple_text(tex_file)
 
             if output_file:
-                messagebox.showinfo("Success", f"Source file created: {output_file}")
+                messagebox.showinfo("Success", f"Source file created: {output_file}", parent=self)
 
-                # Ask if user wants to load the generated source file
-                if messagebox.askyesno("Load File", "Would you like to load the generated source file?"):
+                if messagebox.askyesno("Load File", "Would you like to load the generated source file?", parent=self):
                     self.load_file(output_file)
             else:
-                messagebox.showerror("Error", "Failed to convert TeX file")
+                messagebox.showerror("Error", "Failed to convert TeX file", parent=self)
 
         except Exception as e:
-            messagebox.showerror("Error", f"Error converting TeX file:\n{str(e)}")
+            messagebox.showerror("Error", f"Error converting TeX file:\n{str(e)}", parent=self)
+
 
     def extract_presentation_info(self, content: str) -> dict:
         """Extract presentation information from document body only"""
@@ -16329,26 +20695,19 @@ Created by {self.__author__}
 
 #-------------------------------------------------------Capture Screen ---------------------------------------
 
-    def capture_screen(self):
-        """
-        Simple screen capture by pasting from clipboard.
-        User takes screenshot using system tools, then clicks the button to paste.
-        """
+    def capture_screen(self) -> None:
+        """Simple screen capture with proper file dialog"""
         try:
             from PIL import ImageGrab
             import time
 
-            # Create media_files directory
             os.makedirs('media_files', exist_ok=True)
-
-            # Generate timestamp for filename
             timestamp = time.strftime("%Y%m%d-%H%M%S")
 
-            # Check which mode we're in from the toolbar
             mode = self.capture_mode.get()
 
             if mode == "animation":
-                self.write(f"\n🎬 Animation Capture Mode (Paste from Clipboard)\n", "cyan")
+                self.write(f"\n🎬 Animation Capture Mode\n", "cyan")
                 self.write(f"  Settings: {self.frame_count.get()} frames, {self.frame_delay.get()}s delay\n", "cyan")
                 self.write(f"\n  Instructions:\n", "yellow")
                 self.write(f"    For each frame:\n", "white")
@@ -16360,7 +20719,6 @@ Created by {self.__author__}
                 frame_count = self.frame_count.get()
 
                 for i in range(frame_count):
-                    # Simple messagebox for instruction - stays on top
                     response = messagebox.askyesno(
                         f"Capture Frame {i+1}/{frame_count}",
                         f"Frame {i+1} of {frame_count}\n\n"
@@ -16377,14 +20735,10 @@ Created by {self.__author__}
                         continue
 
                     self.write(f"  Pasting frame {i+1}/{frame_count}...\n", "cyan")
-
-                    # Get image from clipboard
                     screenshot = ImageGrab.grabclipboard()
 
                     if screenshot is None:
                         self.write(f"  ❌ No image in clipboard for frame {i+1}\n", "red")
-                        self.write(f"  💡 Make sure you took a screenshot before clicking Yes\n", "yellow")
-
                         retry = messagebox.askyesno(
                             "No Image Found",
                             f"No image found in clipboard for frame {i+1}!\n\n"
@@ -16398,7 +20752,7 @@ Created by {self.__author__}
                         else:
                             continue
 
-                    # Save frame
+                    # Save frame with file dialog option
                     frame_path = os.path.join('media_files', f'temp_frame_{timestamp}_{i:03d}.png')
                     screenshot.save(frame_path, 'PNG')
                     frames.append(frame_path)
@@ -16408,12 +20762,29 @@ Created by {self.__author__}
                         time.sleep(0.3)
 
                 if len(frames) >= 2:
-                    filename = f"screen_animation_{timestamp}.gif"
-                    filepath = os.path.join('media_files', filename)
+                    # Ask for save location
+                    filename = DialogManager.asksaveasfilename(
+                        parent=self,
+                        defaultextension=".gif",
+                        initialfile=f"screen_animation_{timestamp}.gif",
+                        initialdir="media_files",
+                        filetypes=[("GIF files", "*.gif"), ("All files", "*.*")],
+                        title="Save Animation"
+                    )
+
+                    if not filename:
+                        self.write(f"❌ Save cancelled\n", "yellow")
+                        # Clean up temp files
+                        for f in frames:
+                            try:
+                                os.unlink(f)
+                            except:
+                                pass
+                        return
 
                     images = [Image.open(f) for f in frames]
                     delay_ms = int(self.frame_delay.get() * 1000)
-                    images[0].save(filepath, save_all=True, append_images=images[1:],
+                    images[0].save(filename, save_all=True, append_images=images[1:],
                                   duration=delay_ms, loop=0, format='GIF')
 
                     for f in frames:
@@ -16422,27 +20793,25 @@ Created by {self.__author__}
                         except:
                             pass
 
-                    size_kb = os.path.getsize(filepath) / 1024
-                    self.write(f"\n✅ Animation saved: {filename} ({len(frames)} frames, {size_kb:.1f} KB)\n", "green")
-                    self.write(f"   Location: media_files/{filename}\n", "green")
+                    size_kb = os.path.getsize(filename) / 1024
+                    self.write(f"\n✅ Animation saved: {os.path.basename(filename)} ({len(frames)} frames, {size_kb:.1f} KB)\n", "green")
 
                     self.media_entry.delete(0, 'end')
-                    self.media_entry.insert(0, f"\\file media_files/{filename}")
+                    # Use relative path if in media_files
+                    rel_path = os.path.relpath(filename, 'media_files')
+                    if not rel_path.startswith('..'):
+                        self.media_entry.insert(0, f"\\file media_files/{rel_path}")
+                    else:
+                        self.media_entry.insert(0, f"\\file {filename}")
                     self.save_current_slide()
 
                     if self.current_slide_index >= 0:
                         self.load_slide(self.current_slide_index)
                         self.update_slide_list()
-
-                    # NO success message box - just terminal output
-
-                elif len(frames) == 1:
-                    self.write(f"⚠ Only 1 frame captured. Need at least 2 frames for animation.\n", "yellow")
                 else:
-                    self.write(f"❌ Failed to capture any frames\n", "red")
+                    self.write(f"⚠ Need at least 2 frames for animation.\n", "yellow")
 
             else:  # Single mode
-                # Simple instruction dialog
                 response = messagebox.askyesno(
                     "Screen Capture",
                     "Take a screenshot using your system's tool:\n\n"
@@ -16458,8 +20827,6 @@ Created by {self.__author__}
                     return
 
                 self.write(f"\n📸 Capturing screenshot...\n", "cyan")
-
-                # Get image from clipboard
                 screenshot = ImageGrab.grabclipboard()
 
                 if screenshot is None:
@@ -16467,24 +20834,38 @@ Created by {self.__author__}
                     self.write("  Please take a screenshot and try again\n", "yellow")
                     return
 
-                filename = f"screen_capture_{timestamp}.png"
-                filepath = os.path.join('media_files', filename)
-                screenshot.save(filepath, 'PNG')
+                # Ask for save location
+                filename = DialogManager.asksaveasfilename(
+                    parent=self,
+                    defaultextension=".png",
+                    initialfile=f"screen_capture_{timestamp}.png",
+                    initialdir="media_files",
+                    filetypes=[("PNG files", "*.png"), ("All files", "*.*")],
+                    title="Save Screenshot"
+                )
 
-                if os.path.exists(filepath):
-                    size_kb = os.path.getsize(filepath) / 1024
-                    self.write(f"✅ Screenshot saved: {filename} ({size_kb:.1f} KB)\n", "green")
-                    self.write(f"   Location: media_files/{filename}\n", "green")
+                if not filename:
+                    self.write(f"❌ Save cancelled\n", "yellow")
+                    return
+
+                screenshot.save(filename, 'PNG')
+
+                if os.path.exists(filename):
+                    size_kb = os.path.getsize(filename) / 1024
+                    self.write(f"✅ Screenshot saved: {os.path.basename(filename)} ({size_kb:.1f} KB)\n", "green")
 
                     self.media_entry.delete(0, 'end')
-                    self.media_entry.insert(0, f"\\file media_files/{filename}")
+                    # Use relative path if in media_files
+                    rel_path = os.path.relpath(filename, 'media_files')
+                    if not rel_path.startswith('..'):
+                        self.media_entry.insert(0, f"\\file media_files/{rel_path}")
+                    else:
+                        self.media_entry.insert(0, f"\\file {filename}")
                     self.save_current_slide()
 
                     if self.current_slide_index >= 0:
                         self.load_slide(self.current_slide_index)
                         self.update_slide_list()
-
-                    # NO success message box - just terminal output
                 else:
                     self.write(f"❌ Failed to save screenshot\n", "red")
 
@@ -16493,6 +20874,7 @@ Created by {self.__author__}
             import traceback
             traceback.print_exc()
             messagebox.showerror("Error", f"Capture failed:\n{str(e)}", parent=self)
+
 
     def debug_file_location(self):
         """Debug method to show where files are being saved"""
@@ -18030,20 +22412,22 @@ Created by {self.__author__}
         }
 
     def open_file(self) -> None:
+        """Open existing presentation - with proper file dialog"""
         global working_folder
         global original_dir
-        """Open existing presentation"""
-        filename = filedialog.askopenfilename(
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+
+        filename = DialogManager.askopenfilename(
+            parent=self,
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Open Presentation"
         )
         if filename:
             self.load_file(filename)
-            # Change to tet file directory
-            working_folder= os.path.dirname(filename) or '.'
+            working_folder = os.path.dirname(filename) or '.'
             os.chdir(working_folder)
-            original_dir=working_folder
-            # Update working directory in terminal
-            self.terminal.set_working_directory(working_folder)
+            original_dir = working_folder
+            if hasattr(self, 'terminal'):
+                self.terminal.set_working_directory(working_folder)
 
 #-----------------------------------------------------------------------------
 
@@ -22828,8 +27212,9 @@ Created by {self.__author__}
         self.content_editor.delete('1.0', 'end')
 
     # Media Handling
+
     def browse_media(self) -> None:
-        """Browse media files with thumbnail preview"""
+        """Browse media files with thumbnail preview - with proper window management"""
         def on_file_selected(media_path):
             self.media_entry.delete(0, 'end')
             self.media_entry.insert(0, media_path)
@@ -22837,7 +27222,9 @@ Created by {self.__author__}
         browser = FileThumbnailBrowser(self, callback=on_file_selected)
         browser.transient(self)
         browser.grab_set()
+        WindowManager.ensure_on_top(browser, self)
         self.wait_window(browser)
+
 
     def youtube_dialog(self) -> None:
         """Handle YouTube video insertion"""
@@ -23321,9 +27708,7 @@ Created by {self.__author__}
     # ============================================================
 
     def save_file(self) -> None:
-        """Save presentation preserving custom preamble and line-level masking with preamble extraction"""
-
-        # Declare global at the beginning
+        """Save presentation - with proper file dialog"""
         global working_folder
 
         # Determine the filename to save
@@ -23331,40 +27716,40 @@ Created by {self.__author__}
 
         # Case 1: We have a current_file (file was loaded or previously saved)
         if self.current_file and os.path.exists(self.current_file):
-            # Ask if user wants to overwrite or save as new
             response = messagebox.askyesno(
                 "Save File",
                 f"File: {os.path.basename(self.current_file)}\n\n"
                 "Do you want to overwrite this file?\n"
-                "Click 'Yes' to overwrite, 'No' to save as a new file."
+                "Click 'Yes' to overwrite, 'No' to save as a new file.",
+                parent=self
             )
             if response:
-                # Overwrite existing file
                 filename = self.current_file
             else:
-                # Save as new file - use the current filename as base
+                # Save as new file
                 base_name = os.path.splitext(os.path.basename(self.current_file))[0]
                 save_dir = os.path.dirname(self.current_file) or working_folder
 
-                filename = filedialog.asksaveasfilename(
+                filename = DialogManager.asksaveasfilename(
+                    parent=self,
                     defaultextension=".txt",
                     initialfile=f"{base_name}.txt",
                     initialdir=save_dir,
-                    filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+                    filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                    title="Save Presentation As"
                 )
                 if not filename:
                     return
                 self.current_file = filename
         else:
             # Case 2: No current_file (brand new unsaved document)
-            # Use the title as default filename, but don't force it
             default_name = "presentation"
 
-            # Only use title if it's not the default placeholder
+            # Use title if available
             if hasattr(self, 'title_entry') and self.title_entry.get():
                 title_text = self.title_entry.get().strip()
                 if title_text and title_text != "Presentation Title":
-                    # Sanitize title for filename
+                    import re
                     default_name = re.sub(r'[<>:"/\\|?*]', '', title_text)
                     default_name = default_name.replace(' ', '_')
                     if not default_name:
@@ -23373,7 +27758,6 @@ Created by {self.__author__}
             # Use the last working directory or Documents folder
             save_dir = working_folder
             if save_dir == "~" or not os.path.exists(save_dir):
-                # Try to find Documents folder
                 possible_docs = [
                     Path.home() / 'Documents',
                     Path.home() / 'documents',
@@ -23386,11 +27770,13 @@ Created by {self.__author__}
                 else:
                     save_dir = str(Path.home())
 
-            filename = filedialog.asksaveasfilename(
+            filename = DialogManager.asksaveasfilename(
+                parent=self,
                 defaultextension=".txt",
                 initialfile=f"{default_name}.txt",
                 initialdir=save_dir,
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save Presentation"
             )
             if not filename:
                 return
@@ -23406,36 +27792,23 @@ Created by {self.__author__}
         self.save_current_slide()
 
         try:
-            # ========== DETERMINE WHICH PREAMBLE TO USE ==========
-            # Priority: 1. Combined preamble from TeX generation
-            #           2. Custom preamble (user explicitly set)
-            #           3. Preamble from file
-            #           4. Generated default preamble
-
+            # Determine which preamble to use
             if hasattr(self, 'preamble_from_file') and self.preamble_origin in ['combined', 'tex_import']:
-                # Use the combined preamble from TeX generation
                 preamble = self.preamble_from_file
-                self.write("  Using combined preamble from TeX generation\n", "cyan")
             elif hasattr(self, 'custom_preamble') and self.custom_preamble and self.using_custom_preamble:
-                # Use the custom preamble
                 preamble = self.custom_preamble
-                self.write("  Using custom preamble\n", "cyan")
             elif self.preamble_from_file and self.preamble_origin == 'file':
-                # Use the preamble we loaded from the file
                 preamble = self.preamble_from_file
-                self.write("  Using preamble from file\n", "cyan")
             else:
-                # Generate default preamble
                 preamble = self.get_custom_preamble()
-                self.write("  Using generated default preamble\n", "cyan")
 
-            # ========== GENERATE SLIDE CONTENT ==========
+            # Generate slide content
             slide_content = self._generate_slide_content_only()
 
-            # ========== COMBINE PREAMBLE + SLIDES ==========
+            # Combine preamble + slides
             content = preamble + "\n\n" + slide_content
 
-            # ========== WRITE TO FILE ==========
+            # Write to file
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(content)
 
@@ -23454,7 +27827,7 @@ Created by {self.__author__}
 
         except Exception as e:
             self.write(f"✗ Error saving file: {str(e)}\n", "red")
-            messagebox.showerror("Error", f"Error saving file:\n{str(e)}")
+            messagebox.showerror("Error", f"Error saving file:\n{str(e)}", parent=self)
             return False
 
     # ============================================================
@@ -23762,7 +28135,8 @@ Created by {self.__author__}
             current_preamble = self.preamble_from_file
             is_custom = True
         else:
-            current_preamble = self.get_custom_preamble()
+            # Generate from presentation info
+            current_preamble = self._generate_full_preamble()
             is_custom = False
 
         # Open preamble editor
@@ -33063,6 +37437,481 @@ Created by {self.__author__}
                     "info"
                 )
 
+    # ============================================================================
+    # COMPLETE UPDATED FILE DIALOG CALLS IN BeamerSlideEditor
+    # ============================================================================
+
+
+    # -----------------------------------------------------------------------------
+    # OPEN CAMERA - Save dialog
+    # -----------------------------------------------------------------------------
+
+    def get_save_location(self, default_name, file_type):
+        """Get save location with custom filename - with proper file dialog"""
+        file_types = {
+            'photo': [('PNG files', '*.png'), ('JPEG files', '*.jpg'), ('All files', '*.*')],
+            'video': [('MP4 files', '*.mp4'), ('AVI files', '*.avi'), ('All files', '*.*')]
+        }
+
+        initialdir = os.path.abspath('media_files')
+        if not os.path.exists(initialdir):
+            os.makedirs(initialdir, exist_ok=True)
+
+        return DialogManager.asksaveasfilename(
+            parent=self,
+            initialfile=default_name,
+            defaultextension=file_types[file_type][0][1].replace('*', ''),
+            filetypes=file_types[file_type],
+            initialdir=initialdir,
+            title=f"Save {file_type.title()} As"
+        )
+
+
+    # -----------------------------------------------------------------------------
+    # OVERLEAF EXPORT - Save dialog
+    # -----------------------------------------------------------------------------
+
+    def create_overleaf_zip(self) -> None:
+        """Create a zip file compatible with Overleaf - with proper file dialog"""
+        if not self.current_file:
+            messagebox.showwarning("Warning", "Please save your file first!", parent=self)
+            return
+
+        try:
+            self.save_current_slide()
+
+            base_filename = os.path.splitext(self.current_file)[0]
+            tex_file = base_filename + '.tex'
+
+            self.clear_terminal()
+            self.write_to_terminal("Creating Overleaf-compatible zip file...\n")
+
+            if not os.path.exists(tex_file):
+                self.write_to_terminal("Generating TeX file...\n")
+                from BeamerSlideGenerator import process_input_file
+                process_input_file(self.current_file, tex_file)
+                self.write_to_terminal("✓ TeX file generated successfully\n", "green")
+
+            # Ask for save location
+            zip_filename = DialogManager.asksaveasfilename(
+                parent=self,
+                defaultextension=".zip",
+                initialfile=f"{base_filename}_overleaf.zip",
+                initialdir=os.path.dirname(self.current_file) or '.',
+                filetypes=[("Zip files", "*.zip"), ("All files", "*.*")],
+                title="Save Overleaf Zip File"
+            )
+
+            if not zip_filename:
+                self.write_to_terminal("❌ Export cancelled\n", "yellow")
+                return
+
+            # Continue with zip creation...
+            with open(tex_file, 'r', encoding='utf-8') as f:
+                tex_content = f.read()
+
+            # ... rest of the zip creation code ...
+
+        except Exception as e:
+            error_msg = f"Error creating zip file: {str(e)}"
+            self.write_to_terminal(f"✗ {error_msg}", "red")
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Error creating zip file:\n{str(e)}", parent=self)
+
+
+    # -----------------------------------------------------------------------------
+    # LOAD CUSTOM DICTIONARY - Spell check
+    # -----------------------------------------------------------------------------
+
+    def load_custom_dictionary(self):
+        """Load custom dictionary from file - with proper file dialog"""
+        file_path = DialogManager.askopenfilename(
+            parent=self,
+            title="Select Custom Dictionary File",
+            filetypes=[
+                ("Dictionary files", "*.dic"),
+                ("Text files", "*.txt"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                words = [line.strip() for line in f if line.strip()]
+
+            for word in words:
+                self.spell_checker.word_frequency.add(word)
+
+            self.check_spelling()
+            self.write(f"✓ Loaded custom dictionary with {len(words)} words\n", "green")
+            messagebox.showinfo("Success", f"Loaded {len(words)} words from custom dictionary", parent=self)
+
+        except Exception as e:
+            error_msg = f"Error loading dictionary: {str(e)}"
+            self.write(f"✗ {error_msg}\n", "red")
+            messagebox.showerror("Error", error_msg, parent=self)
+
+
+    # -----------------------------------------------------------------------------
+    # EXPORT TO OVERLEAF - Alternative with file dialog
+    # -----------------------------------------------------------------------------
+
+    def export_to_overleaf(self):
+        """Export to Overleaf with file dialog"""
+        if not self.current_file:
+            messagebox.showwarning("Warning", "Please save your file first!", parent=self)
+            return
+
+        # Use the create_overleaf_zip method which now has file dialog
+        self.create_overleaf_zip()
+
+
+    # -----------------------------------------------------------------------------
+    # SAVE AS - Separate method for "Save As" functionality
+    # -----------------------------------------------------------------------------
+
+    def save_file_as(self) -> None:
+        """Save presentation with a new name - with proper file dialog"""
+        global working_folder
+
+        self.save_current_slide()
+
+        # Generate default name
+        default_name = "presentation"
+        if hasattr(self, 'title_entry') and self.title_entry.get():
+            title_text = self.title_entry.get().strip()
+            if title_text and title_text != "Presentation Title":
+                import re
+                default_name = re.sub(r'[<>:"/\\|?*]', '', title_text)
+                default_name = default_name.replace(' ', '_')
+                if not default_name:
+                    default_name = "presentation"
+
+        save_dir = working_folder
+        if save_dir == "~" or not os.path.exists(save_dir):
+            possible_docs = [
+                Path.home() / 'Documents',
+                Path.home() / 'documents',
+                Path(os.path.expandvars('%USERPROFILE%\\Documents'))
+            ]
+            for doc_path in possible_docs:
+                if doc_path.exists() and doc_path.is_dir():
+                    save_dir = str(doc_path)
+                    break
+            else:
+                save_dir = str(Path.home())
+
+        filename = DialogManager.asksaveasfilename(
+            parent=self,
+            defaultextension=".txt",
+            initialfile=f"{default_name}.txt",
+            initialdir=save_dir,
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Save Presentation As"
+        )
+
+        if not filename:
+            return
+
+        self.current_file = filename
+        self.save_file()  # Use the existing save logic
+
+
+    # -----------------------------------------------------------------------------
+    # EXPORT THEME - Export theme to file
+    # -----------------------------------------------------------------------------
+
+    def export_theme(self, theme_name):
+        """Export a theme to a file - with proper file dialog"""
+        theme_data = ThemeManager.load_theme(theme_name)
+        if not theme_data:
+            WindowManager.show_message(
+                self,
+                "Theme Not Found",
+                f"Theme '{theme_name}' not found.",
+                "error"
+            )
+            return
+
+        # Ask for save location
+        file_path = DialogManager.asksaveasfilename(
+            parent=self,
+            defaultextension=".bsg-theme",
+            initialfile=f"{theme_name}.bsg-theme",
+            initialdir=ThemeManager.THEME_DIR,
+            filetypes=[("BSG Theme files", "*.bsg-theme"), ("JSON files", "*.json"), ("All files", "*.*")],
+            title="Export Theme"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Add export metadata
+            theme_data['exported'] = datetime.now().isoformat()
+            theme_data['exported_from'] = 'BSG-IDE'
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(theme_data, f, indent=2, ensure_ascii=False)
+
+            WindowManager.show_message(
+                self,
+                "Theme Exported",
+                f"Theme '{theme_name}' exported successfully!\n\n"
+                f"Location: {file_path}",
+                "info"
+            )
+        except Exception as e:
+            WindowManager.show_message(
+                self,
+                "Error",
+                f"Error exporting theme:\n{str(e)}",
+                "error"
+            )
+
+
+    # -----------------------------------------------------------------------------
+    # IMPORT THEME - Import from file with proper file dialog
+    # -----------------------------------------------------------------------------
+
+    def import_theme_from_file(self):
+        """Import a theme from a file - with proper file dialog"""
+        file_path = DialogManager.askopenfilename(
+            parent=self,
+            title="Import Theme",
+            filetypes=[
+                ("BSG Theme files", "*.bsg-theme"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*")
+            ]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                theme_data = json.load(f)
+
+            theme_name = theme_data.get('name', Path(file_path).stem)
+
+            # Ask for theme name
+            new_name = simpledialog.askstring(
+                "Import Theme",
+                "Enter a name for this theme:",
+                parent=self,
+                initialvalue=theme_name
+            )
+
+            if not new_name:
+                return
+
+            # Save to themes directory
+            settings = theme_data.get('settings', {})
+            preamble = theme_data.get('preamble', '')
+
+            ThemeManager.save_theme(new_name, settings, preamble)
+
+            self.refresh_theme_list()
+            WindowManager.show_message(
+                self,
+                "Theme Imported",
+                f"Theme '{new_name}' imported successfully!",
+                "info"
+            )
+
+        except Exception as e:
+            WindowManager.show_message(
+                self,
+                "Error",
+                f"Error importing theme:\n{str(e)}",
+                "error"
+            )
+
+    # ============================================================================
+    # UPDATE THEMES DIALOG - ADD APPLY THEME TO CURRENT DOCUMENT
+    # ============================================================================
+
+    def apply_theme_to_current_document(self, theme_name):
+        """
+        Apply a theme to the current document file.
+        This is called from the main editor.
+        """
+        if not self.current_file:
+            WindowManager.show_message(
+                self,
+                "No Document",
+                "Please open or save a document first.",
+                "warning"
+            )
+            return False
+
+        theme_data = ThemeManager.load_theme(theme_name)
+        if not theme_data:
+            WindowManager.show_message(
+                self,
+                "Theme Not Found",
+                f"Theme '{theme_name}' not found.",
+                "error"
+            )
+            return False
+
+        # Show progress
+        progress_dialog = WindowManager.create_progress_dialog(
+            self,
+            "Applying Theme",
+            f"Applying theme: {theme_name}..."
+        )
+        WindowManager.update_progress_dialog(progress_dialog, 10, "Loading theme...")
+
+        try:
+            # Apply theme to file
+            success = ThemeApplicationSystem.apply_theme_to_file(
+                self.current_file,
+                theme_data,
+                preserve_undefined=True
+            )
+
+            if success:
+                WindowManager.update_progress_dialog(progress_dialog, 80, "Reloading document...")
+
+                # Reload the file
+                self.load_file(self.current_file)
+
+                WindowManager.update_progress_dialog(progress_dialog, 100, "Complete!")
+                WindowManager.close_progress_dialog(progress_dialog)
+
+                WindowManager.show_message(
+                    self,
+                    "Theme Applied",
+                    f"Theme '{theme_name}' applied successfully!\n\n"
+                    "Theme settings took priority.\n"
+                    "Undefined elements were preserved from your document.",
+                    "info"
+                )
+                return True
+            else:
+                WindowManager.close_progress_dialog(progress_dialog)
+                WindowManager.show_message(
+                    self,
+                    "Error",
+                    "Failed to apply theme to document.",
+                    "error"
+                )
+                return False
+
+        except Exception as e:
+            WindowManager.close_progress_dialog(progress_dialog)
+            import traceback
+            traceback.print_exc()
+            WindowManager.show_message(
+                self,
+                "Error",
+                f"Error applying theme:\n{str(e)}",
+                "error"
+            )
+            return False
+
+    def sync_preamble_from_file(self):
+        """Sync the editor's preamble from the current file."""
+        if not self.current_file or not os.path.exists(self.current_file):
+            return
+
+        try:
+            with open(self.current_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            import re
+            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if doc_match:
+                preamble = doc_match.group(1).strip()
+                self.custom_preamble = preamble
+                self.preamble_from_file = preamble
+                self.using_custom_preamble = True
+                self.write(f"✓ Synced preamble from file\n", "green")
+
+                # Update any open theme dialog
+                if hasattr(self, '_theme_dialog') and self._theme_dialog:
+                    self._theme_dialog.current_preamble = preamble
+                    self._theme_dialog.update_preview()
+        except Exception as e:
+            self.write(f"⚠ Error syncing preamble: {str(e)}\n", "yellow")
+
+    def _apply_background_color_to_preamble(self, preamble: str, bg_color: str) -> str:
+        """
+        Apply background color to the preamble with proper LaTeX formatting.
+        Also adjusts text colors based on XOR rule (dark bg = white text, light bg = black text).
+        """
+        import re
+
+        # Remove any existing background canvas settings
+        preamble = re.sub(r'\\setbeamercolor\{background canvas\}\{[^}]*\}', '', preamble)
+        preamble = re.sub(r'\\setbeamercolor\{normal text\}\{[^}]*\}', '', preamble)
+        preamble = re.sub(r'\\setbeamercolor\{frametitle\}\{[^}]*\}', '', preamble)
+
+        # Determine if background is dark (XOR rule)
+        is_dark = self._is_dark_color(bg_color)
+        text_color = "white" if is_dark else "black"
+
+        # Build the background color commands
+        bg_commands = f"""
+    % Background color (XOR rule applied)
+    \\setbeamercolor{{background canvas}}{{bg={bg_color}}}
+    \\setbeamercolor{{normal text}}{{fg={text_color}}}
+    \\setbeamercolor{{frametitle}}{{fg={text_color}}}
+    """
+
+        # Insert before \begin{document}
+        doc_pos = preamble.find('\\begin{document}')
+        if doc_pos != -1:
+            preamble = preamble[:doc_pos] + bg_commands + preamble[doc_pos:]
+        else:
+            preamble = preamble + bg_commands
+
+        return preamble
+
+    def _is_dark_color(self, color: str) -> bool:
+        """Determine if a color is dark (needs white text)"""
+        if not color:
+            return True
+
+        dark_colors = [
+            'black', 'dark', 'night', 'midnight', 'navy', 'darkblue',
+            'darkgreen', 'darkred', 'darkgray', 'darkgrey', 'charcoal',
+            'myblue', 'myred', 'mygreen', 'myteal', 'mypurple',
+            'primary', 'secondary', 'accent', 'forest', 'teal',
+            'greenbiodiv', 'blueai', 'redwarning', 'brown',
+            'maroon', 'olive', 'navy', 'slate', 'steel', '#0', '#1', '#2'
+        ]
+
+        color_lower = color.lower()
+        for dark in dark_colors:
+            if dark in color_lower:
+                return True
+
+        # Check hex colors
+        if color.startswith('#'):
+            hex_color = color.lstrip('#')
+            try:
+                if len(hex_color) == 3:
+                    r = int(hex_color[0]*2, 16)
+                    g = int(hex_color[1]*2, 16)
+                    b = int(hex_color[2]*2, 16)
+                elif len(hex_color) == 6:
+                    r = int(hex_color[0:2], 16)
+                    g = int(hex_color[2:4], 16)
+                    b = int(hex_color[4:6], 16)
+                else:
+                    return True
+                luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                return luminance < 128
+            except:
+                return True
+
+        return True
 
 
 class ScreenCaptureMethod:
@@ -33100,7 +37949,6 @@ class ScreenCaptureMethod:
 
         available_methods.append('pil_fallback')
         return session_type, available_methods
-
 
 class WaylandScreenCapture:
     """Screen capture for Wayland using grim/slurp"""
@@ -33202,7 +38050,6 @@ class WaylandScreenCapture:
             pass
 
         return False
-
 
 class X11ScreenCapture:
     """Screen capture for X11 using import or ffmpeg"""
@@ -33309,7 +38156,6 @@ class X11ScreenCapture:
 
         return False
 
-
 class PILFallbackCapture:
     """Fallback screen capture using PIL (works everywhere)"""
 
@@ -33372,7 +38218,6 @@ class PILFallbackCapture:
         except Exception as e:
             self.write(f"  PIL animation error: {e}\n", "red")
             return False
-
 
 class UnifiedScreenCapture:
     """Unified screen capture that automatically selects the best method"""
@@ -33646,9 +38491,7 @@ def compile_with_notes_mode(input_file: str, mode: str, keep_temp: bool = False)
         if not keep_temp:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-
 #---------------------------------------------------------------------------------
-
 
 def verify_pymupdf_installation():
     """
@@ -33732,7 +38575,6 @@ def import_required_packages():
         print(f"Error importing required packages: {str(e)}")
         traceback.print_exc()
         sys.exit(1)
-
 
 def update_installation():
     """Silently update installed files if running from a newer version"""
@@ -34513,6 +39355,7 @@ def main():
     try:
         # Setup paths first
         package_root, resources_dir = setup_paths()
+        #Soriginals = patch_all_file_dialogs()
 
         # Parse arguments
         import argparse

@@ -22,6 +22,22 @@ output_dir = ""
 # TIKZ FIX FUNCTIONS
 # ============================================================
 
+# BeamerSlideGenerator.py - Complete Helper Functions
+
+import re
+import os
+import glob
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from urllib.parse import urlparse
+import requests
+from PIL import Image
+
+# ============================================================
+# TIKZ FIX FUNCTIONS
+# ============================================================
 def fix_tikz_node_line_breaks(tikz_content: str) -> str:
     """
     Fix TikZ node line breaks by adding proper minipage or minimum height.
@@ -34,33 +50,58 @@ def fix_tikz_node_line_breaks(tikz_content: str) -> str:
 
     def fix_node_content(match):
         """Fix a single TikZ node's content."""
-        # Extract the full node command
+        groups = match.groups()
+        num_groups = len(groups)
+
         full_node = match.group(0)
 
-        # Safely extract groups based on what's available
-        num_groups = len(match.groups())
+        options = groups[0] if num_groups >= 1 and groups[0] is not None else ""
+        node_name = groups[1] if num_groups >= 2 and groups[1] is not None else ""
+        position = groups[2] if num_groups >= 3 and groups[2] is not None else ""
+        content_text = groups[3] if num_groups >= 4 and groups[3] is not None else ""
 
-        options = match.group(1) if num_groups >= 1 and match.group(1) is not None else ""
-        node_name = match.group(2) if num_groups >= 2 and match.group(2) is not None else ""
-        position = match.group(3) if num_groups >= 3 and match.group(3) is not None else ""
-        content_text = match.group(4) if num_groups >= 4 and match.group(4) is not None else ""
+        if not content_text:
+            import re as re2
+            brace_match = re2.search(r'\{([^}]*)\}$', full_node)
+            if brace_match:
+                content_text = brace_match.group(1)
+            else:
+                return full_node
 
-        # If we couldn't extract content properly, try a different approach
-        if not content_text and match.groups():
-            # Try to find content in the last group
-            content_text = match.groups()[-1] if match.groups()[-1] is not None else ""
+        # ============================================================
+        # CRITICAL FIX 1: If node already has text width, DON'T modify
+        # TikZ handles line breaks natively with text width
+        # ============================================================
+        if 'text width' in options:
+            # Only add minimum height if missing
+            if 'minimum height' not in options:
+                options = options + ', minimum height=1.5cm'
+                if node_name and position:
+                    return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+                elif node_name:
+                    return f'\\node[{options}] ({node_name}) {{{content_text}}};'
+                else:
+                    return f'\\node[{options}] {{{content_text}}};'
+            return full_node
 
         # Check if content has line breaks (\\)
-        if '\\\\' not in content_text and '\\' not in content_text:
-            return full_node  # No line breaks, return as-is
+        if '\\\\' not in content_text:
+            return full_node
 
         # Check if minipage is already used
         if '\\begin{minipage}' in content_text:
-            return full_node  # Already has minipage
+            if '\\end{minipage}' not in content_text:
+                content_text = content_text.rstrip() + '\\end{minipage}'
+            if node_name and position:
+                return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+            elif node_name:
+                return f'\\node[{options}] ({node_name}) {{{content_text}}};'
+            else:
+                return f'\\node[{options}] {{{content_text}}};'
 
         # Check if minimum height is already set
         if 'minimum height' in options:
-            return full_node  # Already has minimum height
+            return full_node
 
         # Add minimum height and adjust text width
         if 'text width' not in options and options:
@@ -70,16 +111,47 @@ def fix_tikz_node_line_breaks(tikz_content: str) -> str:
         else:
             options = 'text width=2.2cm, minimum height=1.5cm'
 
-        # Fix the content with proper minipage
-        # Split by \\ and clean up, handling both \\ and \\\\
-        lines = re.split(r'\\\\+', content_text)
+        # ============================================================
+        # CRITICAL FIX 2: Properly split content preserving all text
+        # ============================================================
+        import re as re2
+        # Split by \\ but preserve the content
+        # Handle both \\ and \\[spacing]
+        parts = re2.split(r'(\\\\\[[^\]]*\]|\\\\\s*)', content_text)
+
+        # Reconstruct lines with proper spacing
+        lines = []
+        current_line = ""
+        i = 0
+        while i < len(parts):
+            part = parts[i].strip()
+            if i + 1 < len(parts) and re2.match(r'\\\\', parts[i+1]):
+                # This is a separator
+                if current_line:
+                    lines.append(current_line)
+                    current_line = ""
+                i += 1
+            else:
+                if part:
+                    if current_line:
+                        current_line += " " + part
+                    else:
+                        current_line = part
+                i += 1
+        if current_line:
+            lines.append(current_line)
+
+        # Remove empty lines
         lines = [line.strip() for line in lines if line.strip()]
 
         if len(lines) > 1:
-            # Create minipage with proper line breaks
-            minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
+            # CRITICAL FIX 3: Properly create minipage with all content
+            # Join lines with proper line breaks
+            joined_lines = '\\\\ '.join(lines)
 
-            # Reconstruct the node with the fixed content
+            # Create minipage with proper centering
+            minipage_content = f'\\begin{{minipage}}{{2.0cm}}\\centering\\textbf{{{joined_lines}}}\\end{{minipage}}'
+
             if node_name and position:
                 return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
             elif node_name:
@@ -89,119 +161,943 @@ def fix_tikz_node_line_breaks(tikz_content: str) -> str:
         else:
             return full_node
 
-    # Pattern 1: \node[options] (name) at (position) {content};
-    # Use a more robust pattern with non-greedy matching
-    pattern1 = r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};'
+    # Patterns to match different node formats
+    patterns = [
+        # Full node with options, name, position
+        r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+        # Node with options and name (no position)
+        r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+        # Node with options only
+        r'\\node\[([^\]]*)\]\s*\{((?:[^{}]|{[^{}]*})*)\};',
+        # Node with name and position (no options)
+        r'\\node\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+        # Node with name only
+        r'\\node\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+        # Bare node
+        r'\\node\s*\{((?:[^{}]|{[^{}]*})*)\};',
+    ]
 
-    # Try each pattern separately and accumulate results
-    try:
-        tikz_content = re.sub(pattern1, fix_node_content, tikz_content, flags=re.DOTALL)
-    except (IndexError, TypeError) as e:
-        print(f"  ⚠ Pattern1 fix failed: {e}")
+    for pattern in patterns:
+        try:
+            def safe_sub(match_obj):
+                try:
+                    return fix_node_content(match_obj)
+                except (IndexError, TypeError) as e:
+                    return match_obj.group(0)
 
-    # Pattern 2: \node[options] (name) {content};
-    pattern2 = r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*\{([^}]*)\};'
-    try:
-        tikz_content = re.sub(pattern2, fix_node_content, tikz_content, flags=re.DOTALL)
-    except (IndexError, TypeError) as e:
-        print(f"  ⚠ Pattern2 fix failed: {e}")
+            tikz_content = re.sub(pattern, safe_sub, tikz_content, flags=re.DOTALL)
+        except Exception as e:
+            print(f"  ⚠ Pattern failed: {str(e)[:50]}")
+            continue
 
-    # Pattern 3: \node[options] {content}; (no name)
-    pattern3 = r'\\node\[([^\]]*)\]\s*\{([^}]*)\};'
-    try:
-        tikz_content = re.sub(pattern3, fix_node_content, tikz_content, flags=re.DOTALL)
-    except (IndexError, TypeError) as e:
-        print(f"  ⚠ Pattern3 fix failed: {e}")
-
-    # Pattern 4: \node (name) at (position) {content}; (no options)
-    pattern4 = r'\\node\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};'
-    try:
-        def fix_no_options(match):
-            node_name = match.group(1)
-            position = match.group(2)
-            content_text = match.group(3)
-
-            if '\\\\' not in content_text:
-                return match.group(0)
-
-            lines = re.split(r'\\\\+', content_text)
-            lines = [line.strip() for line in lines if line.strip()]
-
-            if len(lines) > 1:
-                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
-                return f'\\node ({node_name}) at ({position}) {{{minipage_content}}};'
-            return match.group(0)
-
-        tikz_content = re.sub(pattern4, fix_no_options, tikz_content, flags=re.DOTALL)
-    except (IndexError, TypeError) as e:
-        print(f"  ⚠ Pattern4 fix failed: {e}")
-
-    # Pattern 5: \node (name) {content}; (no options, no position)
-    pattern5 = r'\\node\s*\(([^)]*)\)\s*\{([^}]*)\};'
-    try:
-        def fix_no_options_no_pos(match):
-            node_name = match.group(1)
-            content_text = match.group(2)
-
-            if '\\\\' not in content_text:
-                return match.group(0)
-
-            lines = re.split(r'\\\\+', content_text)
-            lines = [line.strip() for line in lines if line.strip()]
-
-            if len(lines) > 1:
-                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
-                return f'\\node ({node_name}) {{{minipage_content}}};'
-            return match.group(0)
-
-        tikz_content = re.sub(pattern5, fix_no_options_no_pos, tikz_content, flags=re.DOTALL)
-    except (IndexError, TypeError) as e:
-        print(f"  ⚠ Pattern5 fix failed: {e}")
-
-    # Also handle nodes with curly braces inside content - use a different approach
-    # Pattern for nodes with nested braces
-    pattern6 = r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};'
-    try:
-        def fix_nested_content(match):
-            options = match.group(1) if match.group(1) is not None else ""
-            node_name = match.group(2) if match.group(2) is not None else ""
-            position = match.group(3) if match.group(3) is not None else ""
-            content_text = match.group(4) if match.group(4) is not None else ""
-
-            if '\\\\' not in content_text:
-                return match.group(0)
-
-            if '\\begin{minipage}' in content_text:
-                return match.group(0)
-
-            if 'minimum height' in options:
-                return match.group(0)
-
-            if 'text width' not in options and options:
-                options = options + ', text width=2.2cm, minimum height=1.5cm'
-            elif options:
-                options = options + ', minimum height=1.5cm'
-            else:
-                options = 'text width=2.2cm, minimum height=1.5cm'
-
-            lines = re.split(r'\\\\+', content_text)
-            lines = [line.strip() for line in lines if line.strip()]
-
-            if len(lines) > 1:
-                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
-                if node_name and position:
-                    return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
-                elif node_name:
-                    return f'\\node[{options}] ({node_name}) {{{minipage_content}}};'
-                else:
-                    return f'\\node[{options}] {{{minipage_content}}};'
-            return match.group(0)
-
-        tikz_content = re.sub(pattern6, fix_nested_content, tikz_content, flags=re.DOTALL)
-    except (IndexError, TypeError) as e:
-        print(f"  ⚠ Pattern6 fix failed: {e}")
+    # ============================================================
+    # FINAL PASS: Ensure all minipage environments are properly closed
+    # ============================================================
+    import re as re2
+    # Find any \begin{minipage} without matching \end{minipage}
+    minipage_pattern = r'\\begin\{minipage\}.*?(?=\\end\{minipage\}|$)'
+    matches = re2.findall(minipage_pattern, tikz_content, re.DOTALL)
+    for match in matches:
+        if '\\begin{minipage}' in match and '\\end{minipage}' not in match:
+            fixed_match = match + '\\end{minipage}'
+            tikz_content = tikz_content.replace(match, fixed_match)
 
     return tikz_content
+
+def fix_tikz_braces(tikz_content: str) -> str:
+    """
+    Fix unbalanced braces in TikZ content specifically.
+    This is more aggressive than the general brace fixer for TikZ.
+    """
+    if not tikz_content or not isinstance(tikz_content, str):
+        return tikz_content
+
+    # Count braces
+    open_braces = tikz_content.count('{')
+    close_braces = tikz_content.count('}')
+
+    # Add missing closing braces
+    if open_braces > close_braces:
+        tikz_content += '}' * (open_braces - close_braces)
+    # Remove extra closing braces
+    elif close_braces > open_braces:
+        # Remove from the end
+        while tikz_content.endswith('}') and tikz_content.count('}') > tikz_content.count('{'):
+            tikz_content = tikz_content[:-1]
+
+    # Fix common TikZ syntax issues
+    tikz_content = re.sub(r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*\{([^}]*)\};',
+                         lambda m: f'\\node[{m.group(1)}] ({m.group(2)}) {{{m.group(3)}}};',
+                         tikz_content)
+
+    return tikz_content
+
+
+# ============================================================
+# BRACE FIXING FUNCTIONS
+# ============================================================
+
+def fix_braces(text: str) -> str:
+    """
+    Fix malformed braces in LaTeX content.
+    Preserves tabular and TikZ content.
+    """
+    if not text:
+        return text
+
+    # Import re at function level to ensure it's available
+    import re
+
+    # ============================================================
+    # CRITICAL: Preserve tabular content completely
+    # ============================================================
+    if '\\begin{tabular}' in text or '\\begin{array}' in text:
+        return text
+
+    # ============================================================
+    # CRITICAL: Preserve TikZ content
+    # ============================================================
+    if '\\begin{tikzpicture}' in text or '\\end{tikzpicture}' in text:
+        return text
+
+    # Also check for common TikZ patterns
+    tikz_patterns = [
+        r'\\node\[.*?\]\s*\(.*?\)\s*\{.*?\};',
+        r'\\draw.*?;',
+        r'\\fill.*?;',
+        r'\\scope.*?;',
+        r'\\begin\{scope\}',
+        r'\\end\{scope\}',
+    ]
+
+    for pattern in tikz_patterns:
+        if re.search(pattern, text, re.DOTALL):
+            return text
+
+    # Remove triple or more closing braces
+    text = re.sub(r'\}{3,}', '}}', text)
+
+    # Fix: \Huge{...} -> {\Huge ...}
+    text = re.sub(r'\\Huge\{', r'\\Huge ', text)
+    text = re.sub(r'\\Large\{', r'\\Large ', text)
+    text = re.sub(r'\\large\{', r'\\large ', text)
+
+    # Fix: \textbf{...}} -> \textbf{...}
+    text = re.sub(r'\\textbf\{([^}]*?)\}(?=\})', r'\\textbf{\1}', text)
+
+    # Fix: \textcolor{blue}{text}} -> \textcolor{blue}{text}
+    text = re.sub(r'\\textcolor\{([^}]+)\}\{([^}]*?)\}(?=\})', r'\\textcolor{\1}{\2}', text)
+
+    # Fix: \large text -> \large{text}
+    if '\\large ' in text and '{' not in text:
+        parts = text.split('\\large ')
+        if len(parts) == 2:
+            text = parts[0] + '\\large{' + parts[1] + '}'
+
+    # Balance braces
+    open_count = text.count('{')
+    close_count = text.count('}')
+    if open_count > close_count:
+        text = text + '}' * (open_count - close_count)
+    elif close_count > open_count:
+        while text.endswith('}') and text.count('}') > text.count('{'):
+            text = text[:-1]
+
+    # Remove empty braces (only for non-tabular content)
+    text = re.sub(r'\{\}', '', text)
+
+    return text
+
+
+# ============================================================
+# SPECIAL CHARACTER ESCAPING
+# ============================================================
+
+def escape_special_chars(text: str) -> str:
+    """
+    Escape special LaTeX characters outside math mode.
+
+    Args:
+        text: Input text string
+
+    Returns:
+        Text with special characters escaped
+    """
+    if not text:
+        return text
+
+    # Don't escape in math mode
+    if re.search(r'\$.*\$', text):
+        return text
+
+    # Escape special characters
+    special_chars = {
+        '&': '\\&',
+        '%': '\\%',
+        '#': '\\#',
+        '_': '\\_',
+        '~': '\\textasciitilde',
+        '^': '\\textasciicircum'
+    }
+
+    for char, escaped in special_chars.items():
+        if char in text and f'\\{char}' not in text:
+            # Don't escape if already escaped
+            text = text.replace(char, escaped)
+
+    return text
+
+
+def sanitize_latex_content(content_line: str) -> str:
+    """
+    Sanitize LaTeX content to prevent compilation errors while preserving math.
+    """
+    if not content_line:
+        return ""
+
+    # If this is a math expression, preserve it completely
+    is_math = False
+
+    # Inline math
+    if content_line.startswith('$') and content_line.endswith('$'):
+        is_math = True
+    # Display math
+    elif content_line.startswith('$$') and content_line.endswith('$$'):
+        is_math = True
+    elif content_line.startswith('\\[') and content_line.endswith('\\]'):
+        is_math = True
+    # Quote-bracket math
+    elif re.match(r'[\'"]\[.*?[\'"]\]', content_line, re.DOTALL):
+        is_math = True
+    # Math environments
+    elif '\\begin{align' in content_line or '\\begin{equation}' in content_line:
+        is_math = True
+
+    # If it's math, return as-is
+    if is_math:
+        return content_line
+
+    # For non-math content, fix braces
+    content_line = content_line.strip()
+
+    # Fix unbalanced braces
+    in_math = False
+    open_braces = 0
+    close_braces = 0
+
+    i = 0
+    while i < len(content_line):
+        char = content_line[i]
+
+        # Track math mode
+        if char == '$' and (i == 0 or content_line[i-1] != '\\'):
+            in_math = not in_math
+            i += 1
+            continue
+        elif char == '\\' and i + 1 < len(content_line) and content_line[i+1] == '[':
+            in_math = True
+            i += 2
+            continue
+        elif char == '\\' and i + 1 < len(content_line) and content_line[i+1] == ']':
+            in_math = False
+            i += 2
+            continue
+
+        if not in_math:
+            if char == '{':
+                open_braces += 1
+            elif char == '}':
+                close_braces += 1
+        i += 1
+
+    if open_braces != close_braces:
+        if open_braces > close_braces:
+            content_line += '}' * (open_braces - close_braces)
+        elif close_braces > open_braces:
+            content_line = '{' * (close_braces - open_braces) + content_line
+
+    # Fix excessive brace nesting (but not in math)
+    if '$' not in content_line:
+        content_line = content_line.replace('{{{', '{').replace('}}}', '}')
+        content_line = content_line.replace('{{', '{').replace('}}', '}')
+
+    # Escape special characters outside math mode
+    if '$' not in content_line and '\\[' not in content_line:
+        special_chars = ['#', '%', '&', '_']
+        for char in special_chars:
+            if char in content_line and f'\\{char}' not in content_line:
+                content_line = content_line.replace(char, f'\\{char}')
+
+    return content_line
+
+
+# ============================================================
+# ENVIRONMENT FIXING FUNCTIONS
+# ============================================================
+
+def fix_itemize_environments(text: str) -> str:
+    """
+    Fix broken itemize/enumerate environments.
+    """
+    if not text:
+        return text
+
+    # Fix missing \begin{itemize}
+    if '- ' in text and '\\begin{itemize}' not in text and '\\item' not in text:
+        # This is a simplistic fix - assumes bullets without proper itemize
+        lines = text.split('\n')
+        fixed_lines = []
+        in_list = False
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('-') or stripped.startswith('•'):
+                if not in_list:
+                    fixed_lines.append('\\begin{itemize}')
+                    in_list = True
+                bullet_content = re.sub(r'^[-•]\s*', '', stripped)
+                fixed_lines.append(f'\\item {bullet_content}')
+            else:
+                if in_list:
+                    fixed_lines.append('\\end{itemize}')
+                    in_list = False
+                fixed_lines.append(line)
+
+        if in_list:
+            fixed_lines.append('\\end{itemize}')
+
+        return '\n'.join(fixed_lines)
+
+    # Fix missing \end{itemize}
+    if '\\begin{itemize}' in text and '\\end{itemize}' not in text:
+        text = text + '\n\\end{itemize}'
+
+    # Fix missing \begin{itemize} for \item
+    if '\\item' in text and '\\begin{itemize}' not in text:
+        text = '\\begin{itemize}\n' + text + '\n\\end{itemize}'
+
+    return text
+
+
+def fix_tables(text: str) -> str:
+    """
+    Fix table formatting issues.
+    """
+    if not text:
+        return text
+
+    if '\\begin{tabular}' in text:
+        # Fix: @ l -> @{}l
+        text = re.sub(r'@\s+([lrc])', r'@{\1}', text)
+        # Fix: @{ l -> @{}l
+        text = re.sub(r'@\{\s+([lrc])', r'@{\1}', text)
+        # Fix: l @} -> l@{}
+        text = re.sub(r'([lrc])\s+@\}', r'\1@{}', text)
+        # Fix: l @ -> l@{}
+        text = re.sub(r'([lrc])\s+@', r'\1@{}', text)
+
+        # Add missing \hline at beginning of table
+        if '\\begin{tabular}' in text and '\\hline' not in text:
+            # Find the tabular start and insert \hline
+            lines = text.split('\n')
+            fixed_lines = []
+            in_tabular = False
+
+            for line in lines:
+                if '\\begin{tabular}' in line:
+                    in_tabular = True
+                    fixed_lines.append(line)
+                    fixed_lines.append('\\hline')
+                elif '\\end{tabular}' in line:
+                    in_tabular = False
+                    fixed_lines.append(line)
+                else:
+                    fixed_lines.append(line)
+
+            return '\n'.join(fixed_lines)
+
+    # Fix trailing backslashes
+    text = re.sub(r'\\\\\s*$', '', text, flags=re.MULTILINE)
+
+    return text
+
+
+def fix_math_mode(text: str) -> str:
+    """
+    Fix math mode delimiters.
+    """
+    if not text:
+        return text
+
+    # Fix unclosed inline math
+    if '\\(' in text and '\\)' not in text:
+        if text.count('\\(') > text.count('\\)'):
+            text = text + '\\)'
+
+    # Fix unclosed display math
+    if '\\[' in text and '\\]' not in text:
+        if text.count('\\[') > text.count('\\]'):
+            text = text + '\\]'
+
+    # Fix unclosed $ math
+    if '$' in text:
+        count = text.count('$')
+        if count % 2 != 0:
+            text = text + '$'
+
+    return text
+
+
+# ============================================================
+# SLIDE PROCESSING FUNCTIONS
+# ============================================================
+
+def clean_title_for_latex(title: str) -> str:
+    """
+    Clean title for LaTeX - remove problematic characters.
+
+    Args:
+        title: Input title string
+
+    Returns:
+        Cleaned title safe for LaTeX
+    """
+    if not title:
+        return "Untitled"
+
+    # Remove excessive braces
+    title = title.replace('{{{', '{').replace('}}}', '}')
+    title = title.replace('{{', '{').replace('}}', '}')
+
+    # Remove any LaTeX formatting commands that might cause issues
+    title = re.sub(r'\\[a-zA-Z]+\{', '', title)
+    title = re.sub(r'[{}]', '', title)
+
+    # Escape special characters
+    title = title.replace('&', '\\&')
+    title = title.replace('%', '\\%')
+    title = title.replace('$', '\\$')
+    title = title.replace('#', '\\#')
+    title = title.replace('_', '\\_')
+    title = title.replace('~', '\\textasciitilde')
+    title = title.replace('^', '\\textasciicircum')
+
+    # Clean up extra spaces
+    title = re.sub(r'\s+', ' ', title).strip()
+
+    return title or "Untitled"
+
+
+def process_special_effects(content_line: str) -> str:
+    """
+    Process special text effects (glow, shadow, gradient, highlight).
+
+    Args:
+        content_line: Input line with special effects
+
+    Returns:
+        Processed line with effects converted to safe LaTeX
+    """
+    if not content_line:
+        return content_line
+
+    # Process glowtext - replace with colored text
+    while '\\glowtext[' in content_line or '\\glowtext{' in content_line:
+        match = re.search(r'\\glowtext(?:\[(.*?)\])?\{(.*?)\}', content_line)
+        if not match:
+            break
+        color_args, text = match.group(1), match.group(2)
+        color = color_args.strip() if color_args else 'myblue'
+        replacement = f"\\textcolor{{{color}}}{{\\textbf{{{text}}}}}"
+        content_line = content_line.replace(match.group(0), replacement)
+
+    # Process shadowtext - replace with bold text
+    while '\\shadowtext[' in content_line or '\\shadowtext{' in content_line:
+        match = re.search(r'\\shadowtext(?:\[(.*?)\])?\{(.*?)\}', content_line)
+        if not match:
+            break
+        color_args, text = match.group(1), match.group(2)
+        replacement = f"\\textbf{{{text}}}"
+        content_line = content_line.replace(match.group(0), replacement)
+
+    # Process gradienttext - replace with colored text
+    while '\\gradienttext[' in content_line:
+        match = re.search(r'\\gradienttext\[(.*?)\]\[(.*?)\]\{(.*?)\}', content_line)
+        if not match:
+            break
+        start_color, end_color, text = match.group(1), match.group(2), match.group(3)
+        replacement = f"\\textcolor{{{end_color}}}{{{text}}}"
+        content_line = content_line.replace(match.group(0), replacement)
+
+    # Process highlighting
+    while '\\hlkey[' in content_line or '\\hlkey{' in content_line:
+        match = re.search(r'\\hlkey(?:\[(.*?)\])?\{(.*?)\}', content_line)
+        if not match:
+            break
+        color_args, text = match.group(1), match.group(2)
+        bg_color = color_args.strip() if color_args else 'myblue!20'
+        replacement = f"\\colorbox{{{bg_color}}}{{\\textbf{{{text}}}}}"
+        content_line = content_line.replace(match.group(0), replacement)
+
+    # Process note highlighting
+    while '\\hlnote[' in content_line or '\\hlnote{' in content_line:
+        match = re.search(r'\\hlnote(?:\[(.*?)\])?\{(.*?)\}', content_line)
+        if not match:
+            break
+        color_args, text = match.group(1), match.group(2)
+        bg_color = color_args.strip() if color_args else 'mygreen!20'
+        replacement = f"\\colorbox{{{bg_color}}}{{\\textbf{{{text}}}}}"
+        content_line = content_line.replace(match.group(0), replacement)
+
+    return content_line
+
+
+def process_latex_content(content_line: str) -> str:
+    """
+    Enhanced content processing that preserves TikZ content.
+
+    Args:
+        content_line: Input line of LaTeX content
+
+    Returns:
+        Processed content line
+    """
+    if not content_line:
+        return content_line
+
+    # If it's TikZ content, fix only the node line breaks and return
+    if '\\begin{tikzpicture}' in content_line or '\\end{tikzpicture}' in content_line:
+        return fix_tikz_node_line_breaks(content_line)
+
+    # If it's other LaTeX environment, return as-is (but sanitized)
+    if content_line.startswith(('\\begin{', '\\end{', '\\scalebox{')):
+        return sanitize_latex_content(content_line)
+
+    # Process special effects
+    content_line = process_special_effects(content_line)
+
+    # Original processing for regular text
+    result = []
+    in_math = False
+    brace_level = 0
+    i = 0
+
+    while i < len(content_line):
+        char = content_line[i]
+
+        # Handle math mode transitions
+        if char == '$':
+            in_math = not in_math
+            result.append(char)
+            i += 1
+            continue
+
+        # Handle braces
+        if char == '{':
+            brace_level += 1
+            result.append(char)
+            i += 1
+            continue
+        elif char == '}':
+            brace_level -= 1
+            result.append(char)
+            i += 1
+            continue
+
+        # Process characters based on context
+        if in_math or brace_level > 0:
+            result.append(char)
+        else:
+            if char in '_&%#~^':
+                result.append('\\' + char)
+            else:
+                result.append(char)
+        i += 1
+
+    processed = ''.join(result)
+    return sanitize_latex_content(processed)
+
+
+# ============================================================
+# MEDIA PROCESSING FUNCTIONS
+# ============================================================
+
+def generate_preview_frame(filepath: str, output_path: str = None) -> str:
+    """
+    Generate a preview frame for different media types.
+
+    Args:
+        filepath: Path to media file
+        output_path: Output path for preview image
+
+    Returns:
+        Path to the preview image, or None if failed
+    """
+    try:
+        import cv2
+
+        # Default output path if none provided
+        if output_path is None:
+            global output_dir
+            base_name = os.path.splitext(os.path.basename(filepath))[0]
+            output_path = os.path.join(output_dir, f"{base_name}_preview.png")
+
+        # Get file extension
+        _, ext = os.path.splitext(filepath)
+        ext = ext.lower()
+
+        # Handle different media types
+        if ext in ['.mp4', '.avi', '.mov', '.mkv']:
+            # Video file
+            cap = cv2.VideoCapture(filepath)
+            ret, frame = cap.read()
+            if ret:
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(frame_rgb)
+                img.save(output_path)
+                cap.release()
+                return output_path
+        elif ext in ['.gif']:
+            # Animated GIF - extract first frame
+            with Image.open(filepath) as img:
+                img.seek(0)
+                img.save(output_path, 'PNG')
+                return output_path
+        elif ext in ['.mp3', '.wav', '.ogg']:
+            # Audio file - create a simple icon
+            img = Image.new('RGB', (400, 300), color='black')
+            img.save(output_path)
+            return output_path
+        elif ext in ['.png', '.jpg', '.jpeg']:
+            # Static image - use as is
+            return filepath
+
+        return None
+    except Exception as e:
+        print(f"Error generating preview frame: {str(e)}")
+        return None
+
+
+def sanitize_filename(filename: str, max_length: int = 50) -> str:
+    """
+    Sanitize a filename for safe use in file systems.
+
+    Args:
+        filename: Input filename
+        max_length: Maximum length of filename
+
+    Returns:
+        Sanitized filename
+    """
+    # Remove or replace unsafe characters
+    unsafe_chars = '<>:"/\\|?*'
+    filename = ''.join(c if c not in unsafe_chars else '_' for c in filename)
+
+    # Keep only alphanumeric characters, spaces, dots, and underscores
+    safe_chars = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-')
+    filename = ''.join(c if c in safe_chars else '_' for c in filename)
+
+    # Replace multiple spaces/underscores with single ones
+    while '__' in filename:
+        filename = filename.replace('__', '_')
+
+    # Replace spaces with underscores
+    filename = filename.replace(' ', '_')
+
+    # Remove dots from the beginning
+    filename = filename.lstrip('.')
+
+    # Limit length while preserving extension
+    name, ext = os.path.splitext(filename)
+    if len(name) > max_length:
+        name = name[:max_length]
+    filename = name + ext
+
+    # If filename is empty after sanitization, use a default name
+    if not filename or filename == '.':
+        filename = 'video.mp4'
+
+    return filename
+
+
+# ============================================================
+# UTILITY FUNCTIONS
+# ============================================================
+
+def format_url_footnote(url: str) -> str:
+    """
+    Format URL footnotes with proper hyperlinks.
+
+    Args:
+        url: URL to format
+
+    Returns:
+        Formatted LaTeX footnote
+    """
+    try:
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        if 'youtube.com' in parsed.netloc or 'youtu.be' in parsed.netloc:
+            return f"\\footnote{{YouTube video: \\href{{{url}}}{{\\textcolor{{blue}}{{[Watch Video]}}}} }}"
+        elif 'github.com' in parsed.netloc:
+            return f"\\footnote{{GitHub: \\href{{{url}}}{{\\textcolor{{blue}}{{[View Repository]}}}} }}"
+        else:
+            return f"\\footnote{{Source: \\href{{{url}}}{{\\textcolor{{blue}}{{[View link]}}}} }}"
+    except:
+        return f"\\footnote{{Source: {url}}}"
+
+
+def format_url_note(url: str) -> str:
+    """
+    Format URL as a clickable note.
+
+    Args:
+        url: URL to format
+
+    Returns:
+        Formatted LaTeX note
+    """
+    if 'youtube.com' in url or 'youtu.be' in url:
+        return f"\\textcolor{{blue}}{{[Watch Video]: {url}}}"
+    elif 'github.com' in url:
+        return f"\\textcolor{{blue}}{{[View Repository]: {url}}}"
+    else:
+        return f"\\textcolor{{blue}}{{[{url}]}}"
+
+
+def parse_media_directive(directive_string: str) -> tuple:
+    """
+    Parse media directive string into components.
+
+    Args:
+        directive_string: Media directive string
+
+    Returns:
+        Tuple of (directive_type, media_source, playable, original_directive)
+    """
+    try:
+        directive_string = directive_string.strip()
+        playable = False
+        original_directive = directive_string
+
+        # Handle empty or None cases
+        if not directive_string or directive_string == '\\None':
+            return 'none', None, False, original_directive
+
+        # Define directive mappings
+        directives = {
+            '\\wm': 'watermark',
+            '\\ff': 'fullframe',
+            '\\pip': 'pip',
+            '\\split': 'split',
+            '\\hl': 'highlight',
+            '\\bg': 'background',
+            '\\tb': 'topbottom',
+            '\\ol': 'overlay',
+            '\\corner': 'corner',
+            '\\mosaic': 'mosaic'
+        }
+
+        # Split the string to handle multiple parts
+        parts = directive_string.split()
+
+        # Check for layout directives first
+        if parts and parts[0] in directives:
+            return directives[parts[0]], ' '.join(parts[1:]), False, original_directive
+
+        # Initialize variables
+        directive_type = 'url'
+        media_source = ''
+
+        # Process sequentially through parts
+        i = 0
+        while i < len(parts):
+            part = parts[i]
+
+            if part == '\\play':
+                playable = True
+                i += 1
+                # Look at the next part after \play
+                if i < len(parts):
+                    next_part = parts[i]
+                    if next_part == '\\file':
+                        directive_type = 'file'
+                        i += 1
+                        # Collect all remaining parts as the file path
+                        if i < len(parts):
+                            media_source = ' '.join(parts[i:])
+                        break
+                    elif next_part == '\\url':
+                        directive_type = 'url'
+                        i += 1
+                        if i < len(parts):
+                            media_source = ' '.join(parts[i:])
+                        break
+                    else:
+                        # Just a URL or path after \play (no \file or \url)
+                        directive_type = 'url'
+                        media_source = ' '.join(parts[i:])
+                        break
+                break
+
+            elif part == '\\file':
+                directive_type = 'file'
+                i += 1
+                if i < len(parts):
+                    media_source = ' '.join(parts[i:])
+                break
+
+            elif part == '\\url':
+                directive_type = 'url'
+                i += 1
+                if i < len(parts):
+                    media_source = ' '.join(parts[i:])
+                break
+
+            elif part == '\\None':
+                return 'none', None, False, original_directive
+
+            elif part.startswith('\\') and part in directives:
+                # Layout directive without \play prefix
+                return directives[part], ' '.join(parts[i+1:]), False, original_directive
+
+            else:
+                # No directive found - treat as plain URL or path
+                if not media_source:
+                    media_source = part
+                else:
+                    media_source += ' ' + part
+                i += 1
+
+        # Clean up media source
+        if media_source:
+            # Remove quotes if present
+            media_source = media_source.strip().strip('"').strip("'")
+
+            # Remove any leading backslashes or commands
+            if media_source.startswith('\\'):
+                parts = media_source.split(maxsplit=1)
+                if len(parts) > 1:
+                    media_source = parts[1]
+
+        # Detect YouTube URLs and mark as playable AND url
+        if directive_type == 'url' and media_source:
+            media_source_lower = media_source.lower()
+            # Always treat YouTube URLs as playable
+            if any(domain in media_source_lower for domain in ['youtube.com', 'youtu.be']):
+                playable = True
+
+        # Handle local file paths
+        if directive_type == 'file' and media_source:
+            # Check if it's a video file by extension
+            video_extensions = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv', '.wmv')
+            if media_source.lower().endswith(video_extensions):
+                playable = True
+
+            # Ensure proper path format
+            media_source = media_source.replace('\\', '/')
+
+        return directive_type, media_source, playable, original_directive
+
+    except Exception as e:
+        print(f"Error parsing media directive: {str(e)}")
+        return 'none', None, False, directive_string
+
+
+# ============================================================
+# TITLE CLEANING FUNCTIONS
+# ============================================================
+
+def clean_title(title: str) -> str:
+    """
+    Clean title for LaTeX - remove braces and special characters.
+
+    Args:
+        title: Input title
+
+    Returns:
+        Cleaned title
+    """
+    if not title:
+        return "Untitled"
+
+    # Remove braces
+    title = title.replace('{', '').replace('}', '')
+    title = title.replace('\\{', '').replace('\\}', '')
+
+    # Escape special characters
+    title = title.replace('&', '\\&')
+    title = title.replace('%', '\\%')
+    title = title.replace('$', '\\$')
+    title = title.replace('#', '\\#')
+    title = title.replace('_', '\\_')
+
+    return title.strip() or "Untitled"
+
+
+# ============================================================
+# EXPORT LIST - Functions available for import
+# ============================================================
+
+__all__ = [
+    # TikZ functions
+    'fix_tikz_node_line_breaks',
+    'fix_tikz_braces',
+
+    # Brace functions
+    'fix_braces',
+    'escape_special_chars',
+    'sanitize_latex_content',
+
+    # Environment functions
+    'fix_itemize_environments',
+    'fix_tables',
+    'fix_math_mode',
+
+    # Slide processing
+    'clean_title_for_latex',
+    'clean_title',
+    'process_special_effects',
+    'process_latex_content',
+
+    # Media functions
+    'generate_preview_frame',
+    'sanitize_filename',
+    'format_url_footnote',
+    'format_url_note',
+    'parse_media_directive',
+]
+
+# ============================================================
+# MAIN - For testing
+# ============================================================
+
+if __name__ == "__main__":
+    # Test TikZ fix
+    test_tikz = r"""
+    \begin{tikzpicture}
+    \node[draw, circle] (node1) at (0,0) {Line 1\\ Line 2\\ Line 3};
+    \node[draw] (node2) at (2,0) {Single line};
+    \end{tikzpicture}
+    """
+    print("Testing TikZ fix...")
+    fixed = fix_tikz_node_line_breaks(test_tikz)
+    print(fixed)
+
+    # Test brace fix
+    test_braces = r"This has {{unbalanced braces}}"
+    print(f"\nTesting brace fix...")
+    fixed = fix_braces(test_braces)
+    print(fixed)
+
+    # Test title cleaning
+    test_title = r"Title with & and % special chars"
+    print(f"\nTesting title cleaning...")
+    cleaned = clean_title_for_latex(test_title)
+    print(cleaned)
+
+    print("\nAll helper functions tested successfully!")
 
 #--------------------------------------------------------------------------------------------------------
 def set_terminal_io(term_io):
@@ -287,8 +1183,16 @@ def generate_preview_frame(filepath, output_path=None):
         print(f"Error generating preview frame: {str(e)}")
         return None
 
+# ============================================================
+# ENHANCED: CLEANER DEFAULT PREAMBLE WITH FULL FEATURE SUPPORT
+# ============================================================
 def get_beamer_preamble(title, subtitle, author, institution, short_institute, date):
-    """Returns complete Beamer preamble with intelligent auto-scaling and frame mode support"""
+    """
+    Returns complete Beamer preamble with intelligent auto-scaling and frame mode support.
+    PRESERVES user-defined colors and doesn't override them with defaults.
+    Includes dynamic color inversion based on background color (XOR rule).
+    """
+    import re
 
     def clean_text(text):
         if not text:
@@ -313,13 +1217,21 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     short_institute = clean_text(short_institute) if short_institute else clean_text(institution)
     date = clean_text(date) if date else r'\today'
 
-    core_preamble = r"""
-\documentclass[aspectratio=169]{beamer}
+    # Extract short versions for footer
+    short_author = clean_text(author.split(',')[0] if ',' in author else author[:30] if len(author) > 30 else author)
+    short_title = clean_text(title[:40] if len(title) > 40 else title)
 
-% Essential packages
-\usepackage{hyperref}
+    # ============================================================
+    # COMPLETE PREAMBLE - With Dynamic Color Inversion
+    # NOTE: All % signs in the string below are escaped as %%
+    # because this string is used with % formatting later
+    # ============================================================
+    core_preamble = r"""
+\documentclass[aspectratio=169,11pt]{beamer}
+
+% ========== COMPACT PACKAGES ==========
 \usepackage{graphicx}
-\usepackage{amsmath}
+\usepackage{amsmath, amssymb, bm}
 \usepackage{tikz}
 \usepackage{pgfplots}
 \usepackage{xstring}
@@ -327,86 +1239,450 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{multimedia}
 \usepackage{xifthen}
 \usepackage{xcolor}
-\usepackage{booktabs}
-\usepackage{grffile}
+\usepackage[utf8]{inputenc}
+\usepackage{textcomp}
 \usepackage{adjustbox}
+\usepackage{tikz-3dplot}
+\usepackage{pgfpages}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
 \usepackage{environ}
+\usepackage{colortbl}
+\usepackage{makecell}  % For compact table cells
 
-% NO geometry - let aspectratio handle sizing
+% ========== COMPACT TIKZ LIBRARIES ==========
+\usetikzlibrary{arrows, shapes, positioning, calc, patterns,
+                decorations.pathreplacing, 3d, shadows.blur,
+                shapes.geometric, arrows.meta, backgrounds, fit,
+                decorations.text, fadings}
 
-% Load TikZ libraries
-\usetikzlibrary{positioning}
-\usetikzlibrary{shapes.symbols}
-\usetikzlibrary{shapes.callouts}
-\usetikzlibrary{shapes.multipart}
-\usetikzlibrary{calc}
-\usetikzlibrary{overlay-beamer-styles}
-\usetikzlibrary{shapes.geometric}
-\usetikzlibrary{arrows.meta}
-\usetikzlibrary{backgrounds}
-\usetikzlibrary{fit}
-
-\setbeamercovered{dynamic}
-\setbeamerfont{item projected}{size=\small}
-\setbeamercolor{alerted text}{fg=white}
-
-% Extended packages with fallbacks
+% ========== OPTIONAL PACKAGES ==========
 \IfFileExists{tcolorbox.sty}{\usepackage{tcolorbox}}{}
 \IfFileExists{fontawesome5.sty}{\usepackage{fontawesome5}}{}
 \IfFileExists{pifont.sty}{\usepackage{pifont}}{}
-\IfFileExists{soul.sty}{\usepackage{soul}}{}
 
+% ========== PGFPLOTS ==========
 \pgfplotsset{compat=1.18}
 
+% ========== THEME ==========
+\usetheme{Madrid}
+\usecolortheme{owl}
+
+% ========== COMPACT BEAMER SETTINGS ==========
+\setbeamercovered{dynamic}
+\setbeamerfont{item projected}{size=\small}
+\setbeamersize{text margin left=3pt,text margin right=3pt}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=true]
+
+% ========== MAXIMUM CONTENT DENSITY ==========
+% Tight spacing for dense content
+\setlength{\parskip}{0.08em}
+\setlength{\itemsep}{0.02em}
+\setlength{\topsep}{0.02em}
+\setlength{\partopsep}{0pt}
+\setlength{\abovedisplayskip}{0pt}
+\setlength{\belowdisplayskip}{0pt}
+\setlength{\abovedisplayshortskip}{0pt}
+\setlength{\belowdisplayshortskip}{0pt}
+
+% Compact itemize
+\def\beamer@itemize@itemshape{%
+    \setlength{\itemsep}{0.02em}%
+    \setlength{\topsep}{0.02em}%
+    \setlength{\partopsep}{0pt}%
+}
+
+% Compact tables
+\setlength{\arrayrulewidth}{0.3pt}
+\renewcommand{\arraystretch}{0.85}
+\setlength{\tabcolsep}{1.5pt}
+
+% Compact blocks
+\addtobeamertemplate{block begin}{%
+    \setlength{\abovedisplayskip}{0pt}%
+    \setlength{\belowdisplayskip}{0pt}%
+}{}
+
+% ========== NOTES ==========
+\setbeameroption{show notes on second screen=right}
+\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
+
+% ========== ANIMATED BACKGROUND ==========
+\newcommand{\anbg}[2][0.2]{%
+    \ifx\@empty#2\@empty
+        \setbeamertemplate{background}{}
+    \else
+        \setbeamertemplate{background}{%
+            \begin{tikzpicture}[remember picture,overlay]
+                \node[opacity=#1] at (current page.center) {%
+                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
+                };
+            \end{tikzpicture}%
+        }
+    \fi
+}
+
+% ========== DYNAMIC COLOR INVERSION SYSTEM ==========
+% Based on XOR rule: white text on dark backgrounds, black on light backgrounds
+
+% Helper: Convert color name to RGB
+\newcommand{\getcolorrgb}[1]{%
+    \ifx#1\myblue\def\colorr{0}\def\colorg{130}\def\colorb{255}\else
+    \ifx#1\myred\def\colorr{255}\def\colorg{50}\def\colorb{50}\else
+    \ifx#1\mygreen\def\colorr{0}\def\colorg{200}\def\colorb{100}\else
+    \ifx#1\myyellow\def\colorr{255}\def\colorg{210}\def\colorb{0}\else
+    \ifx#1\myorange\def\colorr{255}\def\colorg{130}\def\colorb{0}\else
+    \ifx#1\primary\def\colorr{0}\def\colorg{90}\def\colorb{156}\else
+    \ifx#1\secondary\def\colorr{0}\def\colorg{162}\def\colorb{184}\else
+    \ifx#1\accent\def\colorr{239}\def\colorg{127}\def\colorb{56}\else
+    \ifx#1\forest\def\colorr{34}\def\colorg{139}\def\colorb{34}\else
+    \ifx#1\teal\def\colorr{0}\def\colorg{128}\def\colorb{128}\else
+    \ifx#1\gold\def\colorr{212}\def\colorg{175}\def\colorb{55}\else
+    \ifx#1\brown\def\colorr{165}\def\colorg{42}\def\colorb{42}\else
+    \ifx#1\greenbiodiv\def\colorr{46}\def\colorg{139}\def\colorb{87}\else
+    \ifx#1\blueai\def\colorr{70}\def\colorg{130}\def\colorb{180}\else
+    \ifx#1\redwarning\def\colorr{200}\def\colorg{50}\def\colorb{50}\else
+    \def\colorr{128}\def\colorg{128}\def\colorb{128}%
+    \fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi\fi
+}
+
+% Calculate luminance and determine text color (XOR rule)
+\newcommand{\gettextcolor}[1]{%
+    \getcolorrgb{#1}%
+    \pgfmathsetmacro{\luminance}{0.2126*\colorr/255 + 0.7152*\colorg/255 + 0.0722*\colorb/255}%
+    \ifdim\luminance pt > 0.179 pt\relax
+        \def\textcolorchoice{black}%
+    \else
+        \def\textcolorchoice{white}%
+    \fi
+}
+
+% Macro: Auto-contrast text color based on background
+\newcommand{\autotextcolor}[2]{%
+    \gettextcolor{#1}%
+    \textcolor{\textcolorchoice}{#2}%
+}
+
+\newcommand{\blackframe}[1]{%
+  {
+    \setbeamercolor{background canvas}{bg=black}
+    \begin{frame}#1
+    \end{frame}
+  }%
+}
+% Macro: Auto-invert color (XOR rule)
+\newcommand{\xorinvert}[1]{%
+    \gettextcolor{#1}%
+    \textcolor{\textcolorchoice}{#1}%
+}
+
+% ========== CUSTOM COMMANDS WITH AUTO-INVERSION ==========
 \newcommand{\shadowtext}[2][2pt]{%
-    \textcolor{white}{\textbf{#2}}%
+   \begin{tikzpicture}[baseline]
+       \node[blur shadow={shadow blur steps=5,shadow xshift=0pt,shadow yshift=-#1,
+             shadow opacity=0.75}, text=white] {#2};
+   \end{tikzpicture}%
 }
 
 \newcommand{\glowtext}[2][myblue]{%
-    \textcolor{#1}{\textbf{#2}}%
+   \begin{tikzpicture}[baseline]
+       \node[circle, inner sep=1pt,
+             blur shadow={shadow blur steps=10,shadow xshift=0pt,
+             shadow yshift=0pt,shadow blur radius=5pt,
+             shadow opacity=0.5,shadow color=#1},
+             text=white] {#2};
+   \end{tikzpicture}%
 }
 
+% ========== HIGHLIGHTING WITH AUTO-INVERSION ==========
+\newcommand{\hlbias}[1]{\autotextcolor{myblue}{\textbf{#1}}}
+\newcommand{\hlvariance}[1]{\autotextcolor{mypink}{\textbf{#1}}}
+\newcommand{\hltotal}[1]{\autotextcolor{myyellow}{\textbf{#1}}}
+\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\autotextcolor{myblue}{\textbf{#1}}}}
+\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\autotextcolor{mygreen}{\textbf{#1}}}}
+
+% ========== FCOLORBOX WITH AUTO-INVERSION ==========
+\newcommand{\fcolorboxx}[3][]{%
+    \begingroup
+    \def\boxcolor{#2}%
+    \def\boxtext{#3}%
+    % Auto-determine text color using XOR rule
+    \gettextcolor{\boxcolor}%
+    \fcolorbox{\boxcolor}{\boxcolor!20}{\textcolor{\textcolorchoice}{\boxtext}}%
+    \endgroup
+}
+
+\newcommand{\fboxcolor}[3][]{%
+    \fcolorbox{#2}{#2!20}{\autotextcolor{#2}{#3}}%
+}
+
+\newcommand{\fboxcolorop}[4][0.2]{%
+    \fcolorbox{#2}{#2!#1}{\autotextcolor{#2}{#4}}%
+}
+
+% ========== COLORBOX WITH AUTO-INVERSION ==========
+\newcommand{\colorboxx}[2][]{%
+    \autotextcolor{#2}{#1}%
+}
+
+\newcommand{\textbox}[3][]{%
+    \autotextcolor{#2}{#3}%
+}
+
+% ========== DYNAMIC BACKGROUND COLOR HANDLING ==========
+% Store the current background color
+\def\currentbgcolor{black}
+
+% Command to set background color and auto-update text colors
+\newcommand{\setbgcolor}[1]{%
+    \def\currentbgcolor{#1}%
+    \setbeamercolor{background canvas}{bg=#1}%
+    % Auto-invert normal text color
+    \gettextcolor{#1}%
+    \setbeamercolor{normal text}{fg=\textcolorchoice}%
+    \setbeamercolor{frametitle}{fg=\textcolorchoice}%
+}
+
+% ========== COLORBOX (tcolorbox) WITH AUTO-INVERSION ==========
 \IfFileExists{tcolorbox.sty}{%
     \newtcolorbox{alertbox}[1][red]{%
-        colback=##1!5!white,
-        colframe=##1!75!black,
-        fonttitle=\bfseries,
-        boxrule=0.5pt,
-        rounded corners
+        colback=##1!5!white, colframe=##1!75!black, fonttitle=\bfseries,
+        boxrule=0.4pt, rounded corners, shadow={2mm}{-1mm}{0mm}{black!50},
+        coltext=\autotextcolor{##1}{##1}
     }
     \newtcolorbox{infobox}[1][blue]{%
-        enhanced,
-        colback=##1!5!white,
-        colframe=##1!75!black,
-        arc=4mm,
-        boxrule=0.5pt,
-        fonttitle=\bfseries,
-        attach boxed title to top center={yshift=-3mm,yshifttext=-1mm},
-        boxed title style={size=small,colback=##1!75!black}
+        enhanced, colback=##1!5!white, colframe=##1!75!black,
+        arc=3mm, boxrule=0.4pt, fonttitle=\bfseries,
+        attach boxed title to top center={yshift=-2mm,yshifttext=-1mm},
+        boxed title style={size=small,colback=##1!75!black},
+        shadow={2mm}{-1mm}{0mm}{black!50},
+        coltext=\autotextcolor{##1}{##1}
+    }
+    \newtcolorbox{successbox}[1][green]{%
+        colback=##1!5!white, colframe=##1!75!black, fonttitle=\bfseries,
+        boxrule=0.4pt, rounded corners, shadow={2mm}{-1mm}{0mm}{black!50},
+        coltext=\autotextcolor{##1}{##1}
+    }
+    \newtcolorbox{warningbox}[1][orange]{%
+        colback=##1!5!white, colframe=##1!75!black, fonttitle=\bfseries,
+        boxrule=0.4pt, rounded corners, shadow={2mm}{-1mm}{0mm}{black!50},
+        coltext=\autotextcolor{##1}{##1}
+    }
+    \newtcolorbox{coloredbox}[2][blue]{%
+        colback=##1!5!white, colframe=##1!75!black, fonttitle=\bfseries,
+        title={##2}, boxrule=0.4pt, rounded corners,
+        shadow={2mm}{-1mm}{0mm}{black!50},
+        coltext=\autotextcolor{##1}{##1}
     }
 }{}
 
-% Define colors
-\definecolor{myred}{RGB}{255,50,50}
-\definecolor{myblue}{RGB}{0,130,255}
-\definecolor{mygreen}{RGB}{0,200,100}
-\definecolor{myyellow}{RGB}{255,210,0}
-\definecolor{myorange}{RGB}{255,130,0}
-\definecolor{mypurple}{RGB}{147,112,219}
-\definecolor{mypink}{RGB}{255,105,180}
-\definecolor{myteal}{RGB}{0,128,128}
-\definecolor{mygray}{RGB}{128,128,128}
-\definecolor{mybrown}{RGB}{139,69,19}
-\definecolor{mycyan}{RGB}{0,255,255}
+% ========== COMPLETE COLORS ==========
+% Primary palette
+\ifcsname myred\endcsname\else\definecolor{myred}{RGB}{255,50,50}\fi
+\ifcsname myblue\endcsname\else\definecolor{myblue}{RGB}{0,130,255}\fi
+\ifcsname mygreen\endcsname\else\definecolor{mygreen}{RGB}{0,200,100}\fi
+\ifcsname myyellow\endcsname\else\definecolor{myyellow}{RGB}{255,210,0}\fi
+\ifcsname myorange\endcsname\else\definecolor{myorange}{RGB}{255,130,0}\fi
+\ifcsname mypurple\endcsname\else\definecolor{mypurple}{RGB}{147,112,219}\fi
+\ifcsname mypink\endcsname\else\definecolor{mypink}{RGB}{255,105,180}\fi
+\ifcsname myteal\endcsname\else\definecolor{myteal}{RGB}{0,128,128}\fi
+\ifcsname mygray\endcsname\else\definecolor{mygray}{RGB}{128,128,128}\fi
+\ifcsname mybrown\endcsname\else\definecolor{mybrown}{RGB}{139,69,19}\fi
+\ifcsname mycyan\endcsname\else\definecolor{mycyan}{RGB}{0,255,255}\fi
 
-\newcommand{\hlbias}[1]{\textcolor{myblue}{\textbf{#1}}}
-\newcommand{\hlvariance}[1]{\textcolor{mypink}{\textbf{#1}}}
-\newcommand{\hltotal}[1]{\textcolor{myyellow}{\textbf{#1}}}
-\newcommand{\hlkey}[1]{\colorbox{myblue!20}{\textbf{#1}}}
-\newcommand{\hlnote}[1]{\colorbox{mygreen!20}{\textbf{#1}}}
-"""
+% Theme colors
+\ifcsname primary\endcsname\else\definecolor{primary}{RGB}{0,90,156}\fi
+\ifcsname secondary\endcsname\else\definecolor{secondary}{RGB}{0,162,184}\fi
+\ifcsname accent\endcsname\else\definecolor{accent}{RGB}{239,127,56}\fi
+\ifcsname gold\endcsname\else\definecolor{gold}{RGB}{212,175,55}\fi
+\ifcsname brown\endcsname\else\definecolor{brown}{RGB}{165,42,42}\fi
+\ifcsname teal\endcsname\else\definecolor{teal}{RGB}{0,128,128}\fi
+\ifcsname forest\endcsname\else\definecolor{forest}{RGB}{34,139,34}\fi
 
-    layout_commands = r"""
+% Light variants
+\ifcsname primarylight\endcsname\else\definecolor{primarylight}{RGB}{230,242,255}\fi
+\ifcsname secondarylight\endcsname\else\definecolor{secondarylight}{RGB}{220,245,250}\fi
+\ifcsname accentlight\endcsname\else\definecolor{accentlight}{RGB}{255,240,230}\fi
+\ifcsname teallight\endcsname\else\definecolor{teallight}{RGB}{220,245,245}\fi
+\ifcsname forestlight\endcsname\else\definecolor{forestlight}{RGB}{220,245,220}\fi
+
+% Semantic colors
+\ifcsname info\endcsname\else\definecolor{info}{RGB}{52,152,219}\fi
+\ifcsname success\endcsname\else\definecolor{success}{RGB}{46,204,113}\fi
+\ifcsname warning\endcsname\else\definecolor{warning}{RGB}{241,196,15}\fi
+\ifcsname danger\endcsname\else\definecolor{danger}{RGB}{231,76,60}\fi
+
+% BioNest/airis4D colors
+\ifcsname greenbiodiv\endcsname\else\definecolor{greenbiodiv}{RGB}{46,139,87}\fi
+\ifcsname blueai\endcsname\else\definecolor{blueai}{RGB}{70,130,180}\fi
+\ifcsname redwarning\endcsname\else\definecolor{redwarning}{RGB}{200,50,50}\fi
+\ifcsname redlight\endcsname\else\definecolor{redlight}{RGB}{255,230,230}\fi
+
+% Glow colors
+\ifcsname glowblue\endcsname\else\definecolor{glowblue}{RGB}{0,150,255}\fi
+\ifcsname glowyellow\endcsname\else\definecolor{glowyellow}{RGB}{255,223,0}\fi
+\ifcsname glowgreen\endcsname\else\definecolor{glowgreen}{RGB}{0,255,128}\fi
+\ifcsname glowpink\endcsname\else\definecolor{glowpink}{RGB}{255,182,193}\fi
+
+% Standard named colors (full set)
+\ifcsname red\endcsname\else\definecolor{red}{RGB}{255,0,0}\fi
+\ifcsname green\endcsname\else\definecolor{green}{RGB}{0,255,0}\fi
+\ifcsname blue\endcsname\else\definecolor{blue}{RGB}{0,0,255}\fi
+\ifcsname yellow\endcsname\else\definecolor{yellow}{RGB}{255,255,0}\fi
+\ifcsname orange\endcsname\else\definecolor{orange}{RGB}{255,165,0}\fi
+\ifcsname purple\endcsname\else\definecolor{purple}{RGB}{128,0,128}\fi
+\ifcsname pink\endcsname\else\definecolor{pink}{RGB}{255,192,203}\fi
+\ifcsname cyan\endcsname\else\definecolor{cyan}{RGB}{0,255,255}\fi
+\ifcsname magenta\endcsname\else\definecolor{magenta}{RGB}{255,0,255}\fi
+\ifcsname lime\endcsname\else\definecolor{lime}{RGB}{0,255,0}\fi
+\ifcsname olive\endcsname\else\definecolor{olive}{RGB}{128,128,0}\fi
+\ifcsname maroon\endcsname\else\definecolor{maroon}{RGB}{128,0,0}\fi
+\ifcsname navy\endcsname\else\definecolor{navy}{RGB}{0,0,128}\fi
+\ifcsname turquoise\endcsname\else\definecolor{turquoise}{RGB}{64,224,208}\fi
+\ifcsname coral\endcsname\else\definecolor{coral}{RGB}{255,127,80}\fi
+\ifcsname salmon\endcsname\else\definecolor{salmon}{RGB}{250,128,114}\fi
+\ifcsname khaki\endcsname\else\definecolor{khaki}{RGB}{240,230,140}\fi
+\ifcsname lavender\endcsname\else\definecolor{lavender}{RGB}{230,230,250}\fi
+\ifcsname violet\endcsname\else\definecolor{violet}{RGB}{238,130,238}\fi
+\ifcsname plum\endcsname\else\definecolor{plum}{RGB}{221,160,221}\fi
+\ifcsname orchid\endcsname\else\definecolor{orchid}{RGB}{218,112,214}\fi
+\ifcsname fuchsia\endcsname\else\definecolor{fuchsia}{RGB}{255,0,255}\fi
+\ifcsname tomato\endcsname\else\definecolor{tomato}{RGB}{255,99,71}\fi
+\ifcsname indianred\endcsname\else\definecolor{indianred}{RGB}{205,92,92}\fi
+\ifcsname lightblue\endcsname\else\definecolor{lightblue}{RGB}{173,216,230}\fi
+\ifcsname lightgray\endcsname\else\definecolor{lightgray}{RGB}{211,211,211}\fi
+\ifcsname lightgreen\endcsname\else\definecolor{lightgreen}{RGB}{144,238,144}\fi
+\ifcsname lightpink\endcsname\else\definecolor{lightpink}{RGB}{255,182,193}\fi
+\ifcsname skyblue\endcsname\else\definecolor{skyblue}{RGB}{135,206,235}\fi
+\ifcsname steelblue\endcsname\else\definecolor{steelblue}{RGB}{70,130,180}\fi
+\ifcsname tan\endcsname\else\definecolor{tan}{RGB}{210,180,140}\fi
+\ifcsname wheat\endcsname\else\definecolor{wheat}{RGB}{245,222,179}\fi
+\ifcsname whitesmoke\endcsname\else\definecolor{whitesmoke}{RGB}{245,245,245}\fi
+\ifcsname yellowgreen\endcsname\else\definecolor{yellowgreen}{RGB}{154,205,50}\fi
+
+% ========== BEAMER COLORS ==========
+\setbeamercolor{normal text}{fg=white}
+\setbeamercolor{structure}{fg=myyellow}
+\setbeamercolor{alerted text}{fg=myorange}
+\setbeamercolor{example text}{fg=mygreen}
+\setbeamercolor{background canvas}{bg=black}
+\setbeamercolor{frametitle}{fg=white,bg=black}
+
+\setbeamercolor{block title}{fg=white,bg=myblue!80!black}
+\setbeamercolor{block body}{fg=white,bg=black!95}
+\setbeamercolor{block title example}{fg=white,bg=mygreen!80!black}
+\setbeamercolor{block body example}{fg=white,bg=black!95}
+\setbeamercolor{block title alerted}{fg=white,bg=myred!80!black}
+\setbeamercolor{block body alerted}{fg=white,bg=black!95}
+
+% ========== GRAPHICS PATH ==========
+\graphicspath{{./images/}}
+
+% ========== COMPACT BLOCK TEMPLATES ==========
+\setbeamertemplate{block begin}{
+  \vskip0.8ex
+  \begin{beamercolorbox}[
+      rounded=3pt, leftskip=0.8ex, colsep*=0.6ex,
+      shadow={0mm}{-1mm}{4mm}{black!60}
+    ]{block title}
+    \usebeamerfont*{block title}\insertblocktitle
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-0.5pt}
+  \begin{beamercolorbox}[
+      rounded=3pt, leftskip=0.8ex, rightskip=0.8ex,
+      colsep*=0.6ex, shadow={0mm}{-1mm}{5mm}{black!50}
+    ]{block body}
+    \vskip0.5ex
+    \usebeamerfont{block body}
+}
+\setbeamertemplate{block end}{%
+  \vskip0.5ex
+  \end{beamercolorbox}
+  \vskip0.8ex
+}
+
+% ========== CUSTOM BLOCKS WITH AUTO-INVERSION ==========
+\newenvironment<>{coloredblock}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!80!black}
+    \setbeamercolor{block body}{fg=white,bg=black!95}
+  }%
+  \usebeamertemplate{block begin}}
+  {\par\usebeamertemplate{block end}\end{actionenv}}
+
+\newenvironment<>{cardblock}[2][myblue]{%
+  \begin{actionenv}#3%
+  \def\insertblocktitle{#2}%
+  \par%
+  \mode<presentation>{%
+    \setbeamercolor{block title}{fg=white,bg=#1!90!black}
+    \setbeamercolor{block body}{fg=white,bg=black!92}
+  }%
+  \begin{beamercolorbox}[
+      rounded=4pt, leftskip=1ex, colsep*=0.8ex,
+      shadow={0mm}{-2mm}{6mm}{#1!50}
+    ]{block title}
+    \usebeamerfont*{block title}\textbf{\large\insertblocktitle}
+  \end{beamercolorbox}
+  {\nointerlineskip\vskip-1pt}
+  \begin{beamercolorbox}[
+      rounded=4pt, leftskip=1ex, rightskip=1ex,
+      colsep*=0.8ex, shadow={0mm}{-2mm}{8mm}{black!50}
+    ]{block body}
+    \vskip0.8ex
+    \usebeamerfont{block body}}
+  {\vskip0.8ex\end{beamercolorbox}\end{actionenv}}
+
+% ========== SHORT DEFINITIONS (Footer) ==========
+\def\insertshortinstitute{%s}
+\def\insertshortauthor{%s}
+\def\insertshorttitle{%s}
+\def\insertshortdate{\today}
+
+% ========== TITLE PAGE INFO ==========
+\title{%s}
+\subtitle{%s}
+\author{%s}
+\institute{%s}
+\date{%s}
+
+% ========== FRAME TITLE ==========
+\setbeamertemplate{frametitle}{
+   \nointerlineskip
+   \vskip0.5ex
+   \begin{beamercolorbox}[wd=\paperwidth,ht=2.5ex,dp=1.5ex]{frametitle}
+       \begin{minipage}[t]{\dimexpr\paperwidth-3em}
+           \centering
+           \vspace{1pt}
+           \insertframetitle
+           \vspace{1pt}
+       \end{minipage}
+   \end{beamercolorbox}
+}
+
+% ========== FOOTLINE ==========
+\setbeamertemplate{footline}{%
+ \leavevmode%
+ \hbox{%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.5ex,dp=0.8ex,center]{author in head/foot}%
+     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.5ex,dp=0.8ex,center]{title in head/foot}%
+     \usebeamerfont{title in head/foot}\insertshorttitle%
+   \end{beamercolorbox}%
+   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.5ex,dp=0.8ex,right]{date in head/foot}%
+     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{1em}%
+     \insertframenumber{} / \inserttotalframenumber\hspace*{1ex}%
+   \end{beamercolorbox}}%
+ \vskip0pt%
+}
+
 % ========== LAYOUT COMMANDS ==========
 \ifcsname split\endcsname\else
 \newcommand{\split}[2]{%
@@ -500,7 +1776,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     \begin{center}
         \includegraphics[width=0.8\textwidth,keepaspectratio]{#1}
     \end{center}
-    \vspace{0.5em}
+    \vspace{0.3em}
     #2
 }
 \fi
@@ -558,135 +1834,8 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     \mosaic@process@helper\mosaic@remaining,\@empty
 }
 \fi
-"""
 
-    theme_setup = r"""
-% Theme setup
-\usetheme{Madrid}
-\usecolortheme{owl}
-
-\setbeamercolor{normal text}{fg=white}
-\setbeamercolor{structure}{fg=myyellow}
-\setbeamercolor{alerted text}{fg=myorange}
-\setbeamercolor{example text}{fg=mygreen}
-\setbeamercolor{background canvas}{bg=black}
-\setbeamercolor{frametitle}{fg=white,bg=black}
-
-\usepackage{pgfpages}
-\setbeameroption{show notes on second screen=right}
-\setbeamertemplate{note page}{\pagecolor{yellow!5}\insertnote}
-
-\newcommand{\anbg}[2][0.2]{%
-    \ifx\@empty#2\@empty
-        \setbeamertemplate{background}{}
-    \else
-        \setbeamertemplate{background}{%
-            \begin{tikzpicture}[remember picture,overlay]
-                \node[opacity=#1] at (current page.center) {%
-                    \animategraphics[autoplay,loop,width=\paperwidth]{12}{#2}{}{}
-                };
-            \end{tikzpicture}%
-        }
-    \fi
-}
-"""
-
-    # ========== PROGRESS BAR - ALWAYS DEFINED ==========
-    progress_bar = r"""
-% Progress bar - always defined
-\makeatletter
-\def\progressbar@progressbar{}
-\newcount\progressbar@tmpcounta
-\newcount\progressbar@tmpcountb
-\newdimen\progressbar@pbht
-\newdimen\progressbar@pbwd
-\newdimen\progressbar@tmpdim
-
-\progressbar@pbwd=\paperwidth
-\progressbar@pbht=2pt
-
-\def\progressbar@progressbar{%
-   \begin{tikzpicture}[very thin]
-       \ifnum\insertframenumber>0
-           \pgfmathparse{\insertframenumber/\inserttotalframenumber}
-           \edef\progress@ratio{\pgfmathresult}
-           \shade[top color=myblue!50,bottom color=myblue]
-               (0pt, 0pt) rectangle (\progress@ratio\progressbar@pbwd, \progressbar@pbht);
-       \fi
-   \end{tikzpicture}%
-}
-\makeatother
-"""
-
-    # ========== TIGHTER SPACING - NO FRAME REDEFINITION ==========
-    auto_scaling = r"""
-% ========== TIGHTER SPACING FOR DENSE CONTENT ==========
-% This reduces whitespace to fit more content
-% No frame redefinition - safe and reliable
-
-\setlength{\parskip}{0.12em}
-\setlength{\itemsep}{0.04em}
-\setlength{\topsep}{0.04em}
-\setlength{\partopsep}{0pt}
-\setlength{\abovedisplayskip}{0pt}
-\setlength{\belowdisplayskip}{0pt}
-\setlength{\abovedisplayshortskip}{0pt}
-\setlength{\belowdisplayshortskip}{0pt}
-
-% Make itemize more compact
-\def\beamer@itemize@itemshape{%
-    \setlength{\itemsep}{0.04em}%
-    \setlength{\topsep}{0.04em}%
-    \setlength{\partopsep}{0pt}%
-}
-
-% Reduce block spacing
-\setbeamertemplate{blocks}[rounded][shadow=true]
-\addtobeamertemplate{block begin}{%
-    \setlength{\abovedisplayskip}{0pt}%
-    \setlength{\belowdisplayskip}{0pt}%
-}{}
-
-% Reduce table spacing
-\setlength{\arrayrulewidth}{0.4pt}
-\renewcommand{\arraystretch}{0.9}
-\setlength{\tabcolsep}{2pt}
-"""
-
-    inst_setup = rf"\makeatletter\def\insertshortinstitute{{{short_institute}}}\makeatother"
-
-    footline_template = r"""
-% Footline
-\setbeamertemplate{footline}{%
- \leavevmode%
- \hbox{%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.8ex,dp=0.6ex,center]{author in head/foot}%
-     \usebeamerfont{author in head/foot}\insertshortauthor~(\insertshortinstitute)%
-   \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.8ex,dp=0.6ex,center]{title in head/foot}%
-     \usebeamerfont{title in head/foot}\insertshorttitle%
-   \end{beamercolorbox}%
-   \begin{beamercolorbox}[wd=.333333\paperwidth,ht=1.8ex,dp=0.6ex,right]{date in head/foot}%
-     \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{1em}%
-     \insertframenumber{} / \inserttotalframenumber\hspace*{1ex}%
-   \end{beamercolorbox}}%
- \vskip0pt%
-}
-
-\setbeamersize{text margin left=4pt,text margin right=4pt}
-\setbeamertemplate{navigation symbols}{}
-"""
-
-    # ========== FRAME MODE HELPER MACROS ==========
-    helper_macros = r"""
-% ========== FRAME MODE HELPER MACROS ==========
-% These macros support the GUI frame mode selector
-% - Normal: Standard Beamer frame
-% - Shrink: Auto-shrinks content to fit
-% - Break: Auto-breaks content across frames
-% - Smart: Both shrink and break
-
-% Shrink frame - content auto-shrinks if too large
+% ========== FRAME MODE HELPERS ==========
 \ifcsname shrinkframe\endcsname\else
 \newenvironment{shrinkframe}[1][]{%
     \begin{frame}[#1, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%
@@ -695,7 +1844,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Break frame - content auto-breaks across frames
 \ifcsname breakframe\endcsname\else
 \newenvironment{breakframe}[1][]{%
     \begin{frame}[#1, allowframebreaks]%
@@ -704,60 +1852,36 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi
 
-% Smart frame - both shrink and break
 \ifcsname smartframe\endcsname\else
 \newenvironment{smartframe}[1][]{%
     \begin{frame}[#1, allowframebreaks, shrink, shrink=3, shrink=5, shrink=8, shrink=10]%
 }{%
     \end{frame}%
 }
-\fi
+\fi"""
 
-% plainframe is already defined in BeamerSlideGenerator, so we don't redefine it
-"""
-
-    title_setup = (
-       "% Title setup\n"
-       f"\\title{{{title}}}\n"
-       + (f"\\subtitle{{{subtitle}}}\n" if subtitle else "") +
-       f"\\author{{{author}}}\n"
-       f"\\institute{{\\textcolor{{mygreen}}{{{institution}}}}}\n"
-       f"\\date{{{date}}}\n"
-       "\\begin{document}\n"
-    )
-
+    # Title page with compact layout
     title_page = (
        "% Title page\n"
        "\\begin{frame}[plain]\n"
        "   \\begin{tikzpicture}[overlay,remember picture]\n"
-       "       \\fill[top color=black!90,bottom color=black!70,middle color=myblue!30]\n"
+       "       \\fill[top color=white,bottom color=white]\n"
        "       (current page.south west) rectangle (current page.north east);\n"
        "       \\node[align=center] at (current page.center) {\n"
-       f"           {{\\Huge\\textcolor{{myblue}}{{\\textbf{{{title}}}}}}}\n"
-       + (f"           \\\\[1em]{{\\large\\textcolor{{myyellow}}{{{subtitle}}}}}\n" if subtitle else "") +
-       f"           \\\\[2em]\n"
-       f"           {{\\large\\textcolor{{mygreen}}{{{author}}}}}\n"
-       f"           \\\\[0.5em]\n"
-       f"           \\textcolor{{white}}{{\\small {institution}}}\n"
-       f"           \\\\[1em]\n"
-       f"           \\textcolor{{white}}{{\\small {date}}}\n"
+       f"           {{\\Huge\\textcolor{{primary}}{{\\textbf{{{title}}}}}}}\n"
+       + (f"           \\\\[0.8em]{{\\large\\textcolor{{secondary}}{{{subtitle}}}}}\n" if subtitle else "") +
+       f"           \\\\[1.5em]\n"
+       f"           {{\\large\\textcolor{{black}}{{{author}}}}}\n"
+       f"           \\\\[0.3em]\n"
+       f"           \\textcolor{{gray}}{{\\small {institution}}}\n"
+       f"           \\\\[0.8em]\n"
+       f"           \\textcolor{{gray}}{{\\small {date}}}\n"
        "       };\n"
        "   \\end{tikzpicture}\n"
        "\\end{frame}"
     )
 
-    return "\n".join([
-        core_preamble,
-        layout_commands,
-        theme_setup,
-        progress_bar,        # <-- Progress bar definition added here
-        auto_scaling,
-        inst_setup,
-        footline_template,
-        helper_macros,
-        title_setup,
-        title_page
-    ])
+    return core_preamble + "\n" + title_page
 
 def fix_tikz_node_line_breaks(tikz_content: str) -> str:
     """
@@ -771,40 +1895,59 @@ def fix_tikz_node_line_breaks(tikz_content: str) -> str:
 
     def fix_node_content(match):
         """Fix a single TikZ node's content."""
-        # Get all groups as a list
         groups = match.groups()
         num_groups = len(groups)
 
-        # Extract the full node command
         full_node = match.group(0)
 
-        # Safely extract groups based on what's available
         options = groups[0] if num_groups >= 1 and groups[0] is not None else ""
         node_name = groups[1] if num_groups >= 2 and groups[1] is not None else ""
         position = groups[2] if num_groups >= 3 and groups[2] is not None else ""
         content_text = groups[3] if num_groups >= 4 and groups[3] is not None else ""
 
-        # If we still don't have content, try to find it from the match
         if not content_text:
-            # Try to find content between the last set of braces
             import re as re2
             brace_match = re2.search(r'\{([^}]*)\}$', full_node)
             if brace_match:
                 content_text = brace_match.group(1)
             else:
-                return full_node  # Can't extract content, return as-is
+                return full_node
+
+        # ============================================================
+        # CRITICAL FIX: If node already has text width, DON'T modify it
+        # TikZ handles line breaks natively with text width
+        # ============================================================
+        if 'text width' in options:
+            # Only add minimum height if missing
+            if 'minimum height' not in options:
+                options = options + ', minimum height=1.5cm'
+                if node_name and position:
+                    return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+                elif node_name:
+                    return f'\\node[{options}] ({node_name}) {{{content_text}}};'
+                else:
+                    return f'\\node[{options}] {{{content_text}}};'
+            # Return the original node unchanged
+            return full_node
 
         # Check if content has line breaks (\\)
-        if '\\\\' not in content_text and '\\' not in content_text:
-            return full_node  # No line breaks, return as-is
+        if '\\\\' not in content_text:
+            return full_node
 
         # Check if minipage is already used
         if '\\begin{minipage}' in content_text:
-            return full_node  # Already has minipage
+            if '\\end{minipage}' not in content_text:
+                content_text = content_text.rstrip() + '\\end{minipage}'
+            if node_name and position:
+                return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+            elif node_name:
+                return f'\\node[{options}] ({node_name}) {{{content_text}}};'
+            else:
+                return f'\\node[{options}] {{{content_text}}};'
 
         # Check if minimum height is already set
         if 'minimum height' in options:
-            return full_node  # Already has minimum height
+            return full_node
 
         # Add minimum height and adjust text width
         if 'text width' not in options and options:
@@ -814,16 +1957,19 @@ def fix_tikz_node_line_breaks(tikz_content: str) -> str:
         else:
             options = 'text width=2.2cm, minimum height=1.5cm'
 
-        # Fix the content with proper minipage
-        # Split by \\ and clean up, handling both \\ and \\\\
-        lines = re.split(r'\\\\+', content_text)
+        # Split by \\ and clean up
+        import re as re2
+        lines = re2.split(r'\\\\+', content_text)
         lines = [line.strip() for line in lines if line.strip()]
 
         if len(lines) > 1:
-            # Create minipage with proper line breaks
+            # Create minipage content with proper closing
             minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
 
-            # Reconstruct the node with the fixed content
+            # Ensure minipage is properly closed
+            if '\\begin{minipage}' in minipage_content and '\\end{minipage}' not in minipage_content:
+                minipage_content = minipage_content + '\\end{minipage}'
+
             if node_name and position:
                 return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
             elif node_name:
@@ -833,58 +1979,40 @@ def fix_tikz_node_line_breaks(tikz_content: str) -> str:
         else:
             return full_node
 
-    # Try different patterns - each with its own try/except
+    # Try different patterns
     patterns = [
-        # Pattern 1: \node[options] (name) at (position) {content};
         r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};',
-        # Pattern 2: \node[options] (name) {content};
         r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*\{([^}]*)\};',
-        # Pattern 3: \node[options] {content}; (no name)
         r'\\node\[([^\]]*)\]\s*\{([^}]*)\};',
-        # Pattern 4: \node (name) at (position) {content}; (no options)
         r'\\node\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};',
-        # Pattern 5: \node (name) {content}; (no options, no position)
         r'\\node\s*\(([^)]*)\)\s*\{([^}]*)\};',
-        # Pattern 6: \node {content}; (bare node)
         r'\\node\s*\{([^}]*)\};',
-        # Pattern 7: Nodes with nested braces
         r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
     ]
 
     for pattern in patterns:
         try:
-            # Use a custom function that handles the match safely
             def safe_sub(match_obj):
                 try:
                     return fix_node_content(match_obj)
                 except (IndexError, TypeError) as e:
-                    # If this pattern fails, return the original match
                     return match_obj.group(0)
 
             tikz_content = re.sub(pattern, safe_sub, tikz_content, flags=re.DOTALL)
         except Exception as e:
-            # If the entire pattern fails, continue with the next one
             print(f"  ⚠ Pattern failed: {str(e)[:50]}")
             continue
 
-    # Also handle any remaining nodes with line breaks using a simpler approach
-    # Find any node with line breaks that wasn't caught by the patterns above
+    # Ensure all minipage environments are properly closed
     import re as re2
-    node_pattern = r'\\node.*?\{([^}]*\\\\[^}]*)\}'
-    matches = re2.findall(node_pattern, tikz_content, re.DOTALL)
-
+    minipage_pattern = r'\\begin\{minipage\}.*?(?=\\end\{minipage\}|$)'
+    matches = re2.findall(minipage_pattern, tikz_content, re.DOTALL)
     for match in matches:
-        if '\\\\' in match and '\\begin{minipage}' not in match:
-            # This node has line breaks but wasn't fixed - try a manual fix
-            lines = re2.split(r'\\\\+', match)
-            lines = [line.strip() for line in lines if line.strip()]
-            if len(lines) > 1:
-                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
-                # Replace the content in the node
-                tikz_content = tikz_content.replace(match, minipage_content)
+        if '\\begin{minipage}' in match and '\\end{minipage}' not in match:
+            fixed_match = match + '\\end{minipage}'
+            tikz_content = tikz_content.replace(match, fixed_match)
 
     return tikz_content
-
 
 def process_line_for_media(line, inside_column=False):
     """Process a single line, converting any media or layout directives"""
@@ -1852,82 +2980,168 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
     def fix_tikz_node_line_breaks(tikz_content: str) -> str:
         """
         Fix TikZ node line breaks by adding proper minipage or minimum height.
-        Also escapes backslashes properly.
+        This handles nodes within tikzpicture environments.
         """
+        import re
+
         if not tikz_content or not isinstance(tikz_content, str):
             return tikz_content
 
-        import re
+        def fix_node_content(match):
+            """Fix a single TikZ node's content."""
+            groups = match.groups()
+            num_groups = len(groups)
 
-        # Pattern to find circle nodes with line breaks
-        circle_pattern = r'\\node\[(.*?)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{([^}]*)\};'
+            full_node = match.group(0)
 
-        def fix_node(match):
-            options = match.group(1)
-            node_name = match.group(2)
-            position = match.group(3)
-            content_text = match.group(4)
+            options = groups[0] if num_groups >= 1 and groups[0] is not None else ""
+            node_name = groups[1] if num_groups >= 2 and groups[1] is not None else ""
+            position = groups[2] if num_groups >= 3 and groups[2] is not None else ""
+            content_text = groups[3] if num_groups >= 4 and groups[3] is not None else ""
+
+            if not content_text:
+                import re as re2
+                brace_match = re2.search(r'\{([^}]*)\}$', full_node)
+                if brace_match:
+                    content_text = brace_match.group(1)
+                else:
+                    return full_node
+
+            # ============================================================
+            # CRITICAL FIX 1: If node already has text width, DON'T modify
+            # TikZ handles line breaks natively with text width
+            # ============================================================
+            if 'text width' in options:
+                # Only add minimum height if missing
+                if 'minimum height' not in options:
+                    options = options + ', minimum height=1.5cm'
+                    if node_name and position:
+                        return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+                    elif node_name:
+                        return f'\\node[{options}] ({node_name}) {{{content_text}}};'
+                    else:
+                        return f'\\node[{options}] {{{content_text}}};'
+                return full_node
 
             # Check if content has line breaks (\\)
-            if '\\\\' not in content_text and '\\' not in content_text:
-                return match.group(0)  # No line breaks, return as-is
+            if '\\\\' not in content_text:
+                return full_node
 
             # Check if minipage is already used
             if '\\begin{minipage}' in content_text:
-                return match.group(0)  # Already has minipage
+                if '\\end{minipage}' not in content_text:
+                    content_text = content_text.rstrip() + '\\end{minipage}'
+                if node_name and position:
+                    return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+                elif node_name:
+                    return f'\\node[{options}] ({node_name}) {{{content_text}}};'
+                else:
+                    return f'\\node[{options}] {{{content_text}}};'
 
             # Check if minimum height is already set
             if 'minimum height' in options:
-                return match.group(0)  # Already has minimum height
+                return full_node
 
             # Add minimum height and adjust text width
-            if 'text width' not in options:
+            if 'text width' not in options and options:
                 options = options + ', text width=2.2cm, minimum height=1.5cm'
-            else:
-                # Increase minimum height
+            elif options:
                 options = options + ', minimum height=1.5cm'
+            else:
+                options = 'text width=2.2cm, minimum height=1.5cm'
 
-            # Fix the content with proper minipage
-            # Split by \\ and clean up
-            lines = content_text.split('\\\\')
+            # ============================================================
+            # CRITICAL FIX 2: Properly split content preserving all text
+            # ============================================================
+            import re as re2
+            # Split by \\ but preserve the content
+            # Handle both \\ and \\[spacing]
+            parts = re2.split(r'(\\\\\[[^\]]*\]|\\\\\s*)', content_text)
+
+            # Reconstruct lines with proper spacing
+            lines = []
+            current_line = ""
+            i = 0
+            while i < len(parts):
+                part = parts[i].strip()
+                if i + 1 < len(parts) and re2.match(r'\\\\', parts[i+1]):
+                    # This is a separator
+                    if current_line:
+                        lines.append(current_line)
+                        current_line = ""
+                    i += 1
+                else:
+                    if part:
+                        if current_line:
+                            current_line += " " + part
+                        else:
+                            current_line = part
+                    i += 1
+            if current_line:
+                lines.append(current_line)
+
+            # Remove empty lines
             lines = [line.strip() for line in lines if line.strip()]
 
             if len(lines) > 1:
-                # Create minipage with proper line breaks
-                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
-                return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
+                # CRITICAL FIX 3: Properly create minipage with all content
+                # Join lines with proper line breaks
+                joined_lines = '\\\\ '.join(lines)
+
+                # Create minipage with proper centering
+                minipage_content = f'\\begin{{minipage}}{{2.0cm}}\\centering\\textbf{{{joined_lines}}}\\end{{minipage}}'
+
+                if node_name and position:
+                    return f'\\node[{options}] ({node_name}) at ({position}) {{{minipage_content}}};'
+                elif node_name:
+                    return f'\\node[{options}] ({node_name}) {{{minipage_content}}};'
+                else:
+                    return f'\\node[{options}] {{{minipage_content}}};'
             else:
-                return f'\\node[{options}] ({node_name}) at ({position}) {{{content_text}}};'
+                return full_node
 
-        # Fix circle nodes
-        fixed_content = re.sub(circle_pattern, fix_node, tikz_content, flags=re.DOTALL)
+        # Patterns to match different node formats
+        patterns = [
+            # Full node with options, name, position
+            r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+            # Node with options and name (no position)
+            r'\\node\[([^\]]*)\]\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+            # Node with options only
+            r'\\node\[([^\]]*)\]\s*\{((?:[^{}]|{[^{}]*})*)\};',
+            # Node with name and position (no options)
+            r'\\node\s*\(([^)]*)\)\s*at\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+            # Node with name only
+            r'\\node\s*\(([^)]*)\)\s*\{((?:[^{}]|{[^{}]*})*)\};',
+            # Bare node
+            r'\\node\s*\{((?:[^{}]|{[^{}]*})*)\};',
+        ]
 
-        # Also fix general nodes with line breaks
-        general_node_pattern = r'\\node\[(.*?)\]\s*\(([^)]*)\)\s*\{([^}]*)\};'
+        for pattern in patterns:
+            try:
+                def safe_sub(match_obj):
+                    try:
+                        return fix_node_content(match_obj)
+                    except (IndexError, TypeError) as e:
+                        return match_obj.group(0)
 
-        def fix_general_node(match):
-            options = match.group(1)
-            node_name = match.group(2)
-            content_text = match.group(3)
+                tikz_content = re.sub(pattern, safe_sub, tikz_content, flags=re.DOTALL)
+            except Exception as e:
+                print(f"  ⚠ Pattern failed: {str(e)[:50]}")
+                continue
 
-            if '\\\\' not in content_text or '\\begin{minipage}' in content_text:
-                return match.group(0)
+        # ============================================================
+        # FINAL PASS: Ensure all minipage environments are properly closed
+        # ============================================================
+        import re as re2
+        # Find any \begin{minipage} without matching \end{minipage}
+        minipage_pattern = r'\\begin\{minipage\}.*?(?=\\end\{minipage\}|$)'
+        matches = re2.findall(minipage_pattern, tikz_content, re.DOTALL)
+        for match in matches:
+            if '\\begin{minipage}' in match and '\\end{minipage}' not in match:
+                fixed_match = match + '\\end{minipage}'
+                tikz_content = tikz_content.replace(match, fixed_match)
 
-            if 'minimum height' not in options and 'text width' not in options:
-                options = options + ', text width=2.2cm, minimum height=1.5cm'
-
-            lines = content_text.split('\\\\')
-            lines = [line.strip() for line in lines if line.strip()]
-
-            if len(lines) > 1:
-                minipage_content = '\\begin{minipage}{2.0cm}\\centering\\textbf{' + '}\\\\ \\textbf{'.join(lines) + '}\\end{minipage}'
-                return f'\\node[{options}] ({node_name}) {{{minipage_content}}};'
-            else:
-                return match.group(0)
-
-        fixed_content = re.sub(general_node_pattern, fix_general_node, fixed_content, flags=re.DOTALL)
-
-        return fixed_content
+        return tikz_content
 
     # Process title
     if title:
@@ -3709,7 +4923,7 @@ def sanitize_latex_content(content_line):
 
 import re  # Add this at the top of BeamerSlideGenerator.py if not already there
 
-def process_input_file(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
+def process_input_file_Old(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
     r"""
     Comprehensive input file processor for BeamerSlideGenerator.
     Handles ALL features: mosaic, YouTube, layouts, media, TikZ, effects, etc.
@@ -4035,6 +5249,1340 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         import traceback
         traceback.print_exc()
         return processed, failed, errors
+#========================================================
+# Cleaning on request only START
+#========================================================
+# ============================================================
+# ADD THIS AT THE TOP OF BeamerSlideGenerator.py
+# (after imports, before any function definitions)
+# ============================================================
+
+# ============================================================
+# CLEANING LEVEL CONSTANTS (Global)
+# ============================================================
+
+CLEANING_LEVELS = {
+    0: "Clean only typos and LaTeX errors",
+    1: "Clean slides only",
+    2: "Clean both slides and preamble",
+    3: "None (preserve everything)"
+}
+
+DEFAULT_CLEANING_LEVEL = 3  # None by default - preserves everything
+
+
+# ============================================================
+# COMPLETE UPDATED process_input_file FUNCTION
+# ============================================================
+def process_input_file(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
+    r"""
+    Comprehensive input file processor for BeamerSlideGenerator.
+    Handles ALL features: mosaic, YouTube, layouts, media, TikZ, effects, etc.
+
+    Cleaning Level Control:
+    - Level 0: Clean only typos and LaTeX errors
+    - Level 1: Clean slides only
+    - Level 2: Clean both slides and lepreamble
+    - Level 3: None (preserve everything) - DEFAULT
+
+    The cleaning level can be set in the file with:
+    % CLEANING_LEVEL: 3
+    """
+    import re
+    from collections import deque
+
+    # ============================================================
+    # CLEANING LEVEL CONSTANTS
+    # ============================================================
+    CLEANING_LEVELS = {
+        0: "Clean only typos and LaTeX errors",
+        1: "Clean slides only",
+        2: "Clean both slides and preamble",
+        3: "None (preserve everything)"
+    }
+    DEFAULT_CLEANING_LEVEL = 3
+
+    processed = 0
+    failed = 0
+    errors = []
+    warnings = []
+
+    try:
+        # ========== READ INPUT FILE ==========
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+
+        if not lines:
+            errors.append("Input file is empty")
+            return 0, 1, errors
+
+        # ========== EXTRACT CLEANING LEVEL FROM FILE ==========
+        cleaning_level = DEFAULT_CLEANING_LEVEL
+        cleaning_directive_found = False
+
+        # Check first 20 lines for cleaning directive
+        for i, line in enumerate(lines[:20]):
+            stripped = line.strip()
+            match = re.match(r'^%?\s*CLEANING_LEVEL:\s*(\d+)$', stripped)
+            if match:
+                level = int(match.group(1))
+                if level in CLEANING_LEVELS:
+                    cleaning_level = level
+                    cleaning_directive_found = True
+                    print(f"  ℹ Found cleaning level directive: {level} ({CLEANING_LEVELS[level]})")
+                    break
+
+        if not cleaning_directive_found:
+            print(f"  ℹ No cleaning level directive found, using default: {DEFAULT_CLEANING_LEVEL} ({CLEANING_LEVELS[DEFAULT_CLEANING_LEVEL]})")
+
+        # ========== APPLY CLEANING BASED ON LEVEL ==========
+        print(f"\n🔧 Cleaning level: {cleaning_level} - {CLEANING_LEVELS[cleaning_level]}")
+
+        # Only apply cleaning if level < 3
+        if cleaning_level < 3:
+            print("  Applying cleaning functions...")
+            cleaned_lines = []
+            for line in lines:
+                cleaned_line = line
+                # Apply cleaning functions based on level
+                if cleaning_level >= 0:
+                    # Level 0+: Fix obvious LaTeX errors
+                    cleaned_line = fix_latex_errors(cleaned_line)
+                if cleaning_level >= 1:
+                    # Level 1+: Clean content
+                    cleaned_line = clean_content_line(cleaned_line)
+                if cleaning_level >= 2:
+                    # Level 2+: Clean preamble
+                    cleaned_line = clean_preamble_line(cleaned_line)
+                cleaned_lines.append(cleaned_line)
+            lines = cleaned_lines
+        else:
+            print("  ⏭ Skipping cleaning (level 3 - preserve everything)")
+
+        # ============================================================
+        # CRITICAL FIX: ONLY FIX TIKZ IF cleaning_level < 3
+        # ============================================================
+        print("\n🔧 Fixing TikZ content...")
+        if cleaning_level < 3:
+            fixed_lines = []
+            in_tikz = False
+            tikz_buffer = []
+            tikz_fix_count = 0
+            tikz_block_count = 0
+
+            for line in lines:
+                stripped = line.strip()
+
+                # Check for tikzpicture start
+                if '\\begin{tikzpicture}' in stripped:
+                    in_tikz = True
+                    tikz_buffer = [line]
+                    tikz_block_count += 1
+                    continue
+
+                if in_tikz:
+                    tikz_buffer.append(line)
+                    if '\\end{tikzpicture}' in stripped:
+                        in_tikz = False
+                        # Process the entire TikZ block
+                        tikz_content = '\n'.join(tikz_buffer)
+
+                        # Check if it needs fixing (has line breaks with potential issues)
+                        needs_fix = False
+                        if '\\\\' in tikz_content:
+                            # Check if it has nodes with line breaks that lack proper handling
+                            if 'minimum height' not in tikz_content and 'minipage' not in tikz_content:
+                                needs_fix = True
+                            # Also check for nodes with line breaks
+                            node_pattern = r'\\node.*?\{[^}]*\\\\[^}]*\}'
+                            if re.search(node_pattern, tikz_content):
+                                needs_fix = True
+
+                        if needs_fix:
+                            try:
+                                fixed_tikz = fix_tikz_node_line_breaks(tikz_content)
+                                if fixed_tikz is None:
+                                    fixed_tikz = tikz_content
+                                # Ensure we don't lose the tikzpicture environment
+                                if '\\begin{tikzpicture}' in fixed_tikz and '\\end{tikzpicture}' in fixed_tikz:
+                                    fixed_lines.extend(fixed_tikz.split('\n'))
+                                    tikz_fix_count += 1
+                                    print(f"  ✓ Fixed TikZ block {tikz_fix_count}")
+                                else:
+                                    # If fix broke the environment, use original
+                                    fixed_lines.extend(tikz_buffer)
+                                    print(f"  ⚠ TikZ block {tikz_block_count} fix failed (environment broken), using original")
+                            except Exception as e:
+                                print(f"  ⚠ TikZ block {tikz_block_count} fix error: {str(e)[:50]}, using original")
+                                fixed_lines.extend(tikz_buffer)
+                        else:
+                            fixed_lines.extend(tikz_buffer)
+                            if '\\\\' in tikz_content:
+                                print(f"  ℹ TikZ block {tikz_block_count} already has minimum height or minipage")
+                        tikz_buffer = []
+                    continue
+
+                # If we're not in a TikZ block, just add the line
+                fixed_lines.append(line)
+
+            # If we were still in a TikZ block at EOF, add it
+            if in_tikz and tikz_buffer:
+                fixed_lines.extend(tikz_buffer)
+                print(f"  ⚠ Incomplete TikZ block at end of file")
+
+            if tikz_fix_count > 0:
+                print(f"  ✓ Applied fixes to {tikz_fix_count} TikZ block(s)")
+                lines = fixed_lines
+            else:
+                # Even if no blocks were fixed, use the fixed lines if any changes were made
+                if fixed_lines != lines:
+                    lines = fixed_lines
+        else:
+            print("  ⏭ Skipping TikZ fixing (level 3 - preserve everything)")
+
+        # ========== DETECT FILE FORMAT ==========
+        file_content = ''.join(lines)
+        has_document_begin = '\\begin{document}' in file_content
+        has_document_end = '\\end{document}' in file_content
+        has_native_titles = bool(re.search(r'^\\title\s+[^{]', file_content, re.MULTILINE))
+        has_latex_frames = '\\begin{frame}' in file_content
+        has_content_blocks = '\\begin{Content}' in file_content
+        has_notes_blocks = '\\begin{Notes}' in file_content
+
+        file_type = 'native'
+        if has_latex_frames and has_document_begin:
+            file_type = 'latex'
+        elif has_native_titles and has_content_blocks:
+            file_type = 'native'
+        elif has_document_begin and (has_native_titles or has_content_blocks):
+            file_type = 'hybrid'
+        elif has_latex_frames and not has_document_begin:
+            file_type = 'latex_standalone'
+
+        print(f"File type detected: {file_type}")
+        print(f"has_document_begin: {has_document_begin}")
+        print(f"has_native_titles: {has_native_titles}")
+        print(f"has_latex_frames: {has_latex_frames}")
+        print(f"has_content_blocks: {has_content_blocks}")
+
+        # ========== EXTRACT PREAMBLE AND CONTENT ==========
+        preamble_lines = []
+        content_lines = []
+        preamble_found = False
+
+        # Find ALL \begin{document} positions
+        doc_positions = [i for i, line in enumerate(lines) if '\\begin{document}' in line]
+        if doc_positions:
+            doc_pos = doc_positions[-1]
+            preamble_lines = lines[:doc_pos + 1]
+            content_lines = lines[doc_pos + 1:]
+            preamble_found = True
+
+            # ============================================================
+            # CRITICAL FIX: Remove \end{document} from content
+            # ============================================================
+            # Find \end{document} position and strip it from content
+            end_doc_positions = [i for i, line in enumerate(content_lines) if '\\end{document}' in line]
+            if end_doc_positions:
+                # Remove everything from \end{document} onwards
+                end_doc_pos = end_doc_positions[0]
+                content_lines = content_lines[:end_doc_pos]
+                has_document_end = True
+            else:
+                has_document_end = False
+
+            # Remove any leading empty lines from content
+            while content_lines and not content_lines[0].strip():
+                content_lines.pop(0)
+        else:
+            content_lines = lines
+            preamble_lines = []
+            preamble_found = False
+
+        # If no preamble found, generate one
+        if not preamble_found and presentation_info:
+            from BeamerSlideGenerator import get_beamer_preamble
+            preamble_text = get_beamer_preamble(
+                title=presentation_info.get('title', 'Presentation'),
+                subtitle=presentation_info.get('subtitle', ''),
+                author=presentation_info.get('author', 'Author'),
+                institution=presentation_info.get('institution', ''),
+                short_institute=presentation_info.get('short_institute', ''),
+                date=presentation_info.get('date', r'\today')
+            )
+            preamble_lines = preamble_text.split('\n')
+            warnings.append("Generated default preamble (no preamble found in file)")
+
+        # ========== DEBUG: Print first 20 content lines ==========
+        print("\nFirst 20 content lines:")
+        for i, line in enumerate(content_lines[:20]):
+            print(f"  {i}: {line.rstrip()}")
+
+        # ========== PARSE SLIDES ==========
+        slides = []
+
+        # Try different parsers
+        print("\nTrying native parser...")
+        native_slides = parse_native_slides_full(content_lines, warnings, cleaning_level)
+        if native_slides:
+            slides = native_slides
+            print(f"✓ Native parser found {len(slides)} slides")
+        else:
+            print("✗ Native parser found no slides")
+
+            print("\nTrying hybrid parser...")
+            hybrid_slides = parse_hybrid_slides(content_lines, warnings, cleaning_level)
+            if hybrid_slides:
+                slides = hybrid_slides
+                print(f"✓ Hybrid parser found {len(slides)} slides")
+            else:
+                print("✗ Hybrid parser found no slides")
+
+                print("\nTrying LaTeX parser...")
+                latex_slides = parse_latex_slides_full(content_lines, warnings, cleaning_level)
+                if latex_slides:
+                    slides = latex_slides
+                    print(f"✓ LaTeX parser found {len(slides)} slides")
+                else:
+                    print("✗ LaTeX parser found no slides")
+
+        if not slides:
+            errors.append("No slides were found in the input file")
+            return 0, 1, errors
+
+        # ============================================================
+        # CRITICAL FIX: Only apply final TikZ fixes if cleaning_level < 3
+        # ============================================================
+        print("\n🔧 Applying final TikZ fixes to slides...")
+        if cleaning_level < 3:
+            final_tikz_fix_count = 0
+
+            for slide in slides:
+                if slide.get('content'):
+                    fixed_content = []
+                    for line in slide['content']:
+                        if isinstance(line, str) and '\\begin{tikzpicture}' in line:
+                            try:
+                                # Fix any remaining TikZ content
+                                fixed_line = fix_tikz_node_line_breaks(line)
+                                if fixed_line is not None and fixed_line != line:
+                                    final_tikz_fix_count += 1
+                                fixed_content.append(fixed_line if fixed_line is not None else line)
+                            except Exception as e:
+                                print(f"  ⚠ Slide TikZ fix error: {str(e)[:50]}, keeping original")
+                                fixed_content.append(line)
+                        else:
+                            fixed_content.append(line)
+                    slide['content'] = fixed_content
+
+            if final_tikz_fix_count > 0:
+                print(f"  ✓ Applied {final_tikz_fix_count} additional TikZ fixes")
+        else:
+            print("  ⏭ Skipping final TikZ fixes (level 3 - preserve everything)")
+
+        # ========== WRITE OUTPUT ==========
+        with open(output_filename, 'w', encoding='utf-8') as outfile:
+            # Write preamble
+            if preamble_lines:
+                for line in preamble_lines:
+                    if line.strip() or line == '\n':
+                        outfile.write(line if line.endswith('\n') else line + '\n')
+                outfile.write('\n')
+
+                outfile.write("% ====== CRITICAL FIXES ======\n")
+                outfile.write("\\overfullrule=0pt\n")
+                outfile.write("\\sloppy\n")
+                outfile.write("\\tolerance=9999\n")
+                outfile.write("\\emergencystretch=3em\n")
+                outfile.write("\\hfuzz=2pt\n")
+                outfile.write("\\raggedright\n")
+                outfile.write("% ===========================\n\n")
+
+            # Write document begin if not already in preamble
+            if not has_document_begin:
+                outfile.write("\\begin{document}\n")
+
+            # Write maketitle if needed
+            if '\\maketitle' not in file_content and '\\titlepage' not in file_content:
+                outfile.write("\\maketitle\n\n")
+
+            # Process each slide
+            for slide in slides:
+                # Protect TikZ content before any processing
+                if slide.get('content'):
+                    protected_content = []
+                    for line in slide['content']:
+                        try:
+                            protected_line = protect_tikz_content(line)
+                            protected_content.append(protected_line)
+                        except Exception as e:
+                            print(f"  ⚠ Protect TikZ error: {str(e)[:50]}, using original")
+                            protected_content.append(line)
+                    slide['content'] = protected_content
+
+                try:
+                    processed_slide = process_slide_with_features(slide, outfile, warnings, cleaning_level)
+                    if processed_slide:
+                        outfile.write(processed_slide)
+                        outfile.write('\n')
+                        processed += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    print(f"  ⚠ Slide processing error: {str(e)[:50]}, skipping")
+                    failed += 1
+                    errors.append(f"Slide {processed + 1}: {str(e)}")
+
+            # After processing all slides, add \end{document} if not present
+            if not has_document_end:
+                outfile.write("\n\\end{document}\n")
+            else:
+                # If it was present in the original, make sure it's at the end
+                outfile.write("\n\\end{document}\n")
+
+        # ============================================================
+        # CRITICAL FIX: Only apply final TikZ fixes to TeX if cleaning_level < 3
+        # ============================================================
+        print("\n🔧 Applying final TikZ fixes to TeX output...")
+        if cleaning_level < 3:
+            try:
+                with open(output_filename, 'r', encoding='utf-8') as f:
+                    tex_content = f.read()
+
+                # Apply TikZ fixes to the entire TeX content
+                fixed_tex_content = fix_tikz_in_tex_content(tex_content)
+
+                if fixed_tex_content != tex_content:
+                    with open(output_filename, 'w', encoding='utf-8') as f:
+                        f.write(fixed_tex_content)
+                    print("  ✓ Applied TikZ fixes to TeX output")
+                else:
+                    print("  ℹ No additional TikZ fixes needed")
+            except Exception as e:
+                print(f"  ⚠ Failed to apply TikZ fixes to TeX output: {str(e)[:50]}")
+        else:
+            print("  ⏭ Skipping final TikZ fixes to TeX (level 3 - preserve everything)")
+
+        print(f"\nProcessed {processed} slides, {failed} failed")
+
+        if processed == 0:
+            errors.append("No slides were processed")
+            return 0, 1, errors
+
+        return processed, failed, errors
+
+    except Exception as e:
+        error_msg = f"Error processing file: {str(e)}"
+        errors.append(error_msg)
+        import traceback
+        traceback.print_exc()
+        return processed, failed, errors
+
+# ============================================================
+# HELPER CLEANING FUNCTIONS
+# ============================================================
+
+def fix_latex_errors(line: str) -> str:
+    """Fix only obvious LaTeX errors (Level 0)."""
+    if not line:
+        return line
+
+    # Fix double braces
+    line = re.sub(r'\{\{', '{', line)
+    line = re.sub(r'\}\}', '}', line)
+
+    # Fix special character escapes
+    line = line.replace('\\\\&', '\\&')
+    line = line.replace('\\\\%', '\\%')
+    line = line.replace('\\\\#', '\\#')
+    line = line.replace('\\\\_', '\\_')
+
+    # Fix \N command (standalone)
+    line = re.sub(r'(?<!\\)\\N\s*', r'\\\\[0.2cm] ', line)
+
+    return line
+
+
+def clean_content_line(line: str) -> str:
+    """Clean content lines (Level 1+)."""
+    if not line:
+        return line
+
+    # Apply basic fixes first
+    line = fix_latex_errors(line)
+
+    # Extract and preserve math mode content
+    math_content = {}
+    def store_math(match):
+        placeholder = f"__MATH_{len(math_content)}__"
+        math_content[placeholder] = match.group(0)
+        return placeholder
+
+    # Find all math expressions
+    math_pattern = r'\$\$[^$]+\$\$|\$[^$]+\$'
+    line_with_placeholders = re.sub(math_pattern, store_math, line)
+
+    # Clean non-math parts
+    stripped = line_with_placeholders.strip()
+
+    # Fix separator lines with #
+    if stripped.startswith('#') and '-' in stripped and not stripped.startswith('%'):
+        line_with_placeholders = line_with_placeholders.replace('#', '%', 1)
+
+    # Escape special characters (protect macro parameters first)
+    def protect_param(match):
+        return f'@@@PARAM_{match.group(1)}@@@'
+
+    line_with_placeholders = re.sub(r'(?<!\\)#(\d+)', protect_param, line_with_placeholders)
+    line_with_placeholders = re.sub(r'(?<!\\)#', r'\\#', line_with_placeholders)
+
+    def restore_param(match):
+        return f'#{match.group(1)}'
+    line_with_placeholders = re.sub(r'@@@PARAM_(\d+)@@@', restore_param, line_with_placeholders)
+
+    # Restore math content
+    for placeholder, math_expr in math_content.items():
+        line_with_placeholders = line_with_placeholders.replace(placeholder, math_expr)
+
+    return line_with_placeholders
+
+
+def clean_preamble_line(line: str) -> str:
+    """Clean preamble lines (Level 2+)."""
+    if not line:
+        return line
+
+    # Apply content cleaning first
+    line = clean_content_line(line)
+
+    # Additional preamble-specific cleaning
+    stripped = line.strip()
+
+    # Fix empty institute
+    if '\\institute{}\\' in line or '\\institute{\\textcolor{mygreen}{}}' in line:
+        line = line.replace('\\institute{\\textcolor{mygreen}{}}',
+                           '\\institute{\\textcolor{mygreen}{Artificial Intelligence Research and Intelligent Systems (airis4D)}}')
+
+    # Fix malformed \insertshortinstitute
+    if '\\def\\insertshortinstitute{}' in line:
+        line = line.replace('\\def\\insertshortinstitute{}', '\\def\\insertshortinstitute{airis4D}')
+
+    return line
+
+
+# ============================================================
+# MODIFIED PARSER FUNCTIONS WITH CLEANING LEVEL SUPPORT
+# ============================================================
+
+def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
+    """Parse native format slides with cleaning level support."""
+    import re
+
+    slides = []
+    current_slide = None
+    in_content = False
+    in_notes = False
+    content_buffer = []
+    notes_buffer = []
+    media = ""
+    found_media = False
+    pending_font_cmd = None
+    itemize_stack = []
+    in_tabular = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect title
+        title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
+        if title_match:
+            if current_slide:
+                current_slide['content'] = content_buffer.copy()
+                current_slide['notes'] = notes_buffer.copy()
+                slides.append(current_slide)
+
+            title = title_match.group(1).strip()
+            # Use cleaning level when cleaning title
+            title = clean_title(title, cleaning_level)
+
+            current_slide = {
+                'title': title,
+                'content': [],
+                'notes': [],
+                'media': '',
+                'layout': None,
+                'layout_params': None,
+                'playable': False,
+                'source_url': None
+            }
+            content_buffer = []
+            notes_buffer = []
+            media = ""
+            found_media = False
+            in_content = False
+            in_notes = False
+            pending_font_cmd = None
+            itemize_stack = []
+            in_tabular = False
+            continue
+
+        if current_slide is None:
+            continue
+
+        # Detect Content block
+        if re.match(r'^%?\s*\\begin{Content}\s*$', stripped):
+            in_content = True
+            in_notes = False
+            found_media = False
+            in_tabular = False
+            continue
+        elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
+            in_content = False
+            # Close any open itemize environments
+            while itemize_stack:
+                content_buffer.append("\\end{itemize}")
+                itemize_stack.pop()
+            continue
+
+        # Detect Notes block
+        if re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
+            in_notes = True
+            in_content = False
+            continue
+        elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
+            in_notes = False
+            continue
+
+        # Process content
+        if in_content:
+            if not stripped or stripped.startswith('%'):
+                if stripped:
+                    content_buffer.append(stripped)
+                continue
+
+            # ============================================================
+            # CRITICAL: Track tabular environment to prevent bullet conversion inside tables
+            # ============================================================
+            if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
+                in_tabular = True
+                # Close any open itemize before tabular
+                while itemize_stack:
+                    content_buffer.append("\\end{itemize}")
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+
+            if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
+                in_tabular = False
+                # Close any open itemize before ending tabular
+                while itemize_stack:
+                    content_buffer.append("\\end{itemize}")
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+
+            # ========== CHECK FOR LAYOUT DIRECTIVES ==========
+            layout_match = re.match(r'\\(ff|wm|pip|split|hl|bg|tb|ol|corner|mosaic)\s*\{([^}]*)\}', stripped)
+            if layout_match:
+                layout_type = layout_match.group(1)
+                layout_params = layout_match.group(2)
+                current_slide['layout'] = layout_type
+                current_slide['layout_params'] = layout_params
+                # Don't add to content - it's handled separately
+                continue
+
+            # ========== CHECK FOR MEDIA DIRECTIVES ==========
+            if not found_media:
+                # Check for play directive with URL or file
+                play_match = re.match(r'\\play\s+(.+)$', stripped)
+                if play_match:
+                    media_source = play_match.group(1).strip()
+                    current_slide['playable'] = True
+                    if 'youtube.com' in media_source or 'youtu.be' in media_source:
+                        current_slide['source_url'] = media_source
+                        result = download_youtube_video(media_source)
+                        if result:
+                            base_name, filename, filepath = result
+                            media = f"\\play \\file media_files/{filename}"
+                            found_media = True
+                            current_slide['media'] = media
+                            continue
+                    elif media_source.startswith('\\file'):
+                        media = stripped
+                        found_media = True
+                        current_slide['media'] = media
+                        continue
+                    else:
+                        media = stripped
+                        found_media = True
+                        current_slide['media'] = media
+                        continue
+
+                if stripped.startswith('\\file'):
+                    media = stripped
+                    found_media = True
+                    current_slide['media'] = media
+                    continue
+
+                if stripped == '\\None':
+                    found_media = True
+                    current_slide['media'] = ''
+                    continue
+
+            # ============================================================
+            # CRITICAL FIX: Bullet points - skip if inside tabular
+            # ============================================================
+            # Bullet points
+            if not in_tabular and (stripped.startswith('-') or stripped.startswith('•')):
+                bullet_content = re.sub(r'^[-•]\s*', '', stripped)
+                # Apply cleaning if needed
+                if cleaning_level < 3:
+                    bullet_content = clean_content_line(bullet_content)
+                if itemize_stack:
+                    content_buffer.append(f"\\item {bullet_content}")
+                else:
+                    content_buffer.append("\\begin{itemize}")
+                    itemize_stack.append('itemize')
+                    content_buffer.append(f"\\item {bullet_content}")
+                continue
+            elif stripped.startswith('-') or stripped.startswith('•'):
+                # Inside tabular - keep as-is (don't convert to item)
+                content_buffer.append(stripped)
+                continue
+
+            # ========== PROCESS CONTENT WITH FULL FEATURE SUPPORT ==========
+
+            # Font size commands
+            font_commands = ['\\tiny', '\\scriptsize', '\\footnotesize', '\\small',
+                           '\\normalsize', '\\large', '\\Large', '\\LARGE', '\\huge', '\\Huge']
+            is_font_cmd = False
+            for font_cmd in font_commands:
+                if stripped.startswith(font_cmd):
+                    pending_font_cmd = stripped
+                    is_font_cmd = True
+                    break
+            if is_font_cmd:
+                continue
+
+            # Special effects
+            if '\\shadowtext' in stripped or '\\glowtext' in stripped or '\\gradienttext' in stripped:
+                stripped = process_special_effects(stripped)
+                content_buffer.append(stripped)
+                continue
+
+            # TikZ content - preserve exactly
+            if '\\begin{tikzpicture}' in stripped:
+                while itemize_stack:
+                    content_buffer.append("\\end{itemize}")
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+
+            # Block environments
+            if '\\begin{block}' in stripped or '\\begin{alertblock}' in stripped or '\\begin{exampleblock}' in stripped:
+                while itemize_stack:
+                    content_buffer.append("\\end{itemize}")
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+            if '\\end{block}' in stripped or '\\end{alertblock}' in stripped or '\\end{exampleblock}' in stripped:
+                content_buffer.append(stripped)
+                continue
+
+            # Columns
+            if '\\begin{columns}' in stripped or '\\end{columns}' in stripped:
+                while itemize_stack:
+                    content_buffer.append("\\end{itemize}")
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+            if stripped.startswith('\\column'):
+                while itemize_stack:
+                    content_buffer.append("\\end{itemize}")
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+
+            # Itemize/Enumerate
+            if '\\begin{itemize}' in stripped:
+                itemize_stack.append('itemize')
+                content_buffer.append(stripped)
+                if pending_font_cmd:
+                    content_buffer.append(pending_font_cmd)
+                    pending_font_cmd = None
+                continue
+            if '\\begin{enumerate}' in stripped:
+                itemize_stack.append('enumerate')
+                content_buffer.append(stripped)
+                if pending_font_cmd:
+                    content_buffer.append(pending_font_cmd)
+                    pending_font_cmd = None
+                continue
+            if '\\end{itemize}' in stripped:
+                if itemize_stack and itemize_stack[-1] == 'itemize':
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+            if '\\end{enumerate}' in stripped:
+                if itemize_stack and itemize_stack[-1] == 'enumerate':
+                    itemize_stack.pop()
+                content_buffer.append(stripped)
+                continue
+
+            # Standalone \item
+            if stripped.startswith('\\item'):
+                if pending_font_cmd:
+                    content_buffer.append(pending_font_cmd)
+                    pending_font_cmd = None
+                content_buffer.append(stripped)
+                continue
+
+            # Table commands
+            if stripped in ['\\hline', '\\toprule', '\\midrule', '\\bottomrule']:
+                content_buffer.append(stripped)
+                continue
+
+            # Center environment
+            if stripped == '\\begin{center}' or stripped == '\\end{center}':
+                content_buffer.append(stripped)
+                continue
+
+            # Beamercolorbox
+            if stripped.startswith('\\begin{beamercolorbox}') or stripped == '\\end{beamercolorbox}':
+                content_buffer.append(stripped)
+                continue
+
+            # Text formatting
+            if stripped.startswith(('\\textcolor', '\\textbf', '\\textit', '\\emph', '\\alert')):
+                stripped = process_special_effects(stripped)
+                content_buffer.append(stripped)
+                continue
+
+            # Math mode
+            if stripped.startswith('$') or stripped.startswith('\\[') or stripped.startswith('\\('):
+                content_buffer.append(stripped)
+                continue
+
+            # URL or hyperlink
+            if stripped.startswith(('http://', 'https://', '\\url{', '\\href{')):
+                content_buffer.append(stripped)
+                continue
+
+            # Vspace and spacing
+            if stripped.startswith('\\vspace') or stripped.startswith('\\hspace'):
+                content_buffer.append(stripped)
+                continue
+
+            # Regular text - fix braces and add
+            if stripped:
+                if cleaning_level < 3:
+                    stripped = clean_content_line(stripped)
+                stripped = fix_braces(stripped)
+                if stripped:
+                    content_buffer.append(stripped)
+
+        # Process notes
+        elif in_notes:
+            if stripped and not stripped.startswith('%'):
+                if cleaning_level < 3:
+                    stripped = clean_content_line(stripped)
+                stripped = fix_braces(stripped)
+                if stripped:
+                    notes_buffer.append(stripped)
+            elif stripped.startswith('%'):
+                notes_buffer.append(stripped)
+
+    # Save last slide
+    if current_slide:
+        while itemize_stack:
+            content_buffer.append("\\end{itemize}")
+            itemize_stack.pop()
+        current_slide['content'] = content_buffer.copy()
+        current_slide['notes'] = notes_buffer.copy()
+        slides.append(current_slide)
+
+    return slides
+
+
+def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
+    """Parse hybrid format slides with cleaning level support."""
+    import re
+
+    slides = []
+    current_slide = None
+    content_buffer = []
+    notes_buffer = []
+    media = ""
+    found_media = False
+    in_notes = False
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Detect title
+        title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
+        if title_match:
+            # Save previous slide
+            if current_slide:
+                current_slide['content'] = content_buffer.copy()
+                current_slide['notes'] = notes_buffer.copy()
+                slides.append(current_slide)
+
+            # Start new slide
+            title = title_match.group(1).strip()
+            # Use cleaning level when cleaning title
+            title = clean_title(title, cleaning_level)
+
+            current_slide = {
+                'title': title,
+                'content': [],
+                'notes': [],
+                'media': '',
+                'layout': None,
+                'layout_params': None,
+                'playable': False,
+                'source_url': None
+            }
+            content_buffer = []
+            notes_buffer = []
+            media = ""
+            found_media = False
+            in_notes = False
+            i += 1
+            continue
+
+        # If we're not in a slide, skip
+        if current_slide is None:
+            i += 1
+            continue
+
+        # Check for Content block - if found, switch to native parser
+        if '\\begin{Content}' in stripped:
+            print(f"  Hybrid parser: Found \\begin{{Content}}, switching to native parser")
+            return parse_native_slides_full(lines, warnings, cleaning_level)
+
+        # Check for Notes block
+        if '\\begin{Notes}' in stripped:
+            in_notes = True
+            i += 1
+            continue
+        if '\\end{Notes}' in stripped:
+            in_notes = False
+            i += 1
+            continue
+
+        # Check for end of slide (next title or end of file)
+        if re.match(r'^%?\s*\\title\s+', line):
+            if current_slide:
+                current_slide['content'] = content_buffer.copy()
+                current_slide['notes'] = notes_buffer.copy()
+                slides.append(current_slide)
+            current_slide = None
+            content_buffer = []
+            notes_buffer = []
+            i += 1
+            continue
+
+        # Process content
+        if not in_notes:
+            # Check for media directive
+            if not found_media and stripped and stripped.startswith(('\\file', '\\play')):
+                media = stripped
+                found_media = True
+                current_slide['media'] = media
+                i += 1
+                continue
+
+            if stripped and not stripped.startswith('%') and not stripped.startswith('\\end{Content}'):
+                if cleaning_level < 3:
+                    stripped = clean_content_line(stripped)
+                clean_line = fix_braces(stripped)
+                if clean_line and clean_line not in ['\\None', 'None']:
+                    content_buffer.append(clean_line)
+
+        # Process notes
+        if in_notes:
+            if stripped and not stripped.startswith('%'):
+                if cleaning_level < 3:
+                    stripped = clean_content_line(stripped)
+                clean_note = fix_braces(stripped)
+                if clean_note:
+                    notes_buffer.append(clean_note)
+            elif stripped.startswith('%'):
+                notes_buffer.append(stripped)
+
+        i += 1
+
+    # Save last slide
+    if current_slide:
+        current_slide['content'] = content_buffer.copy()
+        current_slide['notes'] = notes_buffer.copy()
+        current_slide['media'] = media
+        slides.append(current_slide)
+
+    return slides
+
+
+def parse_latex_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
+    """Parse LaTeX format slides with cleaning level support."""
+    import re
+
+    slides = []
+    content = '\n'.join(lines)
+
+    # Find all frames
+    frame_pattern = r'\\begin{frame}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(.*?)\\end{frame}'
+    frames = re.finditer(frame_pattern, content, re.DOTALL)
+
+    # Extract notes separately
+    note_pattern = r'\\begin{Notes}(.*?)\\end{Notes}'
+    notes_blocks = list(re.finditer(note_pattern, content, re.DOTALL))
+
+    frame_index = 0
+
+    for frame_match in frames:
+        frame_title = frame_match.group(1) or ""
+        frame_content = frame_match.group(2)
+
+        # Extract frametitle
+        frametitle_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
+        if frametitle_match:
+            title = frametitle_match.group(1).strip()
+            # Use cleaning level when cleaning title
+            title = clean_title(title, cleaning_level)
+            frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
+        elif frame_title:
+            title = frame_title.strip()
+            title = clean_title(title, cleaning_level)
+        else:
+            title = f"Slide {len(slides) + 1}"
+
+        # Extract notes for this frame
+        notes = []
+        if frame_index < len(notes_blocks):
+            note_content = notes_blocks[frame_index].group(1).strip()
+            if note_content:
+                for note_line in note_content.split('\n'):
+                    note_line = note_line.strip()
+                    if note_line and not note_line.startswith('%'):
+                        if cleaning_level < 3:
+                            note_line = clean_content_line(note_line)
+                        notes.append(note_line)
+
+        # Extract media
+        media = ""
+        media_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}', frame_content)
+        if media_match:
+            media = f"\\file {media_match.group(1)}"
+        else:
+            movie_match = re.search(r'\\movie(?:\[[^\]]*\])?{[^}]*}{([^}]*)}', frame_content)
+            if movie_match:
+                media = f"\\play {movie_match.group(1)}"
+
+        # Check for layout directives in frame content
+        layout = None
+        layout_params = None
+        layout_match = re.search(r'\\(ff|wm|pip|split|hl|bg|tb|ol|corner|mosaic)\s*\{([^}]*)\}', frame_content)
+        if layout_match:
+            layout = layout_match.group(1)
+            layout_params = layout_match.group(2)
+
+        # Extract content lines
+        content_lines = []
+        for line in frame_content.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith('\\begin{frame}') or line.startswith('\\end{frame}'):
+                continue
+            if line.startswith('\\frametitle'):
+                continue
+            if cleaning_level < 3:
+                line = clean_content_line(line)
+            content_lines.append(line)
+
+        # Check if content already has frame commands (for pass-through)
+        has_inner_frame = any('\\begin{frame}' in line for line in content_lines)
+        if has_inner_frame:
+            # Pass through as-is
+            slides.append(frame_match.group(0))
+            frame_index += 1
+            continue
+
+        # Create slide dictionary
+        slide = {
+            'title': title,
+            'content': content_lines,
+            'notes': notes,
+            'media': media,
+            'layout': layout,
+            'layout_params': layout_params,
+            'playable': '\\play' in frame_content or media.startswith('\\play'),
+            'source_url': None
+        }
+
+        # Check for YouTube URLs
+        youtube_match = re.search(r'(?:\\play\s+)?(?:\\url\s+)?(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s\n]+)', frame_content)
+        if youtube_match:
+            slide['source_url'] = youtube_match.group(1)
+            slide['playable'] = True
+
+        slides.append(slide)
+        frame_index += 1
+
+    return slides
+
+
+def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_level=DEFAULT_CLEANING_LEVEL):
+    """
+    Process a slide with FULL feature support and cleaning level awareness.
+    """
+    import re
+
+    title = slide.get('title', 'Untitled')
+    content = slide.get('content', [])
+    notes = slide.get('notes', [])
+    media = slide.get('media', '')
+    layout = slide.get('layout')
+    layout_params = slide.get('layout_params')
+    playable = slide.get('playable', False)
+    source_url = slide.get('source_url')
+
+    # Clean title if needed
+    if cleaning_level < 3:
+        title = clean_title(title, cleaning_level)
+    clean_title_text = clean_title_for_latex(title)
+
+    # ========== HANDLE LAYOUT DIRECTIVES ==========
+    if layout:
+        if layout == 'mosaic':
+            return generate_mosaic_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'split':
+            return generate_split_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'pip':
+            return generate_pip_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'ff':
+            return generate_fullframe_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'wm':
+            return generate_watermark_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'hl':
+            return generate_highlight_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'bg':
+            return generate_background_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'tb':
+            return generate_topbottom_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'ol':
+            return generate_overlay_layout(clean_title_text, layout_params, content, media)
+        elif layout == 'corner':
+            return generate_corner_layout(clean_title_text, layout_params, content, media)
+
+    # ========== HANDLE MEDIA ==========
+    first_frame_path = None
+    media_path = None
+
+    if media and media != "\\None":
+        # Parse media directive
+        directive_type, media_source, is_playable, original_directive = parse_media_directive(media)
+        playable = playable or is_playable
+
+        # Handle YouTube videos
+        if directive_type == 'url' and media_source and ('youtube.com' in media_source or 'youtu.be' in media_source):
+            # Download YouTube video
+            result = download_youtube_video(media_source)
+            if result:
+                base_name, filename, filepath = result
+                media_path = f"media_files/{filename}"
+                first_frame_path = generate_preview_frame(filepath)
+                playable = True
+                source_url = media_source
+            else:
+                # Fallback to URL
+                media_path = media_source
+                playable = False
+
+        # Handle local files
+        elif directive_type == 'file' and media_source:
+            media_path = media_source
+            if not os.path.exists(media_path):
+                # Try in media_files
+                test_path = os.path.join('media_files', os.path.basename(media_path))
+                if os.path.exists(test_path):
+                    media_path = test_path
+            if os.path.exists(media_path):
+                # Generate preview for videos
+                video_extensions = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv', '.wmv')
+                if media_path.lower().endswith(video_extensions):
+                    first_frame_path = generate_preview_frame(media_path)
+                    playable = True
+                elif media_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                    first_frame_path = media_path
+
+    # ========== GENERATE FRAME ==========
+    frame_lines = []
+    frame_lines.append(f"\\begin{{frame}}{{{clean_title_text}}}")
+    frame_lines.append(f"\\frametitle{{{clean_title_text}}}")
+    frame_lines.append("")
+
+    # Add media (playable or static)
+    if media_path and media_path != "\\None":
+        if playable and first_frame_path:
+            # Playable media with preview
+            frame_lines.append("\\begin{center}")
+            frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{first_frame_path}}}")
+            frame_lines.append("    \\vspace{0.3em}")
+            frame_lines.append("    \\footnotesize Click to play\\\\")
+            frame_lines.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{media_path}}}")
+            frame_lines.append("\\end{center}")
+        elif playable:
+            # Playable media without preview
+            frame_lines.append("\\begin{center}")
+            frame_lines.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}{{{media_path}}}")
+            frame_lines.append("\\end{center}")
+        else:
+            # Static image
+            frame_lines.append("\\begin{center}")
+            frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{media_path}}}")
+            frame_lines.append("\\end{center}")
+
+    # Add source URL citation if present
+    if source_url:
+        frame_lines.append("\\vspace{0.3em}")
+        frame_lines.append(f"\\begin{{center}}{{\\tiny Source: \\href{{{source_url}}}{{\\textcolor{{blue}}{{[Link]}}}}}}\\end{{center}}")
+
+    # Add content with cleaning level awareness
+    if content:
+        # Clean content if needed
+        if cleaning_level < 3:
+            cleaned_content = []
+            for line in content:
+                if isinstance(line, str):
+                    cleaned_content.append(clean_content_line(line))
+                else:
+                    cleaned_content.append(line)
+            content = cleaned_content
+
+        # Process content for itemize/enumerate
+        processed_content = process_content_with_features(content)
+
+        if processed_content:
+            frame_lines.append(processed_content)
+
+    # Add notes with cleaning level awareness
+    if notes:
+        if cleaning_level < 3:
+            cleaned_notes = []
+            for note in notes:
+                if isinstance(note, str):
+                    cleaned_notes.append(clean_content_line(note))
+                else:
+                    cleaned_notes.append(note)
+            notes = cleaned_notes
+
+        frame_lines.append("")
+        frame_lines.append("\\note{")
+        has_bullets = any(note.strip().startswith(('•', '-', '\\item')) for note in notes if note.strip())
+        if has_bullets:
+            frame_lines.append("\\begin{itemize}")
+            for note in notes:
+                if note and note.strip():
+                    note_text = re.sub(r'^[•-]\s*', '', note.strip())
+                    note_text = re.sub(r'^\\item\s*', '', note_text)
+                    if note_text:
+                        frame_lines.append(f"    \\item {note_text}")
+            frame_lines.append("\\end{itemize}")
+        else:
+            for note in notes:
+                if note and note.strip():
+                    frame_lines.append(f"    {note}")
+        frame_lines.append("}")
+
+    frame_lines.append("\\end{frame}")
+    return '\n'.join(frame_lines)
+
+
+def clean_title(title: str, cleaning_level: int = DEFAULT_CLEANING_LEVEL) -> str:
+    """
+    Clean title for LaTeX based on cleaning level.
+
+    Level 0: Clean only typos and LaTeX errors
+    Level 1: Clean slides only (remove braces, escape special chars)
+    Level 2: Clean both slides and preamble
+    Level 3: None (preserve everything)
+    """
+    if not title:
+        return "Untitled"
+
+    # Level 3: No cleaning at all
+    if cleaning_level >= 3:
+        return title.strip() or "Untitled"
+
+    import re
+
+    # Level 0: Only fix obvious LaTeX errors
+    if cleaning_level == 0:
+        # Fix double braces
+        title = re.sub(r'\{\{', '{', title)
+        title = re.sub(r'\}\}', '}', title)
+        # Fix special character escapes
+        title = title.replace('\\\\&', '\\&')
+        title = title.replace('\\\\%', '\\%')
+        title = title.replace('\\\\#', '\\#')
+        title = title.replace('\\\\_', '\\_')
+        # Balance braces (but don't remove them)
+        title = balance_braces(title)
+        return title.strip() or "Untitled"
+
+    # Level 1 or 2: More aggressive cleaning
+    # Extract and preserve math mode content
+    math_content = {}
+    def store_math(match):
+        placeholder = f"__MATH_{len(math_content)}__"
+        math_content[placeholder] = match.group(0)
+        return placeholder
+
+    # Find all math expressions ($...$ and $$...$$)
+    math_pattern = r'\$\$[^$]+\$\$|\$[^$]+\$'
+    title_with_placeholders = re.sub(math_pattern, store_math, title)
+
+    # Remove braces only outside math mode
+    title_with_placeholders = title_with_placeholders.replace('{', '').replace('}', '')
+    title_with_placeholders = title_with_placeholders.replace('\\{', '').replace('\\}', '')
+
+    # Restore math content
+    for placeholder, content in math_content.items():
+        title_with_placeholders = title_with_placeholders.replace(placeholder, content)
+
+    # Escape special characters
+    title_with_placeholders = title_with_placeholders.replace('&', '\\&')
+    title_with_placeholders = title_with_placeholders.replace('%', '\\%')
+    title_with_placeholders = title_with_placeholders.replace('#', '\\#')
+    title_with_placeholders = title_with_placeholders.replace('_', '\\_')
+
+    return title_with_placeholders.strip() or "Untitled"
+
+
+def balance_braces(text: str) -> str:
+    """Balance braces in a string without removing them."""
+    if not text:
+        return text
+
+    open_count = text.count('{')
+    close_count = text.count('}')
+
+    if open_count > close_count:
+        text += '}' * (open_count - close_count)
+    elif close_count > open_count:
+        # Remove extra closing braces from the end
+        while text.endswith('}') and text.count('}') > text.count('{'):
+            text = text[:-1]
+
+    return text
+
+#========================================================
+# Cleaning on request only END
+#========================================================
 
 def sanitize_title_for_latex(title: str) -> str:
     """Sanitize a title for LaTeX, handling special characters properly."""
@@ -4173,896 +6721,6 @@ def _fix_table_formatting(self, table_lines: list) -> list:
             fixed_lines.append(line_stripped)
 
     return fixed_lines
-
-
-def parse_hybrid_slides(lines, warnings):
-    """
-    Parse hybrid format slides - \title without \begin{Content}
-    This handles cases where the content is directly after \title
-    """
-    import re
-
-    print(f"  Hybrid parser: processing {len(lines)} lines")
-
-    slides = []
-    current_slide = None
-    content_buffer = []
-    notes_buffer = []
-    media = ""
-    found_media = False
-    in_notes = False
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Detect title
-        title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
-        if title_match:
-            print(f"  Hybrid parser: Found title: {title_match.group(1).strip()[:50]}...")
-
-            # Save previous slide
-            if current_slide:
-                current_slide['content'] = content_buffer.copy()
-                current_slide['notes'] = notes_buffer.copy()
-                slides.append(current_slide)
-
-            # Start new slide
-            title = title_match.group(1).strip()
-            title = clean_title(title)
-
-            current_slide = {
-                'title': title,
-                'content': [],
-                'notes': [],
-                'media': '',
-                'layout': None,
-                'layout_params': None,
-                'playable': False,
-                'source_url': None
-            }
-            content_buffer = []
-            notes_buffer = []
-            media = ""
-            found_media = False
-            in_notes = False
-            i += 1
-            continue
-
-        # If we're not in a slide, skip
-        if current_slide is None:
-            i += 1
-            continue
-
-        # Check for Content block - if found, switch to native parser
-        if '\\begin{Content}' in stripped:
-            print(f"  Hybrid parser: Found \\begin{{Content}}, switching to native parser")
-            return parse_native_slides_full(lines, warnings)
-
-        # Check for Notes block
-        if '\\begin{Notes}' in stripped:
-            in_notes = True
-            i += 1
-            continue
-        if '\\end{Notes}' in stripped:
-            in_notes = False
-            i += 1
-            continue
-
-        # Check for end of slide (next title or end of file)
-        # If we see another \title, this slide ends
-        if re.match(r'^%?\s*\\title\s+', line):
-            # The next iteration will handle this as a new slide
-            # But we need to save the current slide first
-            if current_slide:
-                current_slide['content'] = content_buffer.copy()
-                current_slide['notes'] = notes_buffer.copy()
-                slides.append(current_slide)
-            current_slide = None
-            content_buffer = []
-            notes_buffer = []
-            i += 1
-            continue
-
-        # Process content
-        if not in_notes:
-            # Check for media directive
-            if not found_media and stripped and stripped.startswith(('\\file', '\\play')):
-                media = stripped
-                found_media = True
-                current_slide['media'] = media
-                i += 1
-                continue
-
-            if stripped and not stripped.startswith('%') and not stripped.startswith('\\end{Content}'):
-                # Fix braces and add to content
-                clean_line = fix_braces(stripped)
-                if clean_line and clean_line not in ['\\None', 'None']:
-                    content_buffer.append(clean_line)
-
-        # Process notes
-        if in_notes:
-            if stripped and not stripped.startswith('%'):
-                clean_note = fix_braces(stripped)
-                if clean_note:
-                    notes_buffer.append(clean_note)
-            elif stripped.startswith('%'):
-                notes_buffer.append(stripped)
-
-        i += 1
-
-    # Save last slide
-    if current_slide:
-        current_slide['content'] = content_buffer.copy()
-        current_slide['notes'] = notes_buffer.copy()
-        current_slide['media'] = media
-        slides.append(current_slide)
-
-    print(f"  Hybrid parser: found {len(slides)} slides")
-    return slides
-
-
-def parse_hybrid_slides(lines, warnings):
-    """
-    Parse hybrid format slides - \title without \begin{Content}
-    This handles cases where the content is directly after \title
-    """
-    import re
-
-    slides = []
-    current_slide = None
-    content_buffer = []
-    notes_buffer = []
-    media = ""
-    found_media = False
-    in_notes = False
-
-    # First, find all \title lines and their content
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Detect title
-        title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
-        if title_match:
-            # Save previous slide
-            if current_slide:
-                current_slide['content'] = content_buffer.copy()
-                current_slide['notes'] = notes_buffer.copy()
-                slides.append(current_slide)
-
-            # Start new slide
-            title = title_match.group(1).strip()
-            title = clean_title(title)
-
-            current_slide = {
-                'title': title,
-                'content': [],
-                'notes': [],
-                'media': '',
-                'layout': None,
-                'layout_params': None,
-                'playable': False,
-                'source_url': None
-            }
-            content_buffer = []
-            notes_buffer = []
-            media = ""
-            found_media = False
-            in_notes = False
-            i += 1
-            continue
-
-        # Check for Content block
-        if '\\begin{Content}' in stripped:
-            # This will be handled by the native parser
-            return parse_native_slides_full(lines, warnings)
-
-        # Check for Notes block
-        if '\\begin{Notes}' in stripped:
-            in_notes = True
-            i += 1
-            continue
-        if '\\end{Notes}' in stripped:
-            in_notes = False
-            i += 1
-            continue
-
-        # If we're in a slide and this is content
-        if current_slide is not None and not in_notes:
-            # Check for media directive
-            if not found_media and stripped and stripped.startswith(('\\file', '\\play')):
-                media = stripped
-                found_media = True
-                current_slide['media'] = media
-                i += 1
-                continue
-
-            if stripped and not stripped.startswith('%') and not stripped.startswith('\\end{Content}'):
-                # Fix braces and add to content
-                clean_line = fix_braces(stripped)
-                if clean_line:
-                    content_buffer.append(clean_line)
-
-        # Process notes
-        if in_notes and current_slide is not None:
-            if stripped and not stripped.startswith('%'):
-                clean_note = fix_braces(stripped)
-                if clean_note:
-                    notes_buffer.append(clean_note)
-            elif stripped.startswith('%'):
-                notes_buffer.append(stripped)
-
-        i += 1
-
-    # Save last slide
-    if current_slide:
-        current_slide['content'] = content_buffer.copy()
-        current_slide['notes'] = notes_buffer.copy()
-        current_slide['media'] = media
-        slides.append(current_slide)
-
-    return slides
-
-
-def parse_native_slides_full(lines, warnings):
-    """Parse native format slides with ALL features supported"""
-    import re
-
-    slides = []
-    current_slide = None
-    in_content = False
-    in_notes = False
-    content_buffer = []
-    notes_buffer = []
-    media = ""
-    found_media = False
-    pending_font_cmd = None
-    itemize_stack = []
-    in_tabular = False  # Track tabular environment
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Detect title
-        title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
-        if title_match:
-            if current_slide:
-                current_slide['content'] = content_buffer.copy()
-                current_slide['notes'] = notes_buffer.copy()
-                slides.append(current_slide)
-
-            title = title_match.group(1).strip()
-            title = clean_title(title)
-
-            current_slide = {
-                'title': title,
-                'content': [],
-                'notes': [],
-                'media': '',
-                'layout': None,
-                'layout_params': None,
-                'playable': False,
-                'source_url': None
-            }
-            content_buffer = []
-            notes_buffer = []
-            media = ""
-            found_media = False
-            in_content = False
-            in_notes = False
-            pending_font_cmd = None
-            itemize_stack = []
-            in_tabular = False
-            continue
-
-        if current_slide is None:
-            continue
-
-        # Detect Content block
-        if re.match(r'^%?\s*\\begin{Content}\s*$', stripped):
-            in_content = True
-            in_notes = False
-            found_media = False
-            in_tabular = False
-            continue
-        elif re.match(r'^%?\s*\\end{Content}\s*$', stripped):
-            in_content = False
-            # Close any open itemize environments
-            while itemize_stack:
-                content_buffer.append("\\end{itemize}")
-                itemize_stack.pop()
-            continue
-
-        # Detect Notes block
-        if re.match(r'^%?\s*\\begin{Notes}\s*$', stripped):
-            in_notes = True
-            in_content = False
-            continue
-        elif re.match(r'^%?\s*\\end{Notes}\s*$', stripped):
-            in_notes = False
-            continue
-
-        # Process content
-        if in_content:
-            if not stripped or stripped.startswith('%'):
-                if stripped:
-                    content_buffer.append(stripped)
-                continue
-
-            # ============================================================
-            # CRITICAL: Track tabular environment to prevent bullet conversion inside tables
-            # ============================================================
-            if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
-                in_tabular = True
-                # Close any open itemize before tabular
-                while itemize_stack:
-                    content_buffer.append("\\end{itemize}")
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-
-            if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
-                in_tabular = False
-                # Close any open itemize before ending tabular
-                while itemize_stack:
-                    content_buffer.append("\\end{itemize}")
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-
-            # ========== CHECK FOR LAYOUT DIRECTIVES ==========
-            layout_match = re.match(r'\\(ff|wm|pip|split|hl|bg|tb|ol|corner|mosaic)\s*\{([^}]*)\}', stripped)
-            if layout_match:
-                layout_type = layout_match.group(1)
-                layout_params = layout_match.group(2)
-                current_slide['layout'] = layout_type
-                current_slide['layout_params'] = layout_params
-                # Don't add to content - it's handled separately
-                continue
-
-            # ========== CHECK FOR MEDIA DIRECTIVES ==========
-            if not found_media:
-                # Check for play directive with URL or file
-                play_match = re.match(r'\\play\s+(.+)$', stripped)
-                if play_match:
-                    media_source = play_match.group(1).strip()
-                    current_slide['playable'] = True
-                    if 'youtube.com' in media_source or 'youtu.be' in media_source:
-                        current_slide['source_url'] = media_source
-                        result = download_youtube_video(media_source)
-                        if result:
-                            base_name, filename, filepath = result
-                            media = f"\\play \\file media_files/{filename}"
-                            found_media = True
-                            current_slide['media'] = media
-                            continue
-                    elif media_source.startswith('\\file'):
-                        media = stripped
-                        found_media = True
-                        current_slide['media'] = media
-                        continue
-                    else:
-                        media = stripped
-                        found_media = True
-                        current_slide['media'] = media
-                        continue
-
-                if stripped.startswith('\\file'):
-                    media = stripped
-                    found_media = True
-                    current_slide['media'] = media
-                    continue
-
-                if stripped == '\\None':
-                    found_media = True
-                    current_slide['media'] = ''
-                    continue
-
-            # ============================================================
-            # CRITICAL FIX: Bullet points - skip if inside tabular
-            # ============================================================
-            # Bullet points
-            if not in_tabular and (stripped.startswith('-') or stripped.startswith('•')):
-                bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                if itemize_stack:
-                    content_buffer.append(f"\\item {bullet_content}")
-                else:
-                    content_buffer.append("\\begin{itemize}")
-                    itemize_stack.append('itemize')
-                    content_buffer.append(f"\\item {bullet_content}")
-                continue
-            elif stripped.startswith('-') or stripped.startswith('•'):
-                # Inside tabular - keep as-is (don't convert to item)
-                content_buffer.append(stripped)
-                continue
-
-            # ========== PROCESS CONTENT WITH FULL FEATURE SUPPORT ==========
-
-            # Font size commands
-            font_commands = ['\\tiny', '\\scriptsize', '\\footnotesize', '\\small',
-                           '\\normalsize', '\\large', '\\Large', '\\LARGE', '\\huge', '\\Huge']
-            is_font_cmd = False
-            for font_cmd in font_commands:
-                if stripped.startswith(font_cmd):
-                    pending_font_cmd = stripped
-                    is_font_cmd = True
-                    break
-            if is_font_cmd:
-                continue
-
-            # Special effects
-            if '\\shadowtext' in stripped or '\\glowtext' in stripped or '\\gradienttext' in stripped:
-                stripped = process_special_effects(stripped)
-                content_buffer.append(stripped)
-                continue
-
-            # TikZ content - preserve exactly
-            if '\\begin{tikzpicture}' in stripped:
-                while itemize_stack:
-                    content_buffer.append("\\end{itemize}")
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-
-            # Block environments
-            if '\\begin{block}' in stripped or '\\begin{alertblock}' in stripped or '\\begin{exampleblock}' in stripped:
-                while itemize_stack:
-                    content_buffer.append("\\end{itemize}")
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-            if '\\end{block}' in stripped or '\\end{alertblock}' in stripped or '\\end{exampleblock}' in stripped:
-                content_buffer.append(stripped)
-                continue
-
-            # Columns
-            if '\\begin{columns}' in stripped or '\\end{columns}' in stripped:
-                while itemize_stack:
-                    content_buffer.append("\\end{itemize}")
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-            if stripped.startswith('\\column'):
-                while itemize_stack:
-                    content_buffer.append("\\end{itemize}")
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-
-            # Itemize/Enumerate
-            if '\\begin{itemize}' in stripped:
-                itemize_stack.append('itemize')
-                content_buffer.append(stripped)
-                if pending_font_cmd:
-                    content_buffer.append(pending_font_cmd)
-                    pending_font_cmd = None
-                continue
-            if '\\begin{enumerate}' in stripped:
-                itemize_stack.append('enumerate')
-                content_buffer.append(stripped)
-                if pending_font_cmd:
-                    content_buffer.append(pending_font_cmd)
-                    pending_font_cmd = None
-                continue
-            if '\\end{itemize}' in stripped:
-                if itemize_stack and itemize_stack[-1] == 'itemize':
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-            if '\\end{enumerate}' in stripped:
-                if itemize_stack and itemize_stack[-1] == 'enumerate':
-                    itemize_stack.pop()
-                content_buffer.append(stripped)
-                continue
-
-            # Standalone \item
-            if stripped.startswith('\\item'):
-                if pending_font_cmd:
-                    content_buffer.append(pending_font_cmd)
-                    pending_font_cmd = None
-                content_buffer.append(stripped)
-                continue
-
-            # Table commands
-            if stripped in ['\\hline', '\\toprule', '\\midrule', '\\bottomrule']:
-                content_buffer.append(stripped)
-                continue
-
-            # Center environment
-            if stripped == '\\begin{center}' or stripped == '\\end{center}':
-                content_buffer.append(stripped)
-                continue
-
-            # Beamercolorbox
-            if stripped.startswith('\\begin{beamercolorbox}') or stripped == '\\end{beamercolorbox}':
-                content_buffer.append(stripped)
-                continue
-
-            # Text formatting
-            if stripped.startswith(('\\textcolor', '\\textbf', '\\textit', '\\emph', '\\alert')):
-                stripped = process_special_effects(stripped)
-                content_buffer.append(stripped)
-                continue
-
-            # Math mode
-            if stripped.startswith('$') or stripped.startswith('\\[') or stripped.startswith('\\('):
-                content_buffer.append(stripped)
-                continue
-
-            # URL or hyperlink
-            if stripped.startswith(('http://', 'https://', '\\url{', '\\href{')):
-                content_buffer.append(stripped)
-                continue
-
-            # Vspace and spacing
-            if stripped.startswith('\\vspace') or stripped.startswith('\\hspace'):
-                content_buffer.append(stripped)
-                continue
-
-            # Regular text - fix braces and add
-            if stripped:
-                stripped = fix_braces(stripped)
-                if stripped:
-                    content_buffer.append(stripped)
-
-        # Process notes
-        elif in_notes:
-            if stripped and not stripped.startswith('%'):
-                stripped = fix_braces(stripped)
-                if stripped:
-                    notes_buffer.append(stripped)
-            elif stripped.startswith('%'):
-                notes_buffer.append(stripped)
-
-    # Save last slide
-    if current_slide:
-        while itemize_stack:
-            content_buffer.append("\\end{itemize}")
-            itemize_stack.pop()
-        current_slide['content'] = content_buffer.copy()
-        current_slide['notes'] = notes_buffer.copy()
-        slides.append(current_slide)
-
-    return slides
-
-
-def parse_latex_slides_full(lines, warnings):
-    r"""Parse LaTeX format slides with \begin{frame} and \end{frame}"""
-    import re
-
-    slides = []
-    content = '\n'.join(lines)
-
-    # Find all frames
-    frame_pattern = r'\\begin{frame}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(.*?)\\end{frame}'
-    frames = re.finditer(frame_pattern, content, re.DOTALL)
-
-    # Extract notes separately
-    note_pattern = r'\\begin{Notes}(.*?)\\end{Notes}'
-    notes_blocks = list(re.finditer(note_pattern, content, re.DOTALL))
-
-    frame_index = 0
-
-    for frame_match in frames:
-        frame_title = frame_match.group(1) or ""
-        frame_content = frame_match.group(2)
-
-        # Extract frametitle
-        frametitle_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
-        if frametitle_match:
-            title = frametitle_match.group(1).strip()
-            frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
-        elif frame_title:
-            title = frame_title.strip()
-        else:
-            title = f"Slide {len(slides) + 1}"
-
-        title = clean_title(title)
-
-        # Extract notes for this frame
-        notes = []
-        if frame_index < len(notes_blocks):
-            note_content = notes_blocks[frame_index].group(1).strip()
-            if note_content:
-                for note_line in note_content.split('\n'):
-                    note_line = note_line.strip()
-                    if note_line and not note_line.startswith('%'):
-                        notes.append(note_line)
-
-        # Extract media
-        media = ""
-        media_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}', frame_content)
-        if media_match:
-            media = f"\\file {media_match.group(1)}"
-        else:
-            movie_match = re.search(r'\\movie(?:\[[^\]]*\])?{[^}]*}{([^}]*)}', frame_content)
-            if movie_match:
-                media = f"\\play {movie_match.group(1)}"
-
-        # Check for layout directives in frame content
-        layout = None
-        layout_params = None
-        layout_match = re.search(r'\\(ff|wm|pip|split|hl|bg|tb|ol|corner|mosaic)\s*\{([^}]*)\}', frame_content)
-        if layout_match:
-            layout = layout_match.group(1)
-            layout_params = layout_match.group(2)
-
-        # Extract content lines
-        content_lines = []
-        for line in frame_content.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith('\\begin{frame}') or line.startswith('\\end{frame}'):
-                continue
-            if line.startswith('\\frametitle'):
-                continue
-            content_lines.append(line)
-
-        # Check if content already has frame commands (for pass-through)
-        has_inner_frame = any('\\begin{frame}' in line for line in content_lines)
-        if has_inner_frame:
-            # Pass through as-is
-            slides.append(frame_match.group(0))
-            frame_index += 1
-            continue
-
-        # Create slide dictionary
-        slide = {
-            'title': title,
-            'content': content_lines,
-            'notes': notes,
-            'media': media,
-            'layout': layout,
-            'layout_params': layout_params,
-            'playable': '\\play' in frame_content or media.startswith('\\play'),
-            'source_url': None
-        }
-
-        # Check for YouTube URLs
-        youtube_match = re.search(r'(?:\\play\s+)?(?:\\url\s+)?(https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s\n]+)', frame_content)
-        if youtube_match:
-            slide['source_url'] = youtube_match.group(1)
-            slide['playable'] = True
-
-        slides.append(slide)
-        frame_index += 1
-
-    return slides
-
-def process_slide_with_features(slide, outfile=None, warnings=None):
-    """
-    Process a slide with FULL feature support.
-    Returns the processed LaTeX string or None if failed.
-    """
-    import re
-
-    title = slide.get('title', 'Untitled')
-    content = slide.get('content', [])
-    notes = slide.get('notes', [])
-    media = slide.get('media', '')
-    layout = slide.get('layout')
-    layout_params = slide.get('layout_params')
-    playable = slide.get('playable', False)
-    source_url = slide.get('source_url')
-
-    # ============================================================
-    # DEBUG: Log content BEFORE any processing
-    # ============================================================
-    debug_logger.debug(f"\n{'='*60}")
-    debug_logger.debug(f"SLIDE: {title} - RAW CONTENT FROM PARSER")
-    debug_logger.debug(f"{'='*60}")
-    for i, line in enumerate(content):
-        if isinstance(line, str) and ('tabular' in line or 'itemize' in line or '-20' in line or '&' in line):
-            debug_logger.debug(f"  LINE {i}: {repr(line)}")
-    debug_logger.debug(f"{'='*60}\n")
-
-    # ============================================================
-    # FIX: Clean tabular specifications and fix bullet points
-    # ============================================================
-    def clean_tabular_and_bullets(content_list):
-        """Clean tabular specs and fix bullet points in content"""
-        if not content_list:
-            return content_list
-
-        # First pass: identify table rows
-        is_table_row = [False] * len(content_list)
-        in_tabular = False
-
-        for i, line in enumerate(content_list):
-            if not isinstance(line, str):
-                continue
-            stripped = line.strip()
-
-            if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
-                in_tabular = True
-                continue
-            if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
-                in_tabular = False
-                continue
-
-            if in_tabular and '&' in stripped:
-                is_table_row[i] = True
-
-        # Second pass: fix content
-        fixed_content = []
-        for i, line in enumerate(content_list):
-            if not isinstance(line, str):
-                fixed_content.append(line)
-                continue
-
-            stripped = line.strip()
-
-            # If this is a table row that starts with -, fix it
-            if is_table_row[i] and (stripped.startswith('-') or stripped.startswith('•')):
-                # Remove the leading - or • and keep the rest of the line
-                fixed_line = re.sub(r'^[-•]\s*', '', line)
-                debug_logger.debug(f"  FIXED table row: {repr(line)} -> {repr(fixed_line)}")
-                fixed_content.append(fixed_line)
-            else:
-                fixed_content.append(line)
-
-        return fixed_content
-
-    # ============================================================
-    # Apply fixes to content
-    # ============================================================
-    content = clean_tabular_and_bullets(content)
-
-    # ============================================================
-    # DEBUG: Log content AFTER cleaning
-    # ============================================================
-    debug_logger.debug(f"\n{'='*60}")
-    debug_logger.debug(f"SLIDE: {title} - AFTER CLEANING")
-    debug_logger.debug(f"{'='*60}")
-    for i, line in enumerate(content):
-        if isinstance(line, str) and ('tabular' in line or 'itemize' in line or '-20' in line or '&' in line):
-            debug_logger.debug(f"  LINE {i}: {repr(line)}")
-    debug_logger.debug(f"{'='*60}\n")
-
-    # Clean title
-    clean_title = clean_title_for_latex(title)
-
-    # ========== HANDLE LAYOUT DIRECTIVES ==========
-    if layout:
-        if layout == 'mosaic':
-            return generate_mosaic_layout(clean_title, layout_params, content, media)
-        elif layout == 'split':
-            return generate_split_layout(clean_title, layout_params, content, media)
-        elif layout == 'pip':
-            return generate_pip_layout(clean_title, layout_params, content, media)
-        elif layout == 'ff':
-            return generate_fullframe_layout(clean_title, layout_params, content, media)
-        elif layout == 'wm':
-            return generate_watermark_layout(clean_title, layout_params, content, media)
-        elif layout == 'hl':
-            return generate_highlight_layout(clean_title, layout_params, content, media)
-        elif layout == 'bg':
-            return generate_background_layout(clean_title, layout_params, content, media)
-        elif layout == 'tb':
-            return generate_topbottom_layout(clean_title, layout_params, content, media)
-        elif layout == 'ol':
-            return generate_overlay_layout(clean_title, layout_params, content, media)
-        elif layout == 'corner':
-            return generate_corner_layout(clean_title, layout_params, content, media)
-
-    # ========== HANDLE MEDIA ==========
-    first_frame_path = None
-    media_path = None
-
-    if media and media != "\\None":
-        # Parse media directive
-        directive_type, media_source, is_playable, original_directive = parse_media_directive(media)
-        playable = playable or is_playable
-
-        # Handle YouTube videos
-        if directive_type == 'url' and media_source and ('youtube.com' in media_source or 'youtu.be' in media_source):
-            # Download YouTube video
-            result = download_youtube_video(media_source)
-            if result:
-                base_name, filename, filepath = result
-                media_path = f"media_files/{filename}"
-                first_frame_path = generate_preview_frame(filepath)
-                playable = True
-                source_url = media_source
-            else:
-                # Fallback to URL
-                media_path = media_source
-                playable = False
-
-        # Handle local files
-        elif directive_type == 'file' and media_source:
-            media_path = media_source
-            if not os.path.exists(media_path):
-                # Try in media_files
-                test_path = os.path.join('media_files', os.path.basename(media_path))
-                if os.path.exists(test_path):
-                    media_path = test_path
-            if os.path.exists(media_path):
-                # Generate preview for videos
-                video_extensions = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv', '.wmv')
-                if media_path.lower().endswith(video_extensions):
-                    first_frame_path = generate_preview_frame(media_path)
-                    playable = True
-                elif media_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
-                    first_frame_path = media_path
-
-    # ========== GENERATE FRAME ==========
-    frame_lines = []
-    frame_lines.append(f"\\begin{{frame}}{{{clean_title}}}")
-    frame_lines.append(f"\\frametitle{{{clean_title}}}")
-    frame_lines.append("")
-
-    # Add media (playable or static)
-    if media_path and media_path != "\\None":
-        if playable and first_frame_path:
-            # Playable media with preview
-            frame_lines.append("\\begin{center}")
-            frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{first_frame_path}}}")
-            frame_lines.append("    \\vspace{0.3em}")
-            frame_lines.append("    \\footnotesize Click to play\\\\")
-            frame_lines.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{media_path}}}")
-            frame_lines.append("\\end{center}")
-        elif playable:
-            # Playable media without preview
-            frame_lines.append("\\begin{center}")
-            frame_lines.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}{{{media_path}}}")
-            frame_lines.append("\\end{center}")
-        else:
-            # Static image
-            frame_lines.append("\\begin{center}")
-            frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{media_path}}}")
-            frame_lines.append("\\end{center}")
-
-    # Add source URL citation if present
-    if source_url:
-        frame_lines.append("\\vspace{0.3em}")
-        frame_lines.append(f"\\begin{{center}}{{\\tiny Source: \\href{{{source_url}}}{{\\textcolor{{blue}}{{[Link]}}}}}}\\end{{center}}")
-
-    # Add content
-    if content:
-        # Process content for itemize/enumerate
-        processed_content = process_content_with_features(content)
-
-        # ============================================================
-        # DEBUG: Log content AFTER process_content_with_features
-        # ============================================================
-        debug_logger.debug(f"\n{'='*60}")
-        debug_logger.debug(f"SLIDE: {title} - AFTER process_content_with_features")
-        debug_logger.debug(f"{'='*60}")
-        for line in processed_content.split('\n'):
-            if 'tabular' in line or 'itemize' in line or '-20' in line or '&' in line:
-                debug_logger.debug(f"  {repr(line)}")
-        debug_logger.debug(f"{'='*60}\n")
-
-        if processed_content:
-            frame_lines.append(processed_content)
-
-    # Add notes
-    if notes:
-        frame_lines.append("")
-        frame_lines.append("\\note{")
-        has_bullets = any(note.strip().startswith(('•', '-', '\\item')) for note in notes if note.strip())
-        if has_bullets:
-            frame_lines.append("\\begin{itemize}")
-            for note in notes:
-                if note and note.strip():
-                    note_text = re.sub(r'^[•-]\s*', '', note.strip())
-                    note_text = re.sub(r'^\\item\s*', '', note_text)
-                    if note_text:
-                        frame_lines.append(f"    \\item {note_text}")
-            frame_lines.append("\\end{itemize}")
-        else:
-            for note in notes:
-                if note and note.strip():
-                    frame_lines.append(f"    {note}")
-        frame_lines.append("}")
-
-    frame_lines.append("\\end{frame}")
-    return '\n'.join(frame_lines)
 
 
 import logging
@@ -5450,43 +7108,21 @@ def process_content_with_features(content):
     if not content:
         return ""
 
-    # Log input
-    log_line_by_line("process_content_with_features", content, "INPUT")
+    # If content is a string, split it into lines
+    if isinstance(content, str):
+        content = content.split('\n')
 
     # ============================================================
-    # PRE-PROCESSING PASS: Identify table rows before any conversion
-    # ============================================================
-    # First, identify which lines are table rows (contain &)
-    is_table_row = [False] * len(content)
-    in_tabular = False
-
-    for i, line in enumerate(content):
-        if not isinstance(line, str):
-            continue
-        stripped = line.strip()
-
-        # Track tabular environment
-        if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
-            in_tabular = True
-            continue
-        if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
-            in_tabular = False
-            continue
-
-        # Mark table rows (lines containing &)
-        if in_tabular and '&' in stripped:
-            is_table_row[i] = True
-
-    # ============================================================
-    # MAIN PROCESSING PASS
+    # CRITICAL FIX: Detect and PRESERVE TikZ content exactly as-is
     # ============================================================
     result = []
-    itemize_stack = []
     in_tikz = False
     tikz_buffer = []
+    in_itemize = False
+    itemize_stack = []
+    in_tabular = False
     in_math = False
     math_buffer = []
-    in_tabular = False
 
     for idx, line in enumerate(content):
         if not line or not line.strip():
@@ -5495,19 +7131,12 @@ def process_content_with_features(content):
         stripped = line.strip()
 
         # ============================================================
-        # FIX: Clean up any remaining placeholder artifacts
-        # ============================================================
-        if isinstance(line, str):
-            line = re.sub(r'@@@[^@]+@@@', '', line)
-            line = re.sub(r'PROTECTED_\d+', '', line)
-            line = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', line)
-
-        # ============================================================
-        # 1. TIKZ ENVIRONMENT HANDLING - PRESERVE COMPLETELY
+        # CRITICAL: Detect TikZ environment - PRESERVE COMPLETELY
         # ============================================================
         if '\\begin{tikzpicture}' in stripped:
             in_tikz = True
             tikz_buffer = [line]
+            # Close any open itemize
             while itemize_stack:
                 result.append("\\end{itemize}")
                 itemize_stack.pop()
@@ -5517,15 +7146,34 @@ def process_content_with_features(content):
             tikz_buffer.append(line)
             if '\\end{tikzpicture}' in stripped:
                 in_tikz = False
-                # Apply TikZ fixes to the entire buffer
+                # Join the TikZ content exactly as-is - NO MODIFICATION
                 tikz_content = '\n'.join(tikz_buffer)
-                fixed_tikz = fix_tikz_node_line_breaks(tikz_content)
-                result.append(fixed_tikz)
+                # CRITICAL: Do NOT modify TikZ content here - it will be fixed later
+                result.append(tikz_content)
                 tikz_buffer = []
             continue
 
         # ============================================================
-        # 2. MATH ENVIRONMENT HANDLING - PRESERVE COMPLETELY
+        # CRITICAL: Detect and PRESERVE tabular environment
+        # ============================================================
+        if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
+            in_tabular = True
+            while itemize_stack:
+                result.append("\\end{itemize}")
+                itemize_stack.pop()
+            result.append(line)
+            continue
+
+        if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
+            in_tabular = False
+            while itemize_stack:
+                result.append("\\end{itemize}")
+                itemize_stack.pop()
+            result.append(line)
+            continue
+
+        # ============================================================
+        # CRITICAL: Detect and PRESERVE math environments
         # ============================================================
         if any(stripped.startswith(start) for start in ['\\begin{align', '\\begin{equation', '\\begin{gather', '\\begin{multline']):
             in_math = True
@@ -5544,10 +7192,9 @@ def process_content_with_features(content):
             continue
 
         # ============================================================
-        # 3. LIST ENVIRONMENTS - ITEMIZE/ENUMERATE
+        # List environments - pass through
         # ============================================================
         if '\\begin{itemize}' in stripped:
-            # If we're in tabular, just pass through
             if in_tabular:
                 result.append(line)
                 continue
@@ -5576,33 +7223,33 @@ def process_content_with_features(content):
             continue
 
         # ============================================================
-        # 4. BULLET POINTS - USE PRE-PROCESSED TABLE ROW INFO
+        # Bullet points - convert to \item
         # ============================================================
         is_bullet = stripped.startswith('-') or stripped.startswith('•')
 
-        # CRITICAL: If this line was marked as a table row, skip bullet conversion
-        if is_bullet and is_table_row[idx]:
-            result.append(line)
-            continue
-
-        # If we're in tabular, skip bullet point conversion entirely
-        if in_tabular and is_bullet:
-            result.append(line)
-            continue
-
-        # Handle bullet points (convert - or • to \item)
-        if is_bullet:
+        if is_bullet and not in_tabular and not in_tikz:
             bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-            if not itemize_stack:
-                result.append("\\begin{itemize}")
-                itemize_stack.append('itemize')
-                result.append(f"\\item {bullet_content}")
+            # Check if bullet content contains LaTeX commands
+            if '\\' in bullet_content:
+                # Contains LaTeX commands, keep as-is with \item
+                if not itemize_stack:
+                    result.append("\\begin{itemize}")
+                    itemize_stack.append('itemize')
+                    result.append(f"\\item {bullet_content}")
+                else:
+                    result.append(f"\\item {bullet_content}")
             else:
-                result.append(f"\\item {bullet_content}")
+                # Plain text bullet
+                if not itemize_stack:
+                    result.append("\\begin{itemize}")
+                    itemize_stack.append('itemize')
+                    result.append(f"\\item {bullet_content}")
+                else:
+                    result.append(f"\\item {bullet_content}")
             continue
 
         # ============================================================
-        # 5. \item COMMANDS
+        # \item commands - pass through
         # ============================================================
         if stripped.startswith('\\item'):
             if in_tabular:
@@ -5612,7 +7259,7 @@ def process_content_with_features(content):
             continue
 
         # ============================================================
-        # 6. BLOCK ENVIRONMENTS
+        # Block environments - pass through
         # ============================================================
         if stripped.startswith(('\\begin{block}', '\\begin{alertblock}', '\\begin{exampleblock}')):
             while itemize_stack:
@@ -5626,7 +7273,7 @@ def process_content_with_features(content):
             continue
 
         # ============================================================
-        # 7. COLUMN ENVIRONMENTS
+        # Column environments - pass through
         # ============================================================
         if stripped.startswith(('\\begin{columns}', '\\end{columns}')):
             while itemize_stack:
@@ -5643,74 +7290,76 @@ def process_content_with_features(content):
             continue
 
         # ============================================================
-        # 8. TABLE COMMANDS - PASS THROUGH
+        # Table commands - pass through
         # ============================================================
         if stripped in ['\\hline', '\\toprule', '\\midrule', '\\bottomrule', '\\addlinespace']:
             result.append(stripped)
             continue
 
         # ============================================================
-        # 9. MATH MODE (INLINE)
+        # Math mode (inline) - preserve
         # ============================================================
         if stripped.startswith('$') or stripped.startswith('\\[') or stripped.startswith('\\('):
             result.append(stripped)
             continue
 
         # ============================================================
-        # 10. CENTER ENVIRONMENT
+        # Center environment - pass through
         # ============================================================
         if stripped == '\\begin{center}' or stripped == '\\end{center}':
             result.append(stripped)
             continue
 
         # ============================================================
-        # 11. BEAMER COLOR BOX
+        # Beamer color box - pass through
         # ============================================================
         if stripped.startswith('\\begin{beamercolorbox}') or stripped == '\\end{beamercolorbox}':
             result.append(stripped)
             continue
 
         # ============================================================
-        # 12. TEXT FORMATTING WITH SPECIAL EFFECTS
+        # Text formatting with special effects
         # ============================================================
         if stripped.startswith(('\\textcolor', '\\textbf', '\\textit', '\\emph', '\\alert')):
-            stripped = process_special_effects(stripped)
+            # Don't modify if it's part of TikZ content (already handled)
+            if not in_tikz:
+                stripped = process_special_effects(stripped)
             result.append(stripped)
             continue
 
         # ============================================================
-        # 13. URLS AND HYPERLINKS
+        # URLs and hyperlinks - pass through
         # ============================================================
         if stripped.startswith(('http://', 'https://', '\\url{', '\\href{')):
             result.append(stripped)
             continue
 
         # ============================================================
-        # 14. SPACING COMMANDS
+        # Spacing commands - pass through
         # ============================================================
         if stripped.startswith(('\\vspace', '\\hspace')):
             result.append(stripped)
             continue
 
         # ============================================================
-        # 15. SCAN FOR TIKZ INSIDE OTHER ENVIRONMENTS
+        # SCAN FOR TIKZ INSIDE OTHER ENVIRONMENTS (CRITICAL FIX)
         # ============================================================
         if '\\begin{tikzpicture}' in stripped or '\\end{tikzpicture}' in stripped:
             while itemize_stack:
                 result.append("\\end{itemize}")
                 itemize_stack.pop()
-            result.append(fix_tikz_node_line_breaks(stripped))
+            result.append(stripped)
             continue
 
         # ============================================================
-        # 16. REGULAR TEXT - Fix braces and add
+        # Regular text - fix braces and add
         # ============================================================
         stripped = fix_braces(stripped)
         if stripped:
             result.append(stripped)
 
     # ============================================================
-    # 17. CLEANUP - Close any remaining itemize environments
+    # Close any remaining itemize environments
     # ============================================================
     while itemize_stack:
         if itemize_stack[-1] == 'itemize':
@@ -5719,28 +7368,10 @@ def process_content_with_features(content):
             result.append("\\end{enumerate}")
         itemize_stack.pop()
 
-    # Log output
-    log_line_by_line("process_content_with_features", result, "OUTPUT")
-
+    # ============================================================
+    # Join the result
+    # ============================================================
     return '\n'.join(result)
-
-def clean_title(title):
-    """Clean title for LaTeX - remove braces and special characters"""
-    if not title:
-        return "Untitled"
-
-    # Remove braces
-    title = title.replace('{', '').replace('}', '')
-    title = title.replace('\\{', '').replace('\\}', '')
-
-    # Escape special characters
-    title = title.replace('&', '\\&')
-    title = title.replace('%', '\\%')
-    title = title.replace('$', '\\$')
-    title = title.replace('#', '\\#')
-    title = title.replace('_', '\\_')
-
-    return title.strip() or "Untitled"
 
 
 def clean_title_for_latex(title):
@@ -6480,7 +8111,19 @@ def _get_preamble(content: str) -> str:  # Remove self parameter
 \definecolor{blueai}{RGB}{70,130,180}
 \definecolor{redwarning}{RGB}{200,50,50}
 \definecolor{redlight}{RGB}{255,230,230}
-
+% Additional color definitions
+\definecolor{greenbiodiv}{RGB}{46,139,87}
+\definecolor{blueai}{RGB}{70,130,180}
+\definecolor{redwarning}{RGB}{200,50,50}
+\definecolor{redlight}{RGB}{255,230,230}
+\definecolor{teal}{RGB}{0,128,128}
+\definecolor{teallight}{RGB}{220,245,245}
+\definecolor{forest}{RGB}{34,139,34}
+\definecolor{forestlight}{RGB}{220,245,220}
+\definecolor{primarylight}{RGB}{230,242,255}
+\definecolor{secondarylight}{RGB}{220,245,250}
+\definecolor{accentlight}{RGB}{255,240,230}
+\definecolor{gold}{RGB}{212,175,55}
 \setbeamertemplate{navigation symbols}{}
 \setbeamertemplate{blocks}[rounded][shadow=true]
 \setbeamersize{text margin left=5pt,text margin right=5pt}
