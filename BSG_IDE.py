@@ -1624,6 +1624,120 @@ class WindowManager:
 
         return result
 
+class BubbleHelpWindow(ctk.CTkToplevel):
+    """Bubble help window that appears on top with installation prompts"""
+
+    def __init__(self, parent, title, message, action_text=None, action_command=None, auto_close=True):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("450x200")
+
+        # Make it modal and stay on top
+        self.transient(parent)
+        self.grab_set()
+        self.attributes('-topmost', True)
+        self.lift()
+        self.focus_force()
+
+        # Center on parent
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - 450) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - 200) // 2
+        self.geometry(f"+{x}+{y}")
+
+        # Make it non-resizable
+        self.resizable(False, False)
+
+        # Main frame
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Icon and title
+        icon_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        icon_frame.pack(fill="x", pady=(0, 10))
+
+        # Icon label
+        icon_label = ctk.CTkLabel(
+            icon_frame,
+            text="🔍",
+            font=("Arial", 28)
+        )
+        icon_label.pack(side="left", padx=(0, 10))
+
+        # Title label
+        title_label = ctk.CTkLabel(
+            icon_frame,
+            text=title,
+            font=("Arial", 14, "bold")
+        )
+        title_label.pack(side="left")
+
+        # Message
+        msg_label = ctk.CTkLabel(
+            main_frame,
+            text=message,
+            wraplength=380,
+            justify="left",
+            font=("Arial", 12)
+        )
+        msg_label.pack(pady=10)
+
+        # Button frame
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        button_frame.pack(fill="x", pady=(10, 0))
+
+        if action_text and action_command:
+            # Action button (e.g., "Install Now")
+            action_btn = ctk.CTkButton(
+                button_frame,
+                text=action_text,
+                command=action_command,
+                width=120,
+                fg_color="#28a745",
+                hover_color="#218838"
+            )
+            action_btn.pack(side="left", padx=5)
+
+            # Later button
+            later_btn = ctk.CTkButton(
+                button_frame,
+                text="Later",
+                command=self.destroy,
+                width=100,
+                fg_color="#6c757d",
+                hover_color="#5a6268"
+            )
+            later_btn.pack(side="left", padx=5)
+        else:
+            # Just an OK button for info messages
+            ok_btn = ctk.CTkButton(
+                button_frame,
+                text="OK",
+                command=self.destroy,
+                width=120,
+                fg_color="#28a745",
+                hover_color="#218838"
+            )
+            ok_btn.pack(side="right", padx=5)
+
+        # Keep on top loop
+        def keep_on_top():
+            try:
+                if self.winfo_exists():
+                    self.lift()
+                    self.focus_force()
+                    self.after(500, keep_on_top)
+            except:
+                pass
+
+        self.after(100, keep_on_top)
+
+        # Auto-close after 10 seconds if specified
+        if auto_close:
+            self.after(10000, self.destroy)
+
+        # Bind Escape key to close
+        self.bind('<Escape>', lambda e: self.destroy())
 
 # ============================================================================
 # FILE DIALOG WRAPPER - Ensures file dialogs appear on top
@@ -2098,6 +2212,101 @@ class DialogManager:
             pass
         return False
 
+class ProgressDialog(ctk.CTkToplevel):
+    """Progress dialog with progress bar and status messages"""
+
+    def __init__(self, parent, title, message):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("450x200")
+
+        # Make it modal and stay on top
+        self.transient(parent)
+        self.grab_set()
+        self.attributes('-topmost', True)
+        self.lift()
+        self.focus_force()
+
+        # Center on parent
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - 450) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - 200) // 2
+        self.geometry(f"+{x}+{y}")
+
+        # Make it non-resizable
+        self.resizable(False, False)
+
+        # Main frame
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Message label
+        self.message_label = ctk.CTkLabel(
+            main_frame,
+            text=message,
+            font=("Arial", 12),
+            wraplength=380
+        )
+        self.message_label.pack(pady=(0, 15))
+
+        # Progress bar
+        self.progress_bar = ctk.CTkProgressBar(main_frame, width=350)
+        self.progress_bar.pack(pady=5)
+        self.progress_bar.set(0)
+
+        # Status label
+        self.status_label = ctk.CTkLabel(
+            main_frame,
+            text="Initializing...",
+            font=("Arial", 10),
+            text_color="#4ECDC4"
+        )
+        self.status_label.pack(pady=(10, 0))
+
+        # Cancel button
+        self.cancel_flag = False
+        cancel_btn = ctk.CTkButton(
+            main_frame,
+            text="Cancel",
+            command=self.cancel,
+            width=100,
+            fg_color="#dc3545",
+            hover_color="#c82333"
+        )
+        cancel_btn.pack(pady=10)
+
+        # Keep on top loop
+        def keep_on_top():
+            try:
+                if self.winfo_exists():
+                    self.lift()
+                    self.focus_force()
+                    self.after(500, keep_on_top)
+            except:
+                pass
+
+        self.after(100, keep_on_top)
+
+        # Bind Escape key to cancel
+        self.bind('<Escape>', lambda e: self.cancel())
+
+    def update_progress(self, value, message=None, status=None):
+        """Update progress bar and messages"""
+        try:
+            if self.winfo_exists():
+                self.progress_bar.set(value)
+                if message:
+                    self.message_label.configure(text=message)
+                if status:
+                    self.status_label.configure(text=status)
+                self.update_idletasks()
+        except:
+            pass
+
+    def cancel(self):
+        """Cancel the operation"""
+        self.cancel_flag = True
+        self.destroy()
 
 # ============================================================================
 # PATCH ALL FILE DIALOGS - Call this at application startup
@@ -15285,7 +15494,9 @@ class BeamerSlideEditor(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # Initialize spell checking - KEEP ORIGINAL but ensure it runs after UI creation
-        self.setup_spellchecking()
+        self.after(100, lambda: self.check_spellcheck_installation())
+        # In __init__ after creating the editors
+        self.after(500, self.setup_spellchecking)
 
         # Add binding to close context menu - KEEP ORIGINAL
         self.bind("<Button-1>", self.hide_spelling_menu)
@@ -16624,29 +16835,129 @@ class BeamerSlideEditor(ctk.CTk):
 
     def show_fallback_command_reference(self):
         """Fallback command reference if dialog fails"""
+        # Create a proper dialog window with standard Tkinter
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("LaTeX Commands Quick Reference")
+        dialog.geometry("550x450")
+
+        # Make it modal and ensure it stays on top
+        dialog.transient(self)
+        dialog.grab_set()
+        # Keep it on top permanently while open
+        dialog.attributes('-topmost', True)
+        dialog.lift()
+        dialog.focus_force()
+
+        # Center on parent
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - 550) // 2
+        y = (dialog.winfo_screenheight() - 450) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        # Create a frame for content
+        main_frame = ctk.CTkFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+        # Title
+        ctk.CTkLabel(
+            main_frame,
+            text="📖 LaTeX Commands Quick Reference",
+            font=("Arial", 16, "bold")
+        ).pack(pady=(0, 10))
+
+        # Create a text widget with the command reference
+        text_widget = ctk.CTkTextbox(main_frame, font=("Courier", 11))
+        text_widget.pack(fill="both", expand=True, padx=5, pady=5)
+
         simple_commands = """
     Basic LaTeX Commands Quick Reference:
 
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     Document Structure:
-    \\title{Presentation Title} - Sets presentation title
-    \\author{Author Name} - Sets author name
-    \\institute{Institution} - Sets institution name
-    \\date{\\today} - Sets presentation date
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    \\title{Presentation Title}    - Sets presentation title
+    \\author{Author Name}          - Sets author name
+    \\institute{Institution}       - Sets institution name
+    \\date{\\today}                - Sets presentation date
 
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     Slide Content:
-    \\file{media_files/image.png} - Insert image
-    \\play{media_files/video.mp4} - Embed video
-    - Bullet point - Creates a bullet point
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    \\file{media_files/image.png}  - Insert image
+    \\play{media_files/video.mp4}  - Embed video
+    - Bullet point                - Creates a bullet point
 
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     Text Formatting:
-    \\textcolor{red}{Text} - Colors text
-    \\textbf{Bold Text} - Bold text
-    \\textit{Italic Text} - Italic text
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    \\textcolor{red}{Text}         - Colors text
+    \\textbf{Bold Text}            - Bold text
+    \\textit{Italic Text}          - Italic text
 
-    For complete reference, check the full Command Index.
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    For complete reference, use the Enhanced Command Index.
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     """
 
-        messagebox.showinfo("LaTeX Commands Quick Reference", simple_commands)
+        text_widget.insert("1.0", simple_commands)
+        text_widget.configure(state="disabled")
+
+        # Button frame
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", pady=(10, 0))
+
+        def close_dialog():
+            # Release grab and destroy
+            try:
+                dialog.grab_release()
+            except:
+                pass
+            dialog.destroy()
+
+        # OK button - the main action button
+        ok_button = ctk.CTkButton(
+            button_frame,
+            text="OK",
+            command=close_dialog,
+            width=120,
+            fg_color="#28a745",
+            hover_color="#218838"
+        )
+        ok_button.pack(side="right", padx=5)
+        # Set focus to OK button so Enter key works
+        ok_button.focus_set()
+
+        # Close button
+        close_button = ctk.CTkButton(
+            button_frame,
+            text="Close",
+            command=close_dialog,
+            width=100,
+            fg_color="#6c757d",
+            hover_color="#5a6268"
+        )
+        close_button.pack(side="right", padx=5)
+
+        # Bind Escape key to close
+        dialog.bind('<Escape>', lambda e: close_dialog())
+        # Bind Return key to close (when OK has focus)
+        dialog.bind('<Return>', lambda e: close_dialog())
+
+        # Also ensure the window stays on top if user clicks on parent
+        def keep_on_top():
+            try:
+                if dialog.winfo_exists():
+                    dialog.lift()
+                    dialog.focus_force()
+                    dialog.after(500, keep_on_top)
+            except:
+                pass
+
+        # Start the keep-on-top loop
+        dialog.after(100, keep_on_top)
+
+        # Wait for dialog to close
+        dialog.wait_window()
 
     def insert_command_into_editor(self, command_data):
         """Insert selected command into current editor"""
@@ -17734,22 +18045,164 @@ class BeamerSlideEditor(ctk.CTk):
             self.write(f"✗ {error_msg}\n", "red")
             messagebox.showerror("Error", error_msg)
 
+    def force_spell_check(self):
+        """Force an immediate spell check (for testing)"""
+        if not self.spell_checking_enabled:
+            self.write("⚠ Spell checking is not enabled\n", "yellow")
+            return
+
+        self.write("🔍 Forcing spell check...\n", "cyan")
+
+        # Clear existing highlights
+        for editor in [self.content_editor._textbox, self.notes_editor._textbox]:
+            editor.tag_remove(self.spell_tags['misspelled'], "1.0", "end")
+
+        # Run spell check
+        self.check_spelling()
+
+        # Check if any words were marked
+        for i, editor in enumerate([self.content_editor._textbox, self.notes_editor._textbox]):
+            name = "Content" if i == 0 else "Notes"
+            # Count misspelled words
+            content = editor.get("1.0", "end-1c")
+            if content.strip():
+                # Get all tagged ranges
+                ranges = editor.tag_ranges(self.spell_tags['misspelled'])
+                count = len(list(ranges)) // 2
+                if count > 0:
+                    self.write(f"✓ Found {count} misspelled word(s) in {name} editor\n", "green")
+                    # Show the first few misspelled words
+                    if count > 0:
+                        start = list(ranges)[0]
+                        end = list(ranges)[1]
+                        word = editor.get(start, end)
+                        self.write(f"  First misspelled word: '{word}'\n", "yellow")
+                else:
+                    self.write(f"✓ No misspelled words found in {name} editor\n", "white")
+
+        self.write("✓ Spell check complete\n", "green")
+
+    def debug_spellcheck(self):
+        """Debug spell check status"""
+        self.write("\n=== SPELL CHECK DEBUG ===\n", "cyan")
+        self.write(f"Enabled: {self.spell_checking_enabled}\n", "white")
+        self.write(f"Language: {self.current_language_name if hasattr(self, 'current_language_name') else 'Not set'}\n", "white")
+
+        # Check if spell checker exists
+        if hasattr(self, 'spell_checker'):
+            self.write("✓ Spell checker exists\n", "green")
+        else:
+            self.write("✗ Spell checker does not exist\n", "red")
+            return
+
+        # Test the spell checker
+        try:
+            test_words = ['test', 'speling', 'correct', 'checkkng']
+            self.write("\nTesting spell checker:\n", "cyan")
+            for word in test_words:
+                is_known = self.spell_checker.known([word])
+                self.write(f"  '{word}' known: {is_known}\n", "white" if is_known else "yellow")
+                if not is_known:
+                    suggestions = list(self.spell_checker.candidates(word))[:3]
+                    if suggestions:
+                        self.write(f"    Suggestions: {suggestions}\n", "yellow")
+        except Exception as e:
+            self.write(f"✗ Error testing spell checker: {e}\n", "red")
+
+        # Check editor bindings
+        self.write("\nEditor bindings:\n", "cyan")
+        for i, editor in enumerate([self.content_editor._textbox, self.notes_editor._textbox]):
+            name = "Content" if i == 0 else "Notes"
+            bindings = editor.bindtags()
+            self.write(f"  {name}: {bindings}\n", "white")
+
+            # Check if misspelled tag exists
+            if self.spell_tags['misspelled'] in editor.tag_names():
+                self.write(f"    ✓ {self.spell_tags['misspelled']} tag exists\n", "green")
+            else:
+                self.write(f"    ✗ {self.spell_tags['misspelled']} tag missing\n", "red")
+
+        self.write("=== END DEBUG ===\n\n", "cyan")
+
+
 #-------------------------------------------------------------------------------------
+    def show_spellcheck_info_bubble(self):
+        """Show a brief info bubble that spell check is active"""
+        if not self.spell_checking_enabled:
+            return
+
+        # Don't show if already shown
+        if hasattr(self, '_spellcheck_bubble_shown') and self._spellcheck_bubble_shown:
+            return
+
+        self._spellcheck_bubble_shown = True
+
+        message = (
+            "✅ Spell checking is now active!\n\n"
+            "• Misspelled words will be underlined in red\n"
+            "• Click on an underlined word for suggestions\n"
+            "• Right-click for more options\n"
+            "• Use the 'Spell Check' dropdown to change language"
+        )
+
+        BubbleHelpWindow(
+            self,
+            "Spell Check Active",
+            message,
+            auto_close=True
+        )
+
     def setup_spellchecking(self):
-        """Initialize spell checking with always-on enforcement and automatic dictionary handling"""
+        """Initialize spell checking with automatic dictionary download"""
+
+        # First check if spellchecker is installed
+        if not hasattr(self, 'spellcheck_installed'):
+            self.spellcheck_installed = False
+
+        if not self.spellcheck_installed:
+            self.spell_checking_enabled = False
+            return
+
         try:
             from spellchecker import SpellChecker
 
-            # ENFORCE ALWAYS ON - Remove any disable capability
-            self.spell_checking_enabled = True  # Force always enabled
+            # ENFORCE ALWAYS ON
+            self.spell_checking_enabled = True
 
-            # Initialize spell checker with default language
-            self.spell_checker = SpellChecker()
+            # Show status
+            self.write("🔍 Initializing spell checking...\n", "cyan")
 
-            # Language and dialect support
+            # Load available languages first
             self.available_languages = self.load_available_languages()
-            self.current_language = 'en'
-            self.current_language_name = 'English (US)'
+
+            # Set default language
+            if 'English (US)' in self.available_languages:
+                self.current_language = 'en'
+                self.current_language_name = 'English (US)'
+            elif self.available_languages:
+                first_lang = list(self.available_languages.keys())[0]
+                self.current_language = self.available_languages[first_lang]
+                self.current_language_name = first_lang
+            else:
+                self.current_language = 'en'
+                self.current_language_name = 'English (US)'
+                self.available_languages = {'English (US)': 'en'}
+
+            # Initialize spell checker with selected language
+            try:
+                self.spell_checker = SpellChecker(language=self.current_language)
+                self.write(f"  ✓ Using language: {self.current_language_name}\n", "green")
+            except Exception as e:
+                self.write(f"  ⚠ Could not load {self.current_language_name}: {e}\n", "yellow")
+                # Fallback to English
+                self.current_language = 'en'
+                self.current_language_name = 'English (US)'
+                try:
+                    self.spell_checker = SpellChecker(language='en')
+                    self.write(f"  ✓ Using fallback language: English (US)\n", "green")
+                except:
+                    self.spell_checker = SpellChecker()
+                    self.write(f"  ✓ Using default spell checker\n", "green")
 
             # Spell check settings
             self.case_sensitive = False
@@ -17761,9 +18214,7 @@ class BeamerSlideEditor(ctk.CTk):
                 'misspelled_highlight': 'spell_highlight',
             }
 
-            # VERIFY AND PROCURE DICTIONARIES
-            self.verify_dictionaries_available()
-
+            # Configure tags and setup bindings for each editor
             for editor in [self.content_editor._textbox, self.notes_editor._textbox]:
                 # Configure spell checking tags
                 editor.tag_configure(self.spell_tags['misspelled'],
@@ -17771,13 +18222,18 @@ class BeamerSlideEditor(ctk.CTk):
                 editor.tag_configure(self.spell_tags['misspelled_highlight'],
                                    background="#2F3542")
 
+                # Remove existing bindings to avoid duplicates
+                editor.unbind('<KeyRelease>')
+                editor.unbind('<Button-1>')
+                editor.unbind('<Button-3>')
+
                 # Bind spellcheck events
-                editor.bind("<Button-1>", self.on_text_click_spellcheck)
-                editor.bind("<Button-3>", self.on_right_click_spellcheck)
-                editor.bind("<KeyRelease>", self.delayed_spell_check, add='+')
+                editor.bind('<KeyRelease>', self.delayed_spell_check)
+                editor.bind('<Button-1>', self.on_text_click_spellcheck)
+                editor.bind('<Button-3>', self.on_right_click_spellcheck)
 
             print("✓ Spell checking ENABLED (always on)")
-            self.write("✓ Spell checking initialized with dictionary verification\n", "green")
+            self.write("✓ Spell checking initialized successfully\n", "green")
 
             # Create spelling context menu and anchored tooltip
             self.create_spelling_context_menu()
@@ -17786,20 +18242,30 @@ class BeamerSlideEditor(ctk.CTk):
             # Add language selection to toolbar
             self.add_language_selection_to_toolbar()
 
-            # Perform initial spell check
+            # Perform initial spell check after a delay
             self.after(1000, self.perform_initial_spell_check)
+
+            # Update status
+            self.status_label.configure(
+                text=f"Spell check ready ({self.current_language_name})",
+                text_color="#4ECDC4"
+            )
 
         except ImportError as e:
             self.spell_checking_enabled = False
             error_msg = f"✗ Spell checking disabled: pyspellchecker not installed: {e}"
             print(error_msg)
             self.write(f"{error_msg}\n", "red")
+            self.write("  To enable spell checking, run: pip install pyspellchecker\n", "cyan")
+            self.status_label.configure(text="Spell check unavailable - install pyspellchecker", text_color="#FF6B6B")
         except Exception as e:
+            self.spell_checking_enabled = False
             error_msg = f"✗ Error initializing spell checking: {str(e)}"
             print(error_msg)
             self.write(f"{error_msg}\n", "red")
             import traceback
             traceback.print_exc()
+            self.status_label.configure(text=f"Spell check error", text_color="#FF6B6B")
 
     def verify_dictionaries_available(self):
         """Verify dictionaries are available and attempt to procure missing ones"""
@@ -17869,12 +18335,11 @@ class BeamerSlideEditor(ctk.CTk):
         return language_names.get(lang_code, lang_code)
 
     def load_available_languages(self):
-        """Load available languages with enhanced error handling"""
+        """Load available languages with automatic dictionary download"""
+        # Dictionary mapping of language names to codes
         languages = {
             'English (US)': 'en',
             'English (UK)': 'en_GB',
-            'English (Canada)': 'en_CA',
-            'English (Australia)': 'en_AU',
             'Spanish': 'es',
             'French': 'fr',
             'German': 'de',
@@ -17882,44 +18347,70 @@ class BeamerSlideEditor(ctk.CTk):
             'Portuguese': 'pt',
             'Dutch': 'nl',
             'Russian': 'ru',
-            'Chinese (Simplified)': 'zh',
-            'Japanese': 'ja',
-            'Korean': 'ko',
-            'Arabic': 'ar',
-            'Hindi': 'hi'
         }
 
-        available_languages = {'English (US)': 'en'}  # Always available
+        available_languages = {}
 
         try:
             from spellchecker import SpellChecker
 
             print("Loading available dictionaries...")
+            self.write("📚 Loading spell check dictionaries...\n", "cyan")
 
+            # Check what dictionaries are actually available by trying to load them
             for lang_name, lang_code in languages.items():
                 try:
                     # Try to create a spell checker with this language
-                    test_speller = SpellChecker(language=lang_code)
-                    # Test functionality
-                    test_word = 'test'
-                    correction = test_speller.correction(test_word)
-
-                    if correction:  # If we get any correction, dictionary works
+                    speller = SpellChecker(language=lang_code)
+                    # Test with a word to verify it works
+                    test_result = speller.correction('test')
+                    if test_result is not None:
                         available_languages[lang_name] = lang_code
                         print(f"✓ Loaded dictionary: {lang_name}")
-                        self.write(f"✓ Dictionary available: {lang_name}\n", "green")
+                        self.write(f"  ✓ {lang_name} dictionary loaded\n", "green")
                     else:
-                        print(f"✗ Dictionary empty or invalid: {lang_name}")
-
+                        # Dictionary exists but test failed - still add it
+                        available_languages[lang_name] = lang_code
+                        print(f"⚠ Dictionary loaded but test failed: {lang_name}")
+                        self.write(f"  ⚠ {lang_name} dictionary loaded but test failed\n", "yellow")
                 except Exception as e:
-                    print(f"✗ Dictionary not available: {lang_name} - {e}")
-                    continue
+                    error_msg = str(e).lower()
+                    if 'download' in error_msg or 'connection' in error_msg or 'timeout' in error_msg:
+                        print(f"⚠ Dictionary for {lang_name} needs to be downloaded")
+                        self.write(f"  ⚠ {lang_name} needs download (will load on first use)\n", "yellow")
+                        # Still add it - it will download on first use
+                        available_languages[lang_name] = lang_code
+                    elif 'no such file' in error_msg or 'cannot find' in error_msg:
+                        print(f"⚠ Dictionary for {lang_name} not found")
+                        self.write(f"  ⚠ {lang_name} dictionary not found (needs download)\n", "yellow")
+                        # Still add it - user can download it
+                        available_languages[lang_name] = lang_code
+                    else:
+                        print(f"✗ Could not load {lang_name}: {e}")
+                        # Don't add if it fails completely
+                        continue
+
+        except ImportError as e:
+            error_msg = f"pyspellchecker not installed: {e}"
+            print(error_msg)
+            self.write(f"✗ {error_msg}\n", "red")
+            # Fallback - at least provide English
+            available_languages = {'English (US)': 'en'}
 
         except Exception as e:
             error_msg = f"Error loading languages: {e}"
             print(error_msg)
             self.write(f"✗ {error_msg}\n", "red")
+            import traceback
+            traceback.print_exc()
+            # Fallback - at least provide English
+            available_languages = {'English (US)': 'en'}
 
+        # Ensure we always have at least English
+        if not available_languages:
+            available_languages = {'English (US)': 'en'}
+
+        self.write(f"✓ Available languages: {', '.join(available_languages.keys())}\n", "green")
         return available_languages
 
     def on_text_click_spellcheck(self, event):
@@ -18245,10 +18736,28 @@ class BeamerSlideEditor(ctk.CTk):
 
         ctk.CTkLabel(lang_frame, text="Spell Check:").pack(side="left", padx=5)
 
+        # Get available languages, ensure we have at least one
+        if not hasattr(self, 'available_languages') or not self.available_languages:
+            self.available_languages = {'English (US)': 'en'}
+            self.current_language_name = 'English (US)'
+            self.current_language = 'en'
+
         self.language_var = ctk.StringVar(value=self.current_language_name)
+
+        # Create menu with available languages
+        language_options = list(self.available_languages.keys())
+
+        # If no languages, add default
+        if not language_options:
+            language_options = ['English (US)']
+            self.available_languages = {'English (US)': 'en'}
+            self.current_language_name = 'English (US)'
+            self.current_language = 'en'
+            self.language_var.set('English (US)')
+
         self.language_menu = ctk.CTkOptionMenu(
             lang_frame,
-            values=list(self.available_languages.keys()),
+            values=language_options,
             variable=self.language_var,
             command=self.change_spellcheck_language,
             width=140
@@ -18326,62 +18835,97 @@ class BeamerSlideEditor(ctk.CTk):
 
     # Keep the existing check_spelling method that works
     def check_spelling(self, event=None):
-        """Check spelling in real-time"""
+        """Check spelling in real-time - COMPLETE WORKING VERSION"""
         if not self.spell_checking_enabled:
             return
 
         # Process both editors
         for editor in [self.content_editor._textbox, self.notes_editor._textbox]:
-            # Remove previous spell checking markings
-            editor.tag_remove(self.spell_tags['misspelled'], "1.0", "end")
+            try:
+                # Remove previous spell checking markings
+                editor.tag_remove(self.spell_tags['misspelled'], "1.0", "end")
 
-            # Get all text
-            content = editor.get("1.0", "end")
+                # Get all text (excluding the trailing newline)
+                content = editor.get("1.0", "end-1c")
 
-            # Skip if content is too short
-            if len(content.strip()) < 4:
+                # Skip if content is too short
+                if len(content.strip()) < 2:
+                    continue
+
+                # Find all words - simple pattern that matches letters
+                # This pattern matches words like: test, testing, checkkng, etc.
+                words = re.findall(r'[A-Za-z]+', content)
+
+                # Remove duplicates to avoid redundant checking
+                unique_words = list(set(words))
+
+                # Only check words that are at least 2 characters long
+                unique_words = [w for w in unique_words if len(w) >= 2]
+
+                if not unique_words:
+                    continue
+
+                # Check each unique word
+                for word in unique_words:
+                    # Skip common LaTeX commands and patterns
+                    if word.startswith('\\') or word.startswith('%'):
+                        continue
+
+                    # Skip words that are in syntax highlighting tags (LaTeX commands, etc.)
+                    skip_tags = ['command', 'media', 'bullet', 'url', 'bracket', 'rgb', 'textcolor']
+
+                    # Find all occurrences of this word
+                    start_index = "1.0"
+                    while True:
+                        try:
+                            # Use simple string search for reliability
+                            start_index = editor.search(word, start_index, stopindex="end", nocase=True, exact=True)
+                            if not start_index:
+                                break
+                            end_index = f"{start_index}+{len(word)}c"
+
+                            # Check if this occurrence is in a skip tag
+                            skip = False
+                            for tag in skip_tags:
+                                if tag in editor.tag_names(start_index):
+                                    skip = True
+                                    break
+
+                            if not skip:
+                                # Skip words with numbers if option is enabled
+                                if self.ignore_numbers and any(char.isdigit() for char in word):
+                                    start_index = end_index
+                                    continue
+
+                                # Skip very short words (1 character)
+                                if len(word) < 2:
+                                    start_index = end_index
+                                    continue
+
+                                # Actual spell check - use lower case for case-insensitive
+                                check_word = word.lower()
+
+                                # Check if word is known
+                                try:
+                                    is_known = self.spell_checker.known([check_word])
+                                    if not is_known:
+                                        # Double-check with the original word (in case of proper nouns)
+                                        if not self.case_sensitive:
+                                            is_known = self.spell_checker.known([word])
+                                        if not is_known:
+                                            editor.tag_add(self.spell_tags['misspelled'], start_index, end_index)
+                                except Exception as e:
+                                    # If spell check fails, skip this word
+                                    pass
+
+                            start_index = end_index
+                        except Exception as e:
+                            # If search fails, break out
+                            break
+
+            except Exception as e:
+                # If any error occurs in processing this editor, skip to the next
                 continue
-
-            # Find all words longer than 3 characters
-            words = re.findall(r'\b\w{4,}\b', content)
-
-            # Get positions of all words
-            word_positions = []
-            for word in words:
-                start_index = "1.0"
-                while True:
-                    start_index = editor.search(rf"\y{word}\y", start_index,
-                                              stopindex="end", regexp=True)
-                    if not start_index:
-                        break
-                    end_index = f"{start_index}+{len(word)}c"
-                    word_positions.append((word, start_index, end_index))
-                    start_index = end_index
-
-            # Check each word
-            for word, start, end in word_positions:
-                # Skip words that are in syntax highlighting tags (LaTeX commands, etc.)
-                skip_tags = ['command', 'media', 'bullet', 'url', 'bracket', 'rgb', 'textcolor']
-
-                skip = False
-                for tag in skip_tags:
-                    if tag in editor.tag_names(start):
-                        skip = True
-                        break
-
-                if skip:
-                    continue
-
-                # Check spelling (case insensitive unless specified)
-                check_word = word if self.case_sensitive else word.lower()
-
-                # Skip words with numbers if option is enabled
-                if self.ignore_numbers and any(char.isdigit() for char in word):
-                    continue
-
-                # Actual spell check
-                if not self.spell_checker.known([check_word]):
-                    editor.tag_add(self.spell_tags['misspelled'], start, end)
 
     def clear_spellcheck_highlights(self):
         """Clear all spell check highlighting"""
@@ -18389,6 +18933,61 @@ class BeamerSlideEditor(ctk.CTk):
             for tag in self.spell_tags.values():
                 editor.tag_remove(tag, "1.0", "end")
 
+    def download_spellcheck_dictionaries(self):
+        """Force download of spell check dictionaries"""
+        if not self.spell_checking_enabled:
+            return
+
+        try:
+            from spellchecker import SpellChecker
+
+            self.write("📥 Downloading spell check dictionaries...\n", "cyan")
+            self.status_label.configure(text="Downloading dictionaries...", text_color="#FFB86C")
+            self.update()
+
+            # Force download of common dictionaries
+            languages = ['en', 'es', 'fr', 'de', 'it', 'pt']
+            downloaded = []
+
+            for lang in languages:
+                try:
+                    self.write(f"  Downloading {lang}...\n", "cyan")
+                    speller = SpellChecker(language=lang)
+                    # Test with a word to force download
+                    speller.correction('test')
+                    downloaded.append(lang)
+                    self.write(f"  ✓ {lang} downloaded\n", "green")
+                except Exception as e:
+                    self.write(f"  ⚠ Could not download {lang}: {e}\n", "yellow")
+
+            # Reload available languages
+            self.available_languages = self.load_available_languages()
+
+            # Update language menu
+            self.add_language_selection_to_toolbar()
+
+            self.status_label.configure(
+                text=f"Downloaded {len(downloaded)} dictionaries",
+                text_color="#4ECDC4"
+            )
+            self.write(f"✓ Downloaded {len(downloaded)} dictionaries\n", "green")
+
+            messagebox.showinfo(
+                "Dictionaries Downloaded",
+                f"Successfully downloaded {len(downloaded)} dictionaries.\n\n"
+                f"Available: {', '.join(downloaded)}\n\n"
+                f"Select a language from the dropdown to use it.",
+                parent=self
+            )
+
+        except Exception as e:
+            self.write(f"✗ Error downloading dictionaries: {e}\n", "red")
+            messagebox.showerror(
+                "Download Error",
+                f"Error downloading dictionaries:\n\n{str(e)}\n\n"
+                "Please check your internet connection.",
+                parent=self
+            )
 
     def create_spelling_context_menu(self):
         """Create context menu for spelling suggestions"""
@@ -18404,6 +19003,21 @@ class BeamerSlideEditor(ctk.CTk):
         self.spelling_menu.add_separator()
         self.spelling_menu.add_command(label="Spell Check Settings...", command=self.show_spellcheck_settings)
 
+    def create_spellcheck_download_button(self):
+        """Create a button to download dictionaries"""
+        if not hasattr(self, 'toolbar'):
+            return
+
+        download_btn = ctk.CTkButton(
+            self.toolbar,
+            text="📥 Download Dicts",
+            command=self.download_spellcheck_dictionaries,
+            width=120,
+            fg_color="#17a2b8",
+            hover_color="#138496"
+        )
+        download_btn.pack(side="left", padx=5)
+        self.create_tooltip(download_btn, "Download additional spell check dictionaries")
 
     def show_spelling_suggestions_menu(self, x, y, word):
         """Show spelling suggestions in context menu"""
@@ -18522,37 +19136,245 @@ class BeamerSlideEditor(ctk.CTk):
         self.write(f"✓ Added '{word}' to dictionary\n", "green")
 
     def show_spellcheck_settings(self):
-        """Show spell check settings dialog"""
+        """Show spell check settings dialog with download button"""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Spell Check Settings")
-        dialog.geometry("400x300")
+        dialog.geometry("450x350")
         dialog.transient(self)
         dialog.grab_set()
 
         # Center dialog
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() - 400) // 2
-        y = (dialog.winfo_screenheight() - 300) // 2
+        x = (dialog.winfo_screenwidth() - 450) // 2
+        y = (dialog.winfo_screenheight() - 350) // 2
         dialog.geometry(f"+{x}+{y}")
 
-        # Language selection
-        lang_frame = ctk.CTkFrame(dialog)
-        lang_frame.pack(fill="x", padx=20, pady=10)
+        # Main frame
+        main_frame = ctk.CTkFrame(dialog)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-        ctk.CTkLabel(lang_frame, text="Language:", font=("Arial", 12, "bold")).pack(anchor="w")
+        # Language selection
+        lang_frame = ctk.CTkFrame(main_frame)
+        lang_frame.pack(fill="x", pady=10)
+
+        ctk.CTkLabel(lang_frame, text="Language:", font=("Arial", 12, "bold")).pack(anchor="w", padx=5)
+
+        # Get available languages
+        if not hasattr(self, 'available_languages') or not self.available_languages:
+            self.available_languages = {'English (US)': 'en'}
+            self.current_language_name = 'English (US)'
+            self.current_language = 'en'
 
         lang_var = ctk.StringVar(value=self.current_language_name)
+
+        # Create language menu
+        language_options = list(self.available_languages.keys())
+        if not language_options:
+            language_options = ['English (US)']
+            self.available_languages = {'English (US)': 'en'}
+            lang_var.set('English (US)')
+
         lang_menu = ctk.CTkOptionMenu(
             lang_frame,
-            values=list(self.available_languages.keys()),
+            values=language_options,
             variable=lang_var,
-            width=200
+            width=250
         )
-        lang_menu.pack(fill="x", pady=5)
+        lang_menu.pack(pady=5, padx=5)
+
+        # Download dictionaries button
+        download_frame = ctk.CTkFrame(main_frame)
+        download_frame.pack(fill="x", pady=10)
+
+        # Download status frame
+        status_frame = ctk.CTkFrame(main_frame)
+        status_frame.pack(fill="x", pady=10)
+
+        status_label = ctk.CTkLabel(
+            status_frame,
+            text="Click 'Download Dictionaries' to get more languages",
+            font=("Arial", 10),
+            text_color="#4ECDC4",
+            wraplength=380
+        )
+        status_label.pack(pady=5)
+
+        # Language count label
+        lang_count_label = ctk.CTkLabel(
+            status_frame,
+            text=f"Available: {len(self.available_languages)} language(s)",
+            font=("Arial", 10),
+            text_color="#888888"
+        )
+        lang_count_label.pack(pady=2)
+
+        ctk.CTkLabel(
+            download_frame,
+            text="Download additional dictionaries:",
+            font=("Arial", 12)
+        ).pack(anchor="w", padx=5, pady=(0, 5))
+
+        def download_dicts():
+            """Download dictionaries with progress feedback"""
+            # Create progress dialog
+            progress = ProgressDialog(
+                dialog,
+                "Downloading Dictionaries",
+                "Downloading spell check dictionaries...\nThis may take a few moments."
+            )
+
+            # List of languages to download
+            languages_to_download = [
+                ('en', 'English (US)'),
+                ('en_GB', 'English (UK)'),
+                ('es', 'Spanish'),
+                ('fr', 'French'),
+                ('de', 'German'),
+                ('it', 'Italian'),
+                ('pt', 'Portuguese'),
+                ('nl', 'Dutch'),
+            ]
+
+            downloaded = []
+            failed = []
+
+            def do_download():
+                try:
+                    from spellchecker import SpellChecker
+
+                    total = len(languages_to_download)
+
+                    for i, (lang_code, lang_name) in enumerate(languages_to_download):
+                        # Check if cancelled
+                        if progress.cancel_flag:
+                            progress.destroy()
+                            return
+
+                        # Update progress
+                        progress.update_progress(
+                            (i + 1) / total,
+                            f"Downloading {lang_name} dictionary...",
+                            f"Progress: {i + 1}/{total}"
+                        )
+
+                        # Update the status label in the main dialog
+                        status_label.configure(
+                            text=f"Downloading: {lang_name}...",
+                            text_color="#FFB86C"
+                        )
+                        dialog.update_idletasks()
+
+                        try:
+                            # Try to load the language - this triggers download
+                            speller = SpellChecker(language=lang_code)
+                            # Test with a word to verify it works
+                            test_result = speller.correction('test')
+                            if test_result is not None:
+                                downloaded.append(lang_name)
+                                status_label.configure(
+                                    text=f"✓ Downloaded: {lang_name}",
+                                    text_color="#28a745"
+                                )
+                            else:
+                                failed.append(f"{lang_name} (test failed)")
+                                status_label.configure(
+                                    text=f"⚠ {lang_name} test failed",
+                                    text_color="#FFB86C"
+                                )
+                        except Exception as e:
+                            error_msg = str(e)
+                            if 'download' in error_msg.lower() or 'connection' in error_msg.lower():
+                                failed.append(f"{lang_name} (download failed)")
+                                status_label.configure(
+                                    text=f"✗ Could not download {lang_name}",
+                                    text_color="#FF6B6B"
+                                )
+                            else:
+                                failed.append(f"{lang_name} ({str(e)[:30]})")
+                                status_label.configure(
+                                    text=f"✗ Error with {lang_name}",
+                                    text_color="#FF6B6B"
+                                )
+
+                        # Small delay to show status
+                        dialog.update_idletasks()
+                        progress.update_idletasks()
+
+                    # Reload available languages
+                    self.available_languages = self.load_available_languages()
+
+                    # Update language menu
+                    new_options = list(self.available_languages.keys())
+                    lang_menu.configure(values=new_options)
+                    if new_options:
+                        lang_var.set(new_options[0])
+
+                    # Update progress with final status
+                    progress.update_progress(
+                        1.0,
+                        "Download complete!",
+                        f"Downloaded: {len(downloaded)} dictionaries"
+                    )
+
+                    # Show completion message
+                    status_label.configure(
+                        text=f"✓ Downloaded {len(downloaded)} dictionaries",
+                        text_color="#28a745"
+                    )
+
+                    # Close progress after a moment
+                    dialog.after(1500, progress.destroy)
+
+                    # Show detailed results
+                    result_message = f"Downloaded {len(downloaded)} dictionaries.\n\n"
+                    if downloaded:
+                        result_message += f"✓ Successfully downloaded:\n  • " + "\n  • ".join(downloaded) + "\n\n"
+                    if failed:
+                        result_message += f"⚠ Failed to download:\n  • " + "\n  • ".join(failed) + "\n\n"
+                    result_message += "Select a language from the dropdown to use it."
+
+                    messagebox.showinfo(
+                        "Download Complete",
+                        result_message,
+                        parent=dialog
+                    )
+
+                except ImportError as e:
+                    progress.destroy()
+                    status_label.configure(text="✗ pyspellchecker not installed", text_color="#FF6B6B")
+                    messagebox.showerror(
+                        "Error",
+                        f"pyspellchecker is not installed.\n\nPlease install it first:\npip install pyspellchecker",
+                        parent=dialog
+                    )
+                except Exception as e:
+                    progress.destroy()
+                    status_label.configure(text=f"✗ Error: {str(e)[:50]}", text_color="#FF6B6B")
+                    messagebox.showerror(
+                        "Download Error",
+                        f"Error downloading dictionaries:\n\n{str(e)}\n\n"
+                        "Please check your internet connection and try again.",
+                        parent=dialog
+                    )
+
+            # Start download in a separate thread to keep UI responsive
+            import threading
+            download_thread = threading.Thread(target=do_download, daemon=True)
+            download_thread.start()
+
+        download_btn = ctk.CTkButton(
+            download_frame,
+            text="Download Dictionaries",
+            command=download_dicts,
+            width=200,
+            fg_color="#17a2b8",
+            hover_color="#138496"
+        )
+        download_btn.pack(pady=5)
 
         # Options frame
-        options_frame = ctk.CTkFrame(dialog)
-        options_frame.pack(fill="x", padx=20, pady=10)
+        options_frame = ctk.CTkFrame(main_frame)
+        options_frame.pack(fill="x", pady=10)
 
         # Case sensitivity option
         case_sensitive_var = ctk.BooleanVar(value=self.case_sensitive)
@@ -18572,13 +19394,22 @@ class BeamerSlideEditor(ctk.CTk):
         )
         numbers_check.pack(anchor="w", pady=5)
 
+        # Status label
+        status_label = ctk.CTkLabel(
+            main_frame,
+            text=f"Current language: {self.current_language_name}",
+            font=("Arial", 10),
+            text_color="#4ECDC4"
+        )
+        status_label.pack(fill="x", pady=10)
+
         # Buttons frame
-        button_frame = ctk.CTkFrame(dialog)
-        button_frame.pack(fill="x", padx=20, pady=20)
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", pady=10)
 
         def apply_settings():
             new_language = lang_var.get()
-            if new_language != self.current_language_name:
+            if new_language and new_language != self.current_language_name:
                 self.change_spellcheck_language(new_language)
 
             # Update settings
@@ -18593,34 +19424,40 @@ class BeamerSlideEditor(ctk.CTk):
             button_frame,
             text="Apply",
             command=apply_settings,
-            width=100
+            width=100,
+            fg_color="#28a745"
         ).pack(side="right", padx=5)
 
         ctk.CTkButton(
             button_frame,
             text="Cancel",
             command=dialog.destroy,
-            width=100
+            width=100,
+            fg_color="#dc3545"
         ).pack(side="right", padx=5)
 
     # RESTORE THE ORIGINAL REAL-TIME SPELL CHECKING
     def delayed_spell_check(self, event=None):
-        """Delayed spell check to avoid conflict with syntax highlighting"""
+        """Delayed spell check - called on key release"""
         if not self.spell_checking_enabled:
             return
 
         # Cancel any pending spell check
         if hasattr(self, '_spell_check_timer'):
-            self.after_cancel(self._spell_check_timer)
+            try:
+                self.after_cancel(self._spell_check_timer)
+            except:
+                pass
 
-        # Schedule spell check to run after syntax highlighting
-        self._spell_check_timer = self.after(100, self.check_spelling)
+        # Schedule spell check to run after a short delay
+        self._spell_check_timer = self.after(300, self.check_spelling)
 
     def perform_initial_spell_check(self):
         """Perform initial spell check after UI is fully loaded"""
         if self.spell_checking_enabled:
+            self.write("🔍 Performing initial spell check...\n", "cyan")
             self.check_spelling()
-            print("✓ Initial spell check completed")
+            self.write("✓ Initial spell check complete\n", "green")
 
      #----------------------------------------------------------------
 
@@ -29228,7 +30065,6 @@ Created by {self.__author__}
         self.capture_mode = tk.StringVar(value="single")
         self.frame_count = tk.IntVar(value=10)
         self.frame_delay = tk.DoubleVar(value=0.5)
-
         # Single frame mode (PRESERVED)
         single_btn = ctk.CTkRadioButton(
             capture_frame,
@@ -37988,6 +38824,128 @@ Created by {self.__author__}
 
         return True
 
+    def check_spellcheck_installation(self):
+        """Check if spellcheck is installed and show bubble help if not"""
+        try:
+            import spellchecker
+            self.spellcheck_installed = True
+            return True
+        except ImportError:
+            self.spellcheck_installed = False
+
+            # Show bubble help window
+            def install_spellcheck():
+                """Install pyspellchecker using pip"""
+                try:
+                    import subprocess
+                    import sys
+
+                    # Update the status
+                    self.status_label.configure(
+                        text="📦 Installing pyspellchecker... Please wait",
+                        text_color="#FFB86C"
+                    )
+
+                    # Install the package
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "--user", "pyspellchecker"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+
+                    if result.returncode == 0:
+                        # Try to import again
+                        try:
+                            import spellchecker
+                            self.spellcheck_installed = True
+                            self.status_label.configure(
+                                text="✓ pyspellchecker installed successfully!",
+                                text_color="#28a745"
+                            )
+                            messagebox.showinfo(
+                                "Installation Complete",
+                                "pyspellchecker has been installed successfully!\n\n"
+                                "Spell checking is now enabled.",
+                                parent=self
+                            )
+                            # Re-initialize spell checking
+                            self.setup_spellchecking()
+                            return True
+                        except ImportError:
+                            self.status_label.configure(
+                                text="⚠ Installation succeeded but import failed. Please restart the IDE.",
+                                text_color="#FFB86C"
+                            )
+                            messagebox.showwarning(
+                                "Installation Warning",
+                                "pyspellchecker was installed but could not be imported.\n\n"
+                                "Please restart the IDE for spell checking to work.",
+                                parent=self
+                            )
+                            return False
+                    else:
+                        error_msg = result.stderr[:200] if result.stderr else "Unknown error"
+                        self.status_label.configure(
+                            text=f"✗ Installation failed: {error_msg}",
+                            text_color="#FF6B6B"
+                        )
+                        messagebox.showerror(
+                            "Installation Failed",
+                            f"Could not install pyspellchecker:\n\n{error_msg}\n\n"
+                            "Please install it manually:\n"
+                            "pip install pyspellchecker",
+                            parent=self
+                        )
+                        return False
+
+                except subprocess.TimeoutExpired:
+                    self.status_label.configure(
+                        text="✗ Installation timed out",
+                        text_color="#FF6B6B"
+                    )
+                    messagebox.showerror(
+                        "Installation Timeout",
+                        "The installation took too long and timed out.\n\n"
+                        "Please install pyspellchecker manually:\n"
+                        "pip install pyspellchecker",
+                        parent=self
+                    )
+                    return False
+                except Exception as e:
+                    self.status_label.configure(
+                        text=f"✗ Installation error: {str(e)[:50]}",
+                        text_color="#FF6B6B"
+                    )
+                    messagebox.showerror(
+                        "Installation Error",
+                        f"Error installing pyspellchecker:\n\n{str(e)}\n\n"
+                        "Please install it manually:\n"
+                        "pip install pyspellchecker",
+                        parent=self
+                    )
+                    return False
+
+            # Show bubble help with install option
+            message = (
+                "Spell checking requires the 'pyspellchecker' package.\n\n"
+                "This is a lightweight package that provides spell checking\n"
+                "for multiple languages. Would you like to install it now?"
+            )
+
+            BubbleHelpWindow(
+                self,
+                "🔍 Spell Check Not Available",
+                message,
+                "Install Now",
+                install_spellcheck
+            )
+
+            # Also log to terminal
+            self.write("⚠ pyspellchecker not installed. Spell checking is disabled.\n", "yellow")
+            self.write("  To enable spell checking, run: pip install pyspellchecker\n", "cyan")
+
+            return False
 
 class ScreenCaptureMethod:
     """Detect and manage screen capture methods for different environments"""
