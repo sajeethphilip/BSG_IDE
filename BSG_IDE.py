@@ -7104,108 +7104,134 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         return preamble
 
     def _apply_footer_change(self, preamble: str, value: bool) -> str:
-        """Apply footer override change - FIXED to ensure footer actually displays"""
+        """Apply footer override change with proper logo handling and insertion position"""
         import re
 
-        # First, remove ALL existing footer definitions to avoid conflicts
+        # ============================================================
+        # STEP 1: Remove ALL existing footer definitions and templates
+        # ============================================================
+
+        # Remove short definitions
         for cmd in ['insertshortinstitute', 'insertshortauthor', 'insertshorttitle', 'insertshortdate']:
             pattern1 = rf'\\def\\{cmd}{{[^}}]*}}'
             pattern2 = rf'\\newcommand{{\\{cmd}}}{{[^}}]*}}'
             preamble = re.sub(pattern1, '', preamble)
             preamble = re.sub(pattern2, '', preamble)
 
-        # Remove any existing footline templates
-        preamble = re.sub(r'% ========== FOOTLINE TEMPLATE ==========.*?% ========================================', '', preamble, flags=re.DOTALL)
+        # Remove ANY existing logo command (to avoid conflicts)
+        preamble = re.sub(r'\\logo\{[^}]*\}', '', preamble)
 
-        if value:
-            # Get values with proper escaping
-            author = self.presentation_info.get('author', 'Author')
-            short_institute = self.presentation_info.get('short_institute',
-                self.presentation_info.get('institution', 'Institute'))
-            title = self.presentation_info.get('title', 'Presentation')
+        # CRITICAL FIX: Remove any raw \includegraphics commands in the preamble
+        # These cause "Missing \begin{document}" errors
+        preamble = re.sub(r'\{?\\includegraphics\[[^\]]*\]\{[^}]*\}\}?', '', preamble)
 
-            def clean_for_def(text: str) -> str:
-                if not text:
-                    return ""
-                text = str(text)
-                # ============================================================
-                # CRITICAL FIX: Handle \textbf{...} commands properly
-                # ============================================================
-                if '\\textbf' in text:
-                    # Case 1: \textbf{BioAI-Repository} - already has braces
-                    if re.search(r'\\textbf\{[^}]*\}', text):
-                        # Ensure it has a closing brace
-                        if text.count('{') > text.count('}'):
-                            text = text + '}'
-                        return text
-                    # Case 2: \textbfBioAI-Repository - missing braces
-                    elif '\\textbf' in text and not re.search(r'\\textbf\{', text):
-                        # Find what follows \textbf
-                        match = re.search(r'\\textbf([A-Za-z][A-Za-z\-]*)', text)
-                        if match:
-                            content = match.group(1)
-                            text = text.replace(match.group(0), f'\\textbf{{{content}}}')
-                            return text
-                    # Case 3: \textbf{BioAI-Repository without closing brace
-                    elif re.search(r'\\textbf\{[^}]*$', text):
+        # Remove footline template
+        footline_pattern = r'% ========== FOOTLINE TEMPLATE ==========.*?% ========================================'
+        preamble = re.sub(footline_pattern, '', preamble, flags=re.DOTALL)
+
+        # Remove any orphaned \makeatletter/\makeatother
+        preamble = re.sub(r'\\makeatletter\s*\\makeatother', '', preamble)
+
+        # ============================================================
+        # STEP 2: Clean up any stray braces
+        # ============================================================
+        # Remove isolated } at the end of lines
+        lines = preamble.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            if line.strip() == '}':
+                continue
+            cleaned_lines.append(line)
+        preamble = '\n'.join(cleaned_lines)
+
+        # ============================================================
+        # STEP 3: If footer is OFF, return cleaned preamble
+        # ============================================================
+        if not value:
+            return preamble
+
+        # ============================================================
+        # STEP 4: If footer is ON, add definitions
+        # ============================================================
+
+        # Get values with proper escaping
+        author = self.presentation_info.get('author', 'Author')
+        short_institute = self.presentation_info.get('short_institute',
+            self.presentation_info.get('institution', 'Institute'))
+        title = self.presentation_info.get('title', 'Presentation')
+
+        def clean_for_def(text: str) -> str:
+            """Clean text for use in \def commands with proper escaping"""
+            if not text:
+                return ""
+            text = str(text)
+
+            # Handle \textbf{...} commands properly
+            if '\\textbf' in text:
+                if re.search(r'\\textbf\{[^}]*\}', text):
+                    if text.count('{') > text.count('}'):
                         text = text + '}'
+                    return text
+                elif '\\textbf' in text and not re.search(r'\\textbf\{', text):
+                    match = re.search(r'\\textbf([A-Za-z][A-Za-z\-]*)', text)
+                    if match:
+                        content = match.group(1)
+                        text = text.replace(match.group(0), f'\\textbf{{{content}}}')
                         return text
-                    # Default: return as-is but ensure balanced braces
-                    else:
-                        # Count braces and balance them
-                        open_count = text.count('{')
-                        close_count = text.count('}')
-                        if open_count > close_count:
-                            text = text + '}' * (open_count - close_count)
-                        return text
-
-                # For non-\textbf text, clean it
-                text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
-                text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)
-                text = text.replace('{', '').replace('}', '')
-                text = re.sub(r'\s+', ' ', text).strip()
-                text = text.replace('&', '\\&').replace('%', '\\%').replace('#', '\\#')
-                text = text.replace('_', '\\_').replace('~', '\\textasciitilde')
-                text = text.replace('^', '\\textasciicircum').replace('$', '').replace('\\', '')
-                if len(text) > 80:
-                    text = text[:77] + '...'
-                return text
-
-            title_clean = clean_for_def(title)
-            author_clean = clean_for_def(author)
-            short_institute_clean = clean_for_def(short_institute)
-
-            # Build footer definitions
-            footer_defs = [
-                f"\\def\\insertshortinstitute{{{short_institute_clean}}}",
-                f"\\def\\insertshortauthor{{{author_clean}}}",
-                f"\\def\\insertshorttitle{{{title_clean}}}",
-                "\\def\\insertshortdate{\\today}"
-            ]
-
-            # ============================================================
-            # CRITICAL FIX: Balance braces in the footer definitions
-            # ============================================================
-            for i, def_line in enumerate(footer_defs):
-                open_count = def_line.count('{')
-                close_count = def_line.count('}')
-                if open_count != close_count:
+                elif re.search(r'\\textbf\{[^}]*$', text):
+                    text = text + '}'
+                    return text
+                else:
+                    open_count = text.count('{')
+                    close_count = text.count('}')
                     if open_count > close_count:
-                        footer_defs[i] = def_line + '}' * (open_count - close_count)
-                    elif close_count > open_count:
-                        # Remove extra closing braces from the end
-                        while footer_defs[i].endswith('}') and footer_defs[i].count('}') > footer_defs[i].count('{'):
-                            footer_defs[i] = footer_defs[i][:-1]
+                        text = text + '}' * (open_count - close_count)
+                    return text
 
-            # Get logo path
-            logo_path = self.footer_logo_var.get().strip() if hasattr(self, 'footer_logo_var') else ""
+            # For non-\textbf text, clean it
+            text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
+            text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)
+            text = text.replace('{', '').replace('}', '')
+            text = re.sub(r'\s+', ' ', text).strip()
+            text = text.replace('&', '\\&').replace('%', '\\%').replace('#', '\\#')
+            text = text.replace('_', '\\_').replace('~', '\\textasciitilde')
+            text = text.replace('^', '\\textasciicircum').replace('$', '').replace('\\', '')
+            if len(text) > 80:
+                text = text[:77] + '...'
+            return text
 
-            # Add logo if it exists
-            if logo_path and os.path.exists(logo_path):
-                footer_defs.append(f"\\logo{{\\includegraphics[height=0.6cm]{{{logo_path}}}}}")
+        title_clean = clean_for_def(title)
+        author_clean = clean_for_def(author)
+        short_institute_clean = clean_for_def(short_institute)
 
-            # Build the complete footline template
-            footline_template = r"""
+        # Build footer definitions
+        footer_defs = [
+            f"\\def\\insertshortinstitute{{{short_institute_clean}}}",
+            f"\\def\\insertshortauthor{{{author_clean}}}",
+            f"\\def\\insertshorttitle{{{title_clean}}}",
+            "\\def\\insertshortdate{\\today}"
+        ]
+
+        # ============================================================
+        # STEP 5: Handle logo with proper \logo{} command
+        # ============================================================
+        logo_path = self.footer_logo_var.get().strip() if hasattr(self, 'footer_logo_var') else ""
+
+        if logo_path and os.path.exists(logo_path):
+            # IMPORTANT: Use \logo{} command, not raw \includegraphics
+            # Escape spaces and special characters in the path
+            safe_path = logo_path.replace(' ', '\\ ')
+            safe_path = safe_path.replace('(', '\\(').replace(')', '\\)')
+            safe_path = safe_path.replace('[', '\\[').replace(']', '\\]')
+
+            # CRITICAL FIX: Use \logo{} command, not raw \includegraphics
+            logo_cmd = f"\\logo{{\\includegraphics[height=0.6cm]{{{safe_path}}}}}"
+            footer_defs.append(logo_cmd)
+
+        # ============================================================
+        # STEP 6: Build the footline template
+        # ============================================================
+        footline_template = r"""
     % ========== FOOTLINE TEMPLATE ==========
     \makeatletter
     \setbeamertemplate{footline}{%
@@ -7227,35 +7253,30 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
     % ========================================
     """
 
-            # ============================================================
-            # Insert at the correct position
-            # ============================================================
-            doc_pos = preamble.find('\\begin{document}')
+        # ============================================================
+        # STEP 7: Insert footer definitions BEFORE \begin{document}
+        # ============================================================
+        doc_pos = preamble.find('\\begin{document}')
 
-            # Try to find a good insertion point after the title page section
-            title_page_end = preamble.find('% --- Title Page ---')
-            if title_page_end != -1:
-                # Find the end of the title page section
-                next_section = preamble.find('%', title_page_end + 1)
-                if next_section != -1:
-                    after_title = preamble.find('\n', preamble.find('\\end{frame}', title_page_end) if '\\end{frame}' in preamble[title_page_end:next_section] else title_page_end)
-                    if after_title != -1:
-                        insert_pos = after_title + 1
-                    else:
-                        insert_pos = next_section
-                else:
-                    insert_pos = doc_pos if doc_pos != -1 else len(preamble)
-            else:
-                insert_pos = doc_pos if doc_pos != -1 else len(preamble)
-
-            # Build the complete text to insert
+        # Find the position of \begin{document}
+        if doc_pos != -1:
+            # Insert footer definitions right before \begin{document}
             insert_text = '\n'.join(footer_defs) + '\n' + footline_template + '\n'
+            preamble = preamble[:doc_pos] + insert_text + preamble[doc_pos:]
+        else:
+            # If no \begin{document}, add at the end
+            preamble += '\n' + '\n'.join(footer_defs) + '\n' + footline_template + '\n'
 
-            # Insert at the found position
-            if insert_pos != -1 and insert_pos < len(preamble):
-                preamble = preamble[:insert_pos] + insert_text + preamble[insert_pos:]
-            else:
-                preamble += '\n' + insert_text
+        # ============================================================
+        # STEP 8: Final cleanup - ensure braces are balanced
+        # ============================================================
+        open_count = preamble.count('{')
+        close_count = preamble.count('}')
+        if open_count > close_count:
+            preamble += '}' * (open_count - close_count)
+
+        # Remove any duplicate newlines
+        preamble = re.sub(r'\n\s*\n\s*\n', '\n\n', preamble)
 
         return preamble
 
@@ -25785,6 +25806,12 @@ Created by {self.__author__}
             dialog.title("LaTeX Compilation Log")
             dialog.geometry("800x600")
             dialog.transient(self)
+            dialog.grab_set()
+
+            # Force dialog to be on top
+            dialog.attributes('-topmost', True)
+            dialog.lift()
+            dialog.focus_force()
 
             # Create text widget
             text_widget = ctk.CTkTextbox(dialog, font=("Courier", 10))
@@ -25800,10 +25827,55 @@ Created by {self.__author__}
             button_frame = ctk.CTkFrame(dialog)
             button_frame.pack(fill="x", padx=10, pady=10)
 
+            def copy_log():
+                """Copy log to clipboard with proper focus handling"""
+                dialog.clipboard_clear()
+                dialog.clipboard_append(log_content)
+
+                # Show custom popup that stays on top
+                popup = ctk.CTkToplevel(dialog)
+                popup.title("Success")
+                popup.geometry("300x120")
+                popup.transient(dialog)
+                popup.grab_set()
+                popup.resizable(False, False)
+                popup.attributes('-topmost', True)
+                popup.lift()
+                popup.focus_force()
+
+                # Center popup on dialog
+                popup.update_idletasks()
+                x = dialog.winfo_rootx() + (dialog.winfo_width() - 300) // 2
+                y = dialog.winfo_rooty() + (dialog.winfo_height() - 120) // 2
+                popup.geometry(f"+{x}+{y}")
+
+                # Add content
+                frame = ctk.CTkFrame(popup)
+                frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+                ctk.CTkLabel(frame, text="✓ Log copied to clipboard!",
+                            font=("Arial", 12, "bold")).pack(pady=10)
+
+                def close_popup():
+                    popup.grab_release()
+                    popup.destroy()
+
+                ok_btn = ctk.CTkButton(frame, text="OK", command=close_popup, width=80)
+                ok_btn.pack(pady=10)
+                ok_btn.focus_set()
+
+                popup.bind('<Return>', lambda e: close_popup())
+                popup.bind('<Escape>', lambda e: close_popup())
+
+                # Remove topmost after a moment
+                popup.after(3000, lambda: popup.attributes('-topmost', False))
+
+                dialog.wait_window(popup)
+
             ctk.CTkButton(
                 button_frame,
                 text="Copy to Clipboard",
-                command=lambda: self.copy_text_to_clipboard(log_content)
+                command=copy_log
             ).pack(side="left", padx=5)
 
             ctk.CTkButton(
@@ -25811,8 +25883,11 @@ Created by {self.__author__}
                 text="Close",
                 command=dialog.destroy
             ).pack(side="right", padx=5)
+
+            # Remove topmost after window is fully created
+            dialog.after(500, lambda: dialog.attributes('-topmost', False))
         else:
-            messagebox.showerror("Error", f"Log file not found: {log_file}")
+            messagebox.showerror("Error", f"Log file not found: {log_file}", parent=self)
 
     def run_pdflatex_with_auto_packages(self, tex_file: str, timeout: int = 120) -> dict:
         """Run pdflatex with automatic package installation and error capturing"""
