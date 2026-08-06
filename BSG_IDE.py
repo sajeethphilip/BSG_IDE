@@ -12009,28 +12009,73 @@ class PreambleEditor(ctk.CTkToplevel):
             print(f"Warning: Could not apply syntax highlighting: {e}")
 
     def create_editor(self):
-        """Create the preamble text editor"""
-        # Editor frame
+        """Create the preamble text editor with line numbers"""
+        # Editor frame with line numbers
         editor_frame = ctk.CTkFrame(self)
         editor_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
-        # Editor with syntax highlighting
-        self.editor = ctk.CTkTextbox(
-            editor_frame,
+        # Create a paned window for editor + line numbers
+        paned = tk.PanedWindow(editor_frame, orient=tk.HORIZONTAL,
+                               sashrelief=tk.RAISED, sashwidth=5,
+                               bg='#2b2b2b')
+        paned.pack(fill="both", expand=True)
+
+        # Left side - Line numbers
+        line_number_frame = tk.Frame(paned, bg='#1e1e1e', width=50)
+        paned.add(line_number_frame, width=50)
+
+        self.line_numbers = tk.Text(
+            line_number_frame,
+            width=5,
+            padx=3,
+            takefocus=0,
+            border=0,
+            background='#1e1e1e',
+            foreground='#858585',
+            font=("Courier", 12),
             wrap="none",
-            font=("Courier", 12)
+            state="disabled"
         )
-        self.editor.pack(fill="both", expand=True, padx=5, pady=5)
+        self.line_numbers.pack(side="left", fill="y")
+
+        # Right side - Editor
+        editor_container = tk.Frame(paned)
+        paned.add(editor_container, width=600)
+
+        # Create scrollbar
+        scrollbar = tk.Scrollbar(editor_container)
+        scrollbar.pack(side="right", fill="y")
+
+        # Editor with syntax highlighting
+        self.editor = tk.Text(
+            editor_container,
+            font=("Courier", 12),
+            background="#1e1e1e",
+            foreground="#d4d4d4",
+            insertbackground="white",
+            wrap="none",
+            yscrollcommand=scrollbar.set,
+            tabs=("4c", "8c", "12c", "16c", "20c", "24c"),
+            relief="flat",
+            borderwidth=0
+        )
+        self.editor.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.on_scroll)
+
+        # Bind events to update line numbers
+        self.editor.bind('<KeyRelease>', self.on_text_change_with_line_numbers)
+        self.editor.bind('<MouseWheel>', self.on_mousewheel)
+        self.editor.bind('<Button-4>', self.on_mousewheel)
+        self.editor.bind('<Button-5>', self.on_mousewheel)
+        self.editor.bind('<Configure>', self.update_line_numbers)
 
         # Add syntax highlighting
         try:
+            from BSG_IDE import BeamerSyntaxHighlighter
             self.syntax_highlighter = BeamerSyntaxHighlighter(self.editor)
         except Exception as e:
             print(f"Warning: Could not create syntax highlighter: {e}")
             self.syntax_highlighter = None
-
-        # Bind key events for status update
-        self.editor.bind('<KeyRelease>', self.on_text_change)
 
     def create_toolbar(self):
         """Create toolbar with editor controls"""
@@ -12225,6 +12270,75 @@ class PreambleEditor(ctk.CTkToplevel):
         editor.wait_window()
         return editor.preamble if hasattr(editor, 'preamble') else None
 
+    def update_line_numbers(self, event=None):
+        """Update line numbers display"""
+        try:
+            # Get the number of lines
+            content = self.editor.get("1.0", "end-1c")
+            line_count = content.count('\n') + 1
+
+            # Build line numbers with padding
+            line_numbers_text = ""
+            for i in range(1, line_count + 1):
+                # Highlight the current line where the cursor is
+                cursor_pos = self.editor.index("insert")
+                cursor_line = int(cursor_pos.split('.')[0])
+                if i == cursor_line:
+                    line_numbers_text += f"{i:4d} ▶\n"
+                else:
+                    line_numbers_text += f"{i:4d}\n"
+
+            # Update line numbers
+            self.line_numbers.configure(state="normal")
+            self.line_numbers.delete("1.0", "end")
+            self.line_numbers.insert("1.0", line_numbers_text)
+            self.line_numbers.configure(state="disabled")
+
+            # Sync scrolling
+            self.line_numbers.yview_moveto(self.editor.yview()[0])
+
+        except Exception as e:
+            print(f"Error updating line numbers: {e}")
+
+    def on_scroll(self, *args):
+        """Sync scrolling between editor and line numbers"""
+        try:
+            self.editor.yview(*args)
+            self.line_numbers.yview(*args)
+        except:
+            pass
+
+    def on_mousewheel(self, event):
+        """Handle mousewheel scrolling"""
+        try:
+            if event.num == 4:
+                delta = -1
+            elif event.num == 5:
+                delta = 1
+            else:
+                delta = -1 * (event.delta // 120)
+            self.editor.yview_scroll(delta, "units")
+            self.line_numbers.yview_scroll(delta, "units")
+        except:
+            pass
+        return "break"
+
+    def on_text_change_with_line_numbers(self, event=None):
+        """Handle text changes - update line numbers and status"""
+        self.update_line_numbers()
+
+        # Update modified status
+        if not self.modified:
+            self.modified = True
+            self.update_status()
+
+        # Apply syntax highlighting
+        try:
+            if self.syntax_highlighter:
+                self.syntax_highlighter.highlight()
+        except Exception as e:
+            pass
+
 class ThemeStyleDialog(ctk.CTkToplevel):
     """Dialog for customizing presentation theme and style"""
 
@@ -12256,7 +12370,7 @@ class ThemeStyleDialog(ctk.CTkToplevel):
         self.geometry(f'+{x}+{y}')
 
     def create_widgets(self):
-        """Create the theme and style widgets"""
+        """Create the theme and style widgets with line numbers in preview"""
         # Main container with scroll
         main_frame = ctk.CTkScrollableFrame(self)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -12426,15 +12540,67 @@ class ThemeStyleDialog(ctk.CTkToplevel):
         notes_menu.grid(row=3, column=1, padx=5, pady=5, sticky="w")
         self.create_tooltip(notes_menu, "How to display speaker notes")
 
-        # ========== PREVIEW ==========
+        # ========== PREVIEW WITH LINE NUMBERS ==========
         preview_frame = ctk.CTkFrame(main_frame)
         preview_frame.pack(fill="x", padx=5, pady=10)
 
         ctk.CTkLabel(preview_frame, text="Preview", font=("Arial", 16, "bold")).pack(anchor="w", padx=5, pady=5)
 
-        self.preview_text = ctk.CTkTextbox(preview_frame, height=150, font=("Courier", 10))
-        self.preview_text.pack(fill="x", padx=5, pady=5)
-        self.update_preview()
+        # Create a paned window for preview with line numbers
+        preview_paned = tk.PanedWindow(preview_frame, orient=tk.HORIZONTAL,
+                                       sashrelief=tk.RAISED, sashwidth=5,
+                                       bg='#2b2b2b')
+        preview_paned.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Left side - Line numbers for preview
+        preview_line_frame = tk.Frame(preview_paned, bg='#1e1e1e', width=50)
+        preview_paned.add(preview_line_frame, width=50)
+
+        self.preview_line_numbers = tk.Text(
+            preview_line_frame,
+            width=5,
+            padx=3,
+            takefocus=0,
+            border=0,
+            background='#1e1e1e',
+            foreground='#858585',
+            font=("Courier", 10),
+            wrap="none",
+            state="disabled"
+        )
+        self.preview_line_numbers.pack(side="left", fill="y")
+
+        # Right side - Preview text with scrollbar
+        preview_container = tk.Frame(preview_paned)
+        preview_paned.add(preview_container, width=600)
+
+        preview_scrollbar = tk.Scrollbar(preview_container)
+        preview_scrollbar.pack(side="right", fill="y")
+
+        self.preview_text = tk.Text(
+            preview_container,
+            height=150,
+            font=("Courier", 10),
+            background="#1e1e1e",
+            foreground="#d4d4d4",
+            insertbackground="white",
+            wrap="none",
+            yscrollcommand=preview_scrollbar.set,
+            relief="flat",
+            borderwidth=0
+        )
+        self.preview_text.pack(side="left", fill="both", expand=True)
+        preview_scrollbar.config(command=self.on_preview_scroll)
+
+        # Bind events to update line numbers
+        self.preview_text.bind('<KeyRelease>', self.on_preview_change)
+        self.preview_text.bind('<MouseWheel>', self.on_preview_mousewheel)
+        self.preview_text.bind('<Button-4>', self.on_preview_mousewheel)
+        self.preview_text.bind('<Button-5>', self.on_preview_mousewheel)
+        self.preview_text.bind('<Configure>', self.update_preview_line_numbers)
+
+        # Configure tag for line highlighting
+        self.preview_text.tag_configure("current_line", background="#2a2a2a")
 
         # ========== BUTTONS ==========
         button_frame = ctk.CTkFrame(main_frame)
@@ -12463,6 +12629,9 @@ class ThemeStyleDialog(ctk.CTkToplevel):
             width=100,
             fg_color="#dc3545"
         ).pack(side="right", padx=5)
+
+        # Initial line number update
+        self.after(100, self.update_preview_line_numbers)
 
     def create_tooltip(self, widget, text):
         """Create tooltip for widget"""
@@ -12536,6 +12705,26 @@ class ThemeStyleDialog(ctk.CTkToplevel):
             self.bg_image_var.set(filename)
             self.on_setting_changed()
 
+    def go_to_line(self):
+        """Go to a specific line number"""
+        from tkinter import simpledialog
+
+        line_num = simpledialog.askinteger(
+            "Go to Line",
+            "Enter line number:",
+            parent=self,
+            minvalue=1,
+            maxvalue=int(self.editor.index("end-1c").split('.')[0])
+        )
+
+        if line_num:
+            try:
+                self.editor.see(f"{line_num}.0")
+                self.editor.mark_set("insert", f"{line_num}.0")
+                self.editor.focus_set()
+                self.update_line_numbers()
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not go to line {line_num}: {e}")
 
     def add_color_definition(self, color_id, hex_color):
         """Add a color definition to the preview"""
