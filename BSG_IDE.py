@@ -29139,48 +29139,52 @@ Created by {self.__author__}
             if not author:
                 author = "airis4D"
 
-            # Get base preamble
+            # Get base preamble.  get_beamer_preamble() returns the generated
+            # preamble followed by a title-page frame; it intentionally does
+            # NOT include \begin{document}.  Keep those two parts separate.
             base_preamble = get_beamer_preamble(
-                title, subtitle, author, institution, short_institute, date
+                title, subtitle, author, institution, short_institute, date,
+                self.presentation_info.get('logo', '')
             )
 
-            # Additional packages needed for special characters and units
+            title_page = ''
+            title_marker = '\n% Title page'
+            if title_marker in base_preamble:
+                base_preamble, title_page = base_preamble.split(title_marker, 1)
+                title_page = '% Title page' + title_page
+
+            # Additional packages needed for special characters and units.
+            # These MUST be inserted into the generated preamble, BEFORE
+            # \begin{document}; they must never appear between the title page
+            # and the document environment.
             extra_packages = r"""
-    % Additional packages for special characters and units
-    \usepackage{textcomp}      % For \textmu, \textendash, etc.
-    \usepackage{siunitx}       % For proper units (Ω·cm², etc.)
-    \usepackage{amsmath}       % Enhanced math support
-    \usepackage{amssymb}       % Additional math symbols
+% Additional packages for special characters and units
+\usepackage{textcomp}      % For \textmu, \textendash, etc.
+\usepackage{siunitx}       % For proper units (Ω·cm², etc.)
+\usepackage{amsmath}       % Enhanced math support
+\usepackage{amssymb}       % Additional math symbols
 
-    % Configure siunitx for proper formatting
-    \sisetup{
-        per-mode = symbol,
-        output-decimal-marker = {.},
-        group-separator = {,}
-    }
-    """
+% Configure siunitx for proper formatting
+\sisetup{
+    per-mode = symbol,
+    output-decimal-marker = {.},
+    group-separator = {,}
+}
+"""
 
-            # Insert extra packages before \begin{document}
-            doc_pos = base_preamble.find("\\begin{document}")
-            if doc_pos != -1:
-                # Check if packages already exist to avoid duplicates
-                if 'textcomp' not in base_preamble:
-                    base_preamble = base_preamble[:doc_pos] + extra_packages + base_preamble[doc_pos:]
-            else:
-                # If no \begin{document}, add at the end
-                base_preamble = base_preamble + extra_packages + "\n\\begin{document}\n"
+            # The generated preamble has no document delimiter yet.
+            # Add the extra packages to the preamble, then create exactly one
+            # document start, followed by the generated title page.
+            if 'textcomp' not in base_preamble:
+                base_preamble = base_preamble.rstrip() + '\n' + extra_packages.strip()
 
-            # Process logo if present
-            if 'logo' in self.presentation_info and self.presentation_info['logo']:
-                import re
-                preamble = re.sub(r'\\logo{[^}]*}\s*\n?', '', base_preamble)
-                doc_pos = preamble.find("\\begin{document}")
-                if doc_pos != -1:
-                    logo_command = self.presentation_info['logo'] + "\n\n"
-                    preamble = preamble[:doc_pos] + logo_command + preamble[doc_pos:]
-                else:
-                    preamble = base_preamble + "\n" + self.presentation_info['logo'] + "\n"
-                return preamble
+            base_preamble = (
+                base_preamble.rstrip()
+                + '\n\n\\begin{document}\n'
+            )
+
+            if title_page:
+                base_preamble += title_page.rstrip() + '\n'
 
             return base_preamble
 
@@ -32690,7 +32694,7 @@ Created by {self.__author__}
                     # Replace existing or add new
                     pattern = rf'\\{key}{{([^}}]*)}}'
                     if re.search(pattern, preamble):
-                        preamble = re.sub(pattern, f'\\{key}{{{value}}}', preamble)
+                        preamble = re.sub(pattern, lambda m, key=key, value=value: f'\\{key}{{{value}}}', preamble)
                     else:
                         # Find a good place to insert
                         if '\\begin{document}' in preamble:
@@ -32703,7 +32707,7 @@ Created by {self.__author__}
             if logo:
                 pattern = r'\\logo{[^}]*}'
                 if re.search(pattern, preamble):
-                    preamble = re.sub(pattern, logo, preamble)
+                    preamble = re.sub(pattern, lambda m, logo=logo: logo, preamble)
                 else:
                     preamble = preamble.replace('\\begin{document}', f'{logo}\n\\begin{document}')
 
