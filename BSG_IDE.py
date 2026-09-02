@@ -5654,11 +5654,11 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             self.presentation_info = parent.presentation_info.copy()
         else:
             self.presentation_info = {
-                'title': 'Presentation',
+                'title': '',
                 'subtitle': '',
-                'author': 'Author',
-                'institution': 'Institution',
-                'short_institute': 'Short Inst',
+                'author': '',
+                'institution': 'Artificial Intelligence Research and Intelligent Systems (airis4D)',
+                'short_institute': 'airis4D',
                 'date': '\\today'
             }
 
@@ -7313,132 +7313,122 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         return preamble
 
     def _apply_footer_change(self, preamble: str, value: bool) -> str:
-        """Apply footer override change with proper logo handling and insertion position"""
+        """
+        Apply footer override change with proper logo handling.
+        COMPLETELY REBUILDS the relevant sections instead of using regex.
+        """
         import re
 
         # ============================================================
-        # STEP 1: Remove ALL existing footer definitions and templates
+        # STEP 1: Extract the document body and preamble parts
         # ============================================================
+        doc_match = re.search(r'(.*?)\\begin{document}', preamble, re.DOTALL)
+        if not doc_match:
+            # No document found, just add footer
+            return self._add_footer_to_empty_preamble(preamble, value)
 
-        # Remove short definitions
-        for cmd in ['insertshortinstitute', 'insertshortauthor', 'insertshorttitle', 'insertshortdate']:
-            pattern1 = rf'\\def\\{cmd}{{[^}}]*}}'
-            pattern2 = rf'\\newcommand{{\\{cmd}}}{{[^}}]*}}'
-            preamble = re.sub(pattern1, '', preamble)
-            preamble = re.sub(pattern2, '', preamble)
-
-        # Remove ANY existing logo command (to avoid conflicts)
-        preamble = re.sub(r'\\logo\{[^}]*\}', '', preamble)
-
-        # CRITICAL FIX: Remove any raw \includegraphics commands in the preamble
-        # These cause "Missing \begin{document}" errors
-        preamble = re.sub(r'\{?\\includegraphics\[[^\]]*\]\{[^}]*\}\}?', '', preamble)
-
-        # Remove footline template
-        footline_pattern = r'% ========== FOOTLINE TEMPLATE ==========.*?% ========================================'
-        preamble = re.sub(footline_pattern, '', preamble, flags=re.DOTALL)
-
-        # Remove any orphaned \makeatletter/\makeatother
-        preamble = re.sub(r'\\makeatletter\s*\\makeatother', '', preamble)
+        # Split into sections
+        doc_pos = doc_match.end() - len('\\begin{document}')
+        preamble_before_doc = preamble[:doc_pos]
+        document_body = preamble[doc_pos:]
 
         # ============================================================
-        # STEP 2: Clean up any stray braces
+        # STEP 2: Remove ALL existing footer-related definitions
         # ============================================================
-        # Remove isolated } at the end of lines
-        lines = preamble.split('\n')
+        lines = preamble_before_doc.split('\n')
         cleaned_lines = []
+        skip_until_footer_end = False
+        footer_commands = ['insertshortinstitute', 'insertshortauthor', 'insertshorttitle', 'insertshortdate']
+
         for line in lines:
-            if line.strip() == '}':
+            stripped = line.strip()
+
+            # Skip if we're in a footer block
+            if '===== FOOTLINE TEMPLATE' in stripped:
+                skip_until_footer_end = True
                 continue
+            if skip_until_footer_end and '=====' in stripped:
+                skip_until_footer_end = False
+                continue
+            if skip_until_footer_end:
+                continue
+
+            # Skip individual footer definitions
+            is_footer_def = False
+            for cmd in footer_commands:
+                if f'\\def\\{cmd}' in line or f'\\newcommand{{\\{cmd}}}' in line:
+                    is_footer_def = True
+                    break
+
+            if is_footer_def:
+                continue
+
+            # Skip logo command
+            if '\\logo{' in line and not stripped.startswith('%'):
+                continue
+
             cleaned_lines.append(line)
-        preamble = '\n'.join(cleaned_lines)
+
+        preamble_before_doc = '\n'.join(cleaned_lines)
 
         # ============================================================
         # STEP 3: If footer is OFF, return cleaned preamble
         # ============================================================
         if not value:
-            return preamble
+            return preamble_before_doc + '\n' + document_body
 
         # ============================================================
-        # STEP 4: If footer is ON, add definitions
+        # STEP 4: Build clean footer definitions (NO #1 ANYWHERE)
         # ============================================================
-
-        # Get values with proper escaping
         author = self.presentation_info.get('author', 'Author')
         short_institute = self.presentation_info.get('short_institute',
             self.presentation_info.get('institution', 'Institute'))
         title = self.presentation_info.get('title', 'Presentation')
 
-        def clean_for_def(text: str) -> str:
-            """Clean text for use in \def commands with proper escaping"""
+        def clean_text(text):
             if not text:
                 return ""
             text = str(text)
-
-            # Handle \textbf{...} commands properly
-            if '\\textbf' in text:
-                if re.search(r'\\textbf\{[^}]*\}', text):
-                    if text.count('{') > text.count('}'):
-                        text = text + '}'
-                    return text
-                elif '\\textbf' in text and not re.search(r'\\textbf\{', text):
-                    match = re.search(r'\\textbf([A-Za-z][A-Za-z\-]*)', text)
-                    if match:
-                        content = match.group(1)
-                        text = text.replace(match.group(0), f'\\textbf{{{content}}}')
-                        return text
-                elif re.search(r'\\textbf\{[^}]*$', text):
-                    text = text + '}'
-                    return text
-                else:
-                    open_count = text.count('{')
-                    close_count = text.count('}')
-                    if open_count > close_count:
-                        text = text + '}' * (open_count - close_count)
-                    return text
-
-            # For non-\textbf text, clean it
+            # Remove LaTeX commands but keep the content
             text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
             text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)
+            # Remove braces
             text = text.replace('{', '').replace('}', '')
+            # Clean spaces
             text = re.sub(r'\s+', ' ', text).strip()
+            # Escape special characters
             text = text.replace('&', '\\&').replace('%', '\\%').replace('#', '\\#')
             text = text.replace('_', '\\_').replace('~', '\\textasciitilde')
-            text = text.replace('^', '\\textasciicircum').replace('$', '').replace('\\', '')
+            text = text.replace('^', '\\textasciicircum')
+            # Limit length
             if len(text) > 80:
                 text = text[:77] + '...'
             return text
 
-        title_clean = clean_for_def(title)
-        author_clean = clean_for_def(author)
-        short_institute_clean = clean_for_def(short_institute)
+        author_clean = clean_text(author)
+        title_clean = clean_text(title)
+        institute_clean = clean_text(short_institute)
 
-        # Build footer definitions
+        # Build footer definitions - SIMPLE, NO #1
         footer_defs = [
-            f"\\def\\insertshortinstitute{{{short_institute_clean}}}",
+            f"\\def\\insertshortinstitute{{{institute_clean}}}",
             f"\\def\\insertshortauthor{{{author_clean}}}",
             f"\\def\\insertshorttitle{{{title_clean}}}",
             "\\def\\insertshortdate{\\today}"
         ]
 
         # ============================================================
-        # STEP 5: Handle logo with proper \logo{} command
+        # STEP 5: Handle logo - SEPARATE, SIMPLE
         # ============================================================
         logo_path = self.footer_logo_var.get().strip() if hasattr(self, 'footer_logo_var') else ""
 
+        logo_command = ""
         if logo_path and os.path.exists(logo_path):
-            # IMPORTANT: Use \logo{} command, not raw \includegraphics
-            # Escape spaces and special characters in the path
-            safe_path = logo_path.replace(' ', '\\ ')
-            safe_path = safe_path.replace('(', '\\(').replace(')', '\\)')
-            safe_path = safe_path.replace('[', '\\[').replace(']', '\\]')
-
-            # CRITICAL FIX: Use \logo{} command, not raw \includegraphics
-            logo_cmd = f"\\logo{{\\includegraphics[height=0.6cm]{{{safe_path}}}}}"
-            footer_defs.append(logo_cmd)
+            # Simple logo - NO #1, NO parameters
+            logo_command = f"\\logo{{\\includegraphics[height=0.6cm]{{{logo_path}}}}}"
 
         # ============================================================
-        # STEP 6: Build the footline template
+        # STEP 6: Build footline template - SIMPLE
         # ============================================================
         footline_template = r"""
     % ========== FOOTLINE TEMPLATE ==========
@@ -7463,31 +7453,84 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
     """
 
         # ============================================================
-        # STEP 7: Insert footer definitions BEFORE \begin{document}
+        # STEP 7: Combine everything - SAFELY
         # ============================================================
-        doc_pos = preamble.find('\\begin{document}')
+        footer_block = '\n'.join(footer_defs)
+        if logo_command:
+            footer_block += '\n' + logo_command
+        footer_block += '\n' + footline_template
 
-        # Find the position of \begin{document}
-        if doc_pos != -1:
-            # Insert footer definitions right before \begin{document}
-            insert_text = '\n'.join(footer_defs) + '\n' + footline_template + '\n'
-            preamble = preamble[:doc_pos] + insert_text + preamble[doc_pos:]
-        else:
-            # If no \begin{document}, add at the end
-            preamble += '\n' + '\n'.join(footer_defs) + '\n' + footline_template + '\n'
+        # Insert before \begin{document}
+        result = preamble_before_doc + '\n' + footer_block + '\n' + document_body
 
         # ============================================================
-        # STEP 8: Final cleanup - ensure braces are balanced
+        # STEP 8: Final validation - ensure no stray # in \def
         # ============================================================
-        open_count = preamble.count('{')
-        close_count = preamble.count('}')
-        if open_count > close_count:
-            preamble += '}' * (open_count - close_count)
+        # Check for any # in \def commands (should not happen)
+        def_check = re.findall(r'\\def\\[a-zA-Z]+[^{]*\{[^}]*#', result)
+        if def_check:
+            self.write(f"⚠ Found stray # in definition: {def_check[0][:50]}...\n", "yellow")
+            # Try to fix by escaping the #
+            for bad_def in def_check:
+                # Find the full definition and escape the #
+                fixed_def = bad_def.replace('#', '##')
+                result = result.replace(bad_def, fixed_def)
 
-        # Remove any duplicate newlines
-        preamble = re.sub(r'\n\s*\n\s*\n', '\n\n', preamble)
+        return result
 
-        return preamble
+    def _add_footer_to_empty_preamble(self, preamble: str, value: bool) -> str:
+        """Add footer to a preamble that doesn't have \begin{document}"""
+        if not value:
+            return preamble
+
+        author = self.presentation_info.get('author', 'Author')
+        short_institute = self.presentation_info.get('short_institute',
+            self.presentation_info.get('institution', 'Institute'))
+        title = self.presentation_info.get('title', 'Presentation')
+
+        def clean_text(text):
+            if not text:
+                return ""
+            text = str(text)
+            text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
+            text = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', text)
+            text = text.replace('{', '').replace('}', '')
+            text = re.sub(r'\s+', ' ', text).strip()
+            text = text.replace('&', '\\&').replace('%', '\\%').replace('#', '\\#')
+            text = text.replace('_', '\\_').replace('~', '\\textasciitilde')
+            text = text.replace('^', '\\textasciicircum')
+            if len(text) > 80:
+                text = text[:77] + '...'
+            return text
+
+        footer = f"""
+    % Footer definitions
+    \\def\\insertshortinstitute{{{clean_text(short_institute)}}}
+    \\def\\insertshortauthor{{{clean_text(author)}}}
+    \\def\\insertshorttitle{{{clean_text(title)}}}
+    \\def\\insertshortdate{{\\today}}
+
+    % ========== FOOTLINE TEMPLATE ==========
+    \\makeatletter
+    \\setbeamertemplate{{footline}}{{
+      \\leavevmode%
+      \\hbox{{
+        \\begin{{beamercolorbox}}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]{{author in head/foot}}%
+          \\usebeamerfont{{author in head/foot}}\\insertshortauthor{{}} (\\insertshortinstitute)%
+        \\end{{beamercolorbox}}%
+        \\begin{{beamercolorbox}}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]{{title in head/foot}}%
+          \\usebeamerfont{{title in head/foot}}\\insertshorttitle%
+        \\end{{beamercolorbox}}%
+        \\begin{{beamercolorbox}}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,right]{{date in head/foot}}%
+          \\usebeamerfont{{date in head/foot}}\\insertshortdate{{}}\\hspace*{{2em}}%
+          \\insertframenumber{{}} / \\inserttotalframenumber\\hspace*{{2ex}}%
+        \\end{{beamercolorbox}}}}
+      \\vskip0pt%
+    }}
+    \\makeatother
+    % ========================================
+    """
+        return preamble + '\n' + footer
 
     def _clean_text_for_def(self, text: str) -> str:
         """
@@ -25411,10 +25454,56 @@ Created by {self.__author__}
                 self.write("  Install manually: pip install yt-dlp\n", "cyan")
                 return False
 
+    def validate_presentation_settings(self) -> bool:
+        """Validate that presentation settings are properly configured."""
+        issues = []
+
+        # Check if presentation info is set
+        title = self.presentation_info.get('title', '').strip()
+        author = self.presentation_info.get('author', '').strip()
+        institution = self.presentation_info.get('institution', '').strip()
+
+        if not title or title == 'Presentation':
+            issues.append("Title is not set or is default")
+        if not author or author == 'Author' or author == 'airis4D':
+            issues.append("Author is not set or is default")
+        if not institution or institution == 'Institution':
+            issues.append("Institution is not set or is default")
+
+        if issues:
+            self.write("\n⚠ WARNING: Presentation settings are incomplete:\n", "yellow")
+            for issue in issues:
+                self.write(f"  • {issue}\n", "yellow")
+
+            if messagebox.askyesno(
+                "Incomplete Settings",
+                f"The following presentation settings are incomplete:\n\n"
+                f"{chr(10).join(f'  • {issue}' for issue in issues)}\n\n"
+                f"Would you like to set them now before compiling?",
+                parent=self
+            ):
+                self.show_settings_dialog()
+                # Re-check after dialog
+                return self.validate_presentation_settings()
+            else:
+                return messagebox.askyesno(
+                    "Continue Anyway?",
+                    "Continuing with incomplete settings may cause compilation errors.\n\n"
+                    "Do you want to continue anyway?",
+                    parent=self
+                )
+
+        return True
+
     def generate_pdf(self) -> None:
         """Generate PDF with smart error handling, auto-correction, and error editor"""
         if not self.current_file:
             messagebox.showwarning("Warning", "Please save your file first!")
+            return
+
+        # Validate presentation settings before compilation
+        if not self.validate_presentation_settings():
+            self.write("❌ Compilation cancelled due to incomplete settings\n", "red")
             return
 
         try:
@@ -28482,7 +28571,7 @@ Created by {self.__author__}
 
 
     def load_file(self, filename: str) -> None:
-        """Load presentation from file with enhanced preamble extraction and merging"""
+        """Load presentation from file with progress indication"""
         try:
             # Prevent recursive loading
             if getattr(self, '_is_loading', False):
@@ -28490,6 +28579,47 @@ Created by {self.__author__}
                 return
 
             self._is_loading = True
+
+            # Create progress dialog
+            progress_dialog = None
+            try:
+                progress_dialog = ctk.CTkToplevel(self)
+                progress_dialog.title("Loading File")
+                progress_dialog.geometry("400x150")
+                progress_dialog.transient(self)
+                progress_dialog.grab_set()
+                progress_dialog.attributes('-topmost', True)
+
+                # Center the dialog
+                progress_dialog.update_idletasks()
+                x = (progress_dialog.winfo_screenwidth() - 400) // 2
+                y = (progress_dialog.winfo_screenheight() - 150) // 2
+                progress_dialog.geometry(f"+{x}+{y}")
+
+                # Add widgets
+                label = ctk.CTkLabel(progress_dialog, text=f"Loading {os.path.basename(filename)}...", font=("Arial", 12))
+                label.pack(pady=20)
+
+                progress_bar = ctk.CTkProgressBar(progress_dialog, width=300)
+                progress_bar.pack(pady=10)
+                progress_bar.set(0)
+
+                status_label = ctk.CTkLabel(progress_dialog, text="Initializing...", font=("Arial", 10))
+                status_label.pack(pady=5)
+
+                progress_dialog.update()
+            except Exception as e:
+                print(f"Could not create progress dialog: {e}")
+                progress_dialog = None
+
+            def update_progress(value, message):
+                if progress_dialog and progress_dialog.winfo_exists():
+                    try:
+                        progress_bar.set(value)
+                        status_label.configure(text=message)
+                        progress_dialog.update()
+                    except:
+                        pass
 
             import re
             logger.info(f"Loading file: {filename}")
@@ -28501,11 +28631,15 @@ Created by {self.__author__}
             if hasattr(self, 'terminal'):
                 self.terminal.set_working_directory(working_folder)
 
+            update_progress(0.1, "Reading file...")
+
             with open(filename, 'r', encoding='utf-8') as f:
                 content = f.read()
 
             self.slides = []
             self.current_slide_index = -1
+
+            update_progress(0.2, "Extracting preamble...")
 
             # ========== EXTRACT AND PRESERVE PREAMBLE FROM FILE ==========
             preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
@@ -28523,6 +28657,8 @@ Created by {self.__author__}
                 # ============================================================
                 self._is_loading = False
 
+                update_progress(0.35, "Merging preamble...")
+
                 try:
                     merged_preamble = self.merge_preamble_with_file(filename)
                 finally:
@@ -28532,6 +28668,8 @@ Created by {self.__author__}
                 # ============================================================
                 # Update the file with merged preamble
                 # ============================================================
+                update_progress(0.5, "Updating file with merged preamble...")
+
                 doc_pos = content.find('\\begin{document}')
                 if doc_pos != -1:
                     document_body = content[doc_pos:]
@@ -28561,30 +28699,30 @@ Created by {self.__author__}
                 self.using_custom_preamble = False
                 self.write(f"ℹ No preamble found in file, using default\n", "cyan")
 
+            update_progress(0.6, "Extracting presentation metadata...")
+
             # ============================================================
             # Extract presentation metadata from the (possibly updated) content
             # ============================================================
             for key in ['title', 'subtitle', 'author', 'institute', 'date']:
-                pattern = rf"\\{key}{{([^}}]*)}}"
+                pattern = rf"\\key{{([^}}]*)}}"
                 match = re.search(pattern, content)
                 if match:
                     self.presentation_info[key] = match.group(1).strip()
                     logger.info(f"Extracted {key}: {self.presentation_info[key]}")
+
+            update_progress(0.7, "Parsing slides...")
 
             # ============================================================
             # REMOVE EMPTY SLIDES FROM CONTENT BEFORE PARSING
             # ============================================================
             self.write("\n🔧 Cleaning up empty slides...\n", "cyan")
 
-            # Pattern for empty slides: \title with nothing after it, or \title with \None and no content
+            # Pattern for empty slides
             empty_slide_patterns = [
-                # Pattern 1: \title with no content (just \title and newline)
                 r'\\title\s*\n\s*\\begin{Content}\s*\\None\s*%?\s*\[?[^\]]*\]?\s*\\end{Content}\s*\\begin{Notes}\s*%?\s*\[?[^\]]*\]?\s*\\end{Notes}',
-                # Pattern 2: \title with empty title
                 r'\\title\s*\n\s*\\begin{Content}\s*\\None\s*%?\s*.*?\\end{Content}\s*\\begin{Notes}\s*%?\s*.*?\\end{Notes}',
-                # Pattern 3: Just \title with nothing after
                 r'\\title\s*$',
-                # Pattern 4: \title with only comments
                 r'\\title\s*\n\s*%[^\n]*\n\s*\\begin{Content}\s*\\None\s*\\end{Content}',
             ]
 
@@ -28592,16 +28730,64 @@ Created by {self.__author__}
             for pattern in empty_slide_patterns:
                 content = re.sub(pattern, '', content, flags=re.DOTALL | re.MULTILINE)
 
-            # Clean up extra newlines
             content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
-            content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)  # Double pass to be thorough
+            content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)
 
             if content != original_content:
                 self.write("  ✓ Removed empty slides from content\n", "green")
-                # Update the file with cleaned content
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(content)
                 self.write(f"  ✓ Updated {os.path.basename(filename)} (removed empty slides)\n", "green")
+
+            # ============================================================
+            # PRESERVE AN EXPLICIT TITLE-PAGE FRAME BEFORE THE FIRST \\title
+            # ============================================================
+            # The native TXT format starts each normal slide with \\title.
+            # A custom title-page frame, however, legitimately appears before
+            # the first \\title (after \\begin{document}).  The native parser
+            # therefore cannot see it because it only starts a slide when it
+            # encounters 	itle.  Capture that frame before parsing so that
+            # save_file() can write the original title page back unchanged.
+            preserved_title_page = None
+            try:
+                document_match = re.search(
+                    r'\\begin\{document\}(.*)', content, re.DOTALL
+                )
+                if document_match:
+                    document_body = document_match.group(1)
+                    first_native_title = re.search(
+                        r'^\\s*\\title\s+', document_body, re.MULTILINE
+                    )
+                    prefix = (
+                        document_body[:first_native_title.start()]
+                        if first_native_title
+                        else document_body
+                    )
+                    title_frame_match = re.search(
+                        r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?\\end\{frame\}',
+                        prefix,
+                        re.DOTALL
+                    )
+                    if title_frame_match:
+                        preserved_title_page = {
+                            'title': 'Title Page',
+                            'media': '',
+                            'content': title_frame_match.group(0).splitlines(),
+                            'notes': [],
+                            '_hidden_content_indices': [],
+                            '_hidden_note_indices': [],
+                            '_media_masked': False,
+                            '_fully_masked': False,
+                            '_is_title_page': True
+                        }
+                        self.write(
+                            "  ✓ Preserved original custom title page frame\n",
+                            "green"
+                        )
+            except Exception as e:
+                logger.warning(f"Could not preserve custom title page: {e}")
+
+            update_progress(0.8, "Processing slides...")
 
             # ============================================================
             # DETECT FILE FORMAT
@@ -28622,25 +28808,20 @@ Created by {self.__author__}
             if not slides_raw:
                 logger.error("No slides were loaded!")
                 messagebox.showerror("Error", "No slides could be loaded from the file!")
+                if progress_dialog and progress_dialog.winfo_exists():
+                    progress_dialog.destroy()
                 self._is_loading = False
                 return
 
             # ============================================================
-            # PROCESS SLIDES - FILTER OUT EMPTY ONES AND HANDLE TITLE PAGES
+            # PROCESS SLIDES
             # ============================================================
             processed_slides = []
             has_title_page = False
 
             for slide_idx, slide_data in enumerate(slides_raw):
-                # Check if this is an empty slide
-                is_empty = False
-                is_title_page = False
-
                 if isinstance(slide_data, dict):
-                    # Check if this is a title page
                     if slide_data.get('is_title_page', False):
-                        is_title_page = True
-                        # Convert to proper title page format
                         slide = {
                             'title': 'Title Page',
                             'media': '',
@@ -28657,47 +28838,26 @@ Created by {self.__author__}
                         self.write("  ✓ Found and converted title page\n", "green")
                         continue
 
-                    # Check for empty title
+                    # Check for empty slide
                     title = slide_data.get('title', '')
                     if not title or not title.strip() or title == "Untitled" or title == "Slide":
-                        # Check if there's any content
                         content_lines = slide_data.get('content', [])
                         notes_lines = slide_data.get('notes', [])
                         media = slide_data.get('media', '')
 
-                        # Check if content is empty or only \None
-                        has_content = False
-                        for line in content_lines:
-                            if line and line.strip() and line.strip() != "\\None" and not line.strip().startswith('%'):
-                                has_content = True
-                                break
-
-                        # Check if notes have content
-                        has_notes = False
-                        for line in notes_lines:
-                            if line and line.strip() and not line.strip().startswith('%'):
-                                has_notes = True
-                                break
-
-                        # Check if media has content
+                        has_content = any(line and line.strip() and line.strip() != "\\None" and not line.strip().startswith('%') for line in content_lines)
+                        has_notes = any(line and line.strip() and not line.strip().startswith('%') for line in notes_lines)
                         has_media = media and media.strip() and media.strip() != "\\None"
 
                         if not has_content and not has_notes and not has_media:
-                            is_empty = True
                             self.write(f"  ℹ Skipping empty slide: '{title}'\n", "yellow")
-                else:
-                    # Not a dict - might be a raw slide string, check if empty
-                    if isinstance(slide_data, str):
-                        if not slide_data.strip() or slide_data.strip() == "\\title":
-                            is_empty = True
+                            continue
 
-                if not is_empty and not is_title_page:
                     if isinstance(slide_data, dict) and 'lines' in slide_data:
                         slide = self._process_old_format_slide_enhanced(slide_data, slide_idx)
                     elif isinstance(slide_data, dict):
                         slide = slide_data
                     else:
-                        # For string slides, wrap them
                         slide = {
                             'title': f"Slide {slide_idx + 1}",
                             'media': '',
@@ -28709,10 +28869,8 @@ Created by {self.__author__}
                             '_fully_masked': False
                         }
 
-                    # Check if this slide contains \titlepage command (shouldn't happen after parser fix)
                     content = slide.get('content', [])
                     if any('\\titlepage' in line for line in content):
-                        # Convert to proper title page
                         slide = {
                             'title': 'Title Page',
                             'media': '',
@@ -28729,13 +28887,21 @@ Created by {self.__author__}
 
                     processed_slides.append(slide)
 
+            # Put the preserved custom title page back before normal slides.
+            # Do this after parser processing so the existing title-page
+            # handling remains completely unchanged for all other inputs.
+            if preserved_title_page is not None:
+                processed_slides.insert(0, preserved_title_page)
+                has_title_page = True
+
             self.slides = processed_slides
+
+            update_progress(0.9, "Finalizing...")
 
             # ============================================================
             # ENSURE TITLE PAGE EXISTS
             # ============================================================
             if not has_title_page and self.slides:
-                # Check if any slide has title page content
                 for slide in self.slides:
                     content = slide.get('content', [])
                     if any('\\titlepage' in line for line in content):
@@ -28743,7 +28909,6 @@ Created by {self.__author__}
                         break
 
                 if not has_title_page:
-                    # Create a title page
                     title_page = {
                         'title': 'Title Page',
                         'media': '',
@@ -28757,7 +28922,6 @@ Created by {self.__author__}
                     }
                     self.slides.insert(0, title_page)
                     self.write("  ✓ Added title page slide\n", "green")
-                    # Update current slide index if needed
                     if self.current_slide_index >= 0:
                         self.current_slide_index += 1
 
@@ -28786,6 +28950,8 @@ Created by {self.__author__}
             else:
                 logger.error("No slides were loaded!")
                 messagebox.showerror("Error", "No slides could be loaded from the file!")
+                if progress_dialog and progress_dialog.winfo_exists():
+                    progress_dialog.destroy()
                 self._is_loading = False
                 return
 
@@ -28795,12 +28961,20 @@ Created by {self.__author__}
             self.update_slide_list()
             self.write(f"✓ Loaded {len(self.slides)} slides from {os.path.basename(filename)}\n", "green")
 
+            if progress_dialog and progress_dialog.winfo_exists():
+                progress_bar.set(1.0)
+                status_label.configure(text="Complete!")
+                progress_dialog.update()
+                progress_dialog.after(500, progress_dialog.destroy)
+
             self._is_loading = False
 
         except Exception as e:
             error_msg = f"Error loading file: {str(e)}"
             logger.error(error_msg, exc_info=True)
             self.write(f"✗ {error_msg}\n", "red")
+            if progress_dialog and progress_dialog.winfo_exists():
+                progress_dialog.destroy()
             messagebox.showerror("Error", f"Error loading file:\n{str(e)}")
             self._is_loading = False
 
@@ -31165,18 +31339,17 @@ Created by {self.__author__}
 
             # ========== DETECT FILE FORMAT ==========
             has_title = '\\title' in content and '\\begin{Content}' in content
+            has_content_block = '\\begin{Content}' in content
+            has_notes_block = '\\begin{Notes}' in content
             has_frames = '\\begin{frame}' in content and '\\end{frame}' in content
 
             if has_frames and not has_title:
-                # This is the new Beamer frame format - validate differently
                 self.write("✓ Detected Beamer frame format\n", "green")
                 return self._validate_beamer_format(content, lines)
             elif has_title and has_content_block:
-                # This is the old TXT format
                 self.write("✓ Detected TXT format\n", "green")
                 return self._validate_txt_format(content, lines)
             else:
-                # Try to detect format
                 if has_frames:
                     self.write("✓ Detected Beamer frame format (fallback)\n", "green")
                     return self._validate_beamer_format(content, lines)
@@ -31292,6 +31465,10 @@ Created by {self.__author__}
         warnings = []
 
         # ========== 1. CHECK FOR \begin{document} AND \end{document} ==========
+        # Check for content blocks
+        has_content_block = '\\begin{Content}' in content
+        has_notes_block = '\\begin{Notes}' in content
+
         has_begin_document = '\\begin{document}' in content
         has_end_document = '\\end{document}' in content
 
@@ -32367,17 +32544,16 @@ Created by {self.__author__}
         return False
 
     def show_settings_dialog(self) -> None:
-        """Show presentation settings dialog with logo handling"""
+        """Show presentation settings dialog with proper saving."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Presentation Settings")
         dialog.geometry("500x450")
 
-        # Make dialog modal but wait until it's visible
         dialog.transient(self)
+        dialog.grab_set()
 
-        # Center the dialog on parent window
         def center_dialog():
-            dialog.update_idletasks()  # Make sure dialog is fully created
+            dialog.update_idletasks()
             screen_width = dialog.winfo_screenwidth()
             screen_height = dialog.winfo_screenheight()
             window_width = dialog.winfo_width()
@@ -32385,29 +32561,24 @@ Created by {self.__author__}
             x = (screen_width - window_width) // 2
             y = (screen_height - window_height) // 2
             dialog.geometry(f"+{x}+{y}")
-
-            # Set grab after dialog is visible
             dialog.after(100, lambda: dialog.grab_set())
 
-        # Container frame for settings
         main_frame = ctk.CTkFrame(dialog)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Create entry fields for presentation metadata
         entries = {}
         row = 0
         for key, value in self.presentation_info.items():
-            if key != 'logo':  # Handle logo separately
+            if key != 'logo':
                 label = ctk.CTkLabel(main_frame, text=key.title() + ":")
                 label.grid(row=row, column=0, padx=5, pady=5, sticky="e")
 
                 entry = ctk.CTkEntry(main_frame, width=300)
-                entry.insert(0, value)
+                entry.insert(0, value if value else "")
                 entry.grid(row=row, column=1, padx=5, pady=5, sticky="ew")
                 entries[key] = entry
                 row += 1
 
-        # Add logo selection
         logo_label = ctk.CTkLabel(main_frame, text="Logo:")
         logo_label.grid(row=row, column=0, padx=5, pady=5, sticky="e")
 
@@ -32417,10 +32588,8 @@ Created by {self.__author__}
         logo_entry = ctk.CTkEntry(logo_frame, width=240)
         logo_entry.pack(side="left", padx=(0, 5), fill="x", expand=True)
 
-        # Insert existing logo path if present
         if 'logo' in self.presentation_info:
             logo_path = self.presentation_info['logo']
-            # Extract path from logo command if present
             if '\\includegraphics' in logo_path:
                 match = re.search(r'\\includegraphics\[.*?\]{(.*?)}', logo_path)
                 if match:
@@ -32429,8 +32598,8 @@ Created by {self.__author__}
                 logo_entry.insert(0, logo_path)
 
         def browse_logo():
-            """Handle logo file selection"""
-            filename = filedialog.askopenfilename(
+            filename = DialogManager.askopenfilename(
+                parent=dialog,
                 title="Select Logo Image",
                 filetypes=[
                     ("Image files", "*.png *.jpg *.jpeg *.pdf"),
@@ -32438,18 +32607,16 @@ Created by {self.__author__}
                     ("JPEG files", "*.jpg *.jpeg"),
                     ("PDF files", "*.pdf"),
                     ("All files", "*.*")
-                ],
-                parent=dialog  # Set parent for proper modal behavior
+                ]
             )
             if filename:
                 logo_entry.delete(0, 'end')
                 logo_entry.insert(0, filename)
 
-        ctk.CTkButton(logo_frame, text="Browse",
-                      command=browse_logo).pack(side="left", padx=5)
+        ctk.CTkButton(logo_frame, text="Browse", command=browse_logo).pack(side="left", padx=5)
 
         def save_settings():
-            """Save settings including logo"""
+            """Save settings and persist them."""
             try:
                 # Save regular metadata
                 for key, entry in entries.items():
@@ -32459,52 +32626,98 @@ Created by {self.__author__}
                 logo_path = logo_entry.get().strip()
                 if logo_path:
                     if os.path.exists(logo_path):
-                        # Save logo path with LaTeX formatting
                         self.presentation_info['logo'] = f"\\logo{{\\includegraphics[height=1cm]{{{logo_path}}}}}"
                     else:
-                        messagebox.showerror("Error",
-                                           f"Logo file not found:\n{logo_path}",
-                                           parent=dialog)
+                        messagebox.showerror("Error", f"Logo file not found:\n{logo_path}", parent=dialog)
                         return
                 else:
-                    # Remove logo if entry is empty
                     self.presentation_info.pop('logo', None)
+
+                # ============================================================
+                # CRITICAL: Save settings to the file immediately
+                # ============================================================
+                self._save_presentation_settings_to_file()
 
                 dialog.grab_release()
                 dialog.destroy()
+                self.write("✓ Presentation settings saved successfully\n", "green")
 
             except Exception as e:
-                messagebox.showerror("Error",
-                                   f"Error saving settings:\n{str(e)}",
-                                   parent=dialog)
+                messagebox.showerror("Error", f"Error saving settings:\n{str(e)}", parent=dialog)
 
         def on_cancel():
-            """Handle dialog cancellation"""
             dialog.grab_release()
             dialog.destroy()
 
-        # Add buttons frame
         buttons_frame = ctk.CTkFrame(main_frame)
         buttons_frame.grid(row=row + 1, column=0, columnspan=2, pady=20)
 
-        # Add Save and Cancel buttons
-        ctk.CTkButton(buttons_frame, text="Save Settings",
-                      command=save_settings).pack(side="left", padx=10)
+        ctk.CTkButton(buttons_frame, text="Save Settings", command=save_settings).pack(side="left", padx=10)
+        ctk.CTkButton(buttons_frame, text="Cancel", command=on_cancel).pack(side="left", padx=10)
 
-        ctk.CTkButton(buttons_frame, text="Cancel",
-                      command=on_cancel).pack(side="left", padx=10)
-
-        # Configure grid
         main_frame.columnconfigure(1, weight=1)
-
-        # Handle dialog close button
         dialog.protocol("WM_DELETE_WINDOW", on_cancel)
-
-        # Center and show dialog
         dialog.after(10, center_dialog)
-
-        # Lift dialog to top
         dialog.lift()
+
+    def _save_presentation_settings_to_file(self) -> None:
+        """Save presentation settings to the current file."""
+        if not self.current_file or not os.path.exists(self.current_file):
+            self.write("⚠ No file to save settings to\n", "yellow")
+            return
+
+        try:
+            # Read the current file
+            with open(self.current_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            import re
+
+            # Update the preamble with new settings
+            # Find the preamble
+            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            if not doc_match:
+                self.write("⚠ Could not find preamble in file\n", "yellow")
+                return
+
+            preamble = doc_match.group(1)
+            doc_body = content[doc_match.end():]
+
+            # Update \title, \author, \institute, \date in preamble
+            for key in ['title', 'subtitle', 'author', 'institute', 'date']:
+                value = self.presentation_info.get(key, '')
+                if value:
+                    # Replace existing or add new
+                    pattern = rf'\\{key}{{([^}}]*)}}'
+                    if re.search(pattern, preamble):
+                        preamble = re.sub(pattern, f'\\{key}{{{value}}}', preamble)
+                    else:
+                        # Find a good place to insert
+                        if '\\begin{document}' in preamble:
+                            preamble = preamble.replace('\\begin{document}', f'\\{key}{{{value}}}\n\\begin{document}')
+                        else:
+                            preamble = preamble + f'\n\\{key}{{{value}}}'
+
+            # Update logo if present
+            logo = self.presentation_info.get('logo', '')
+            if logo:
+                pattern = r'\\logo{[^}]*}'
+                if re.search(pattern, preamble):
+                    preamble = re.sub(pattern, logo, preamble)
+                else:
+                    preamble = preamble.replace('\\begin{document}', f'{logo}\n\\begin{document}')
+
+            # Write back the file
+            new_content = preamble + '\n' + doc_body
+            with open(self.current_file, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            self.write(f"✓ Presentation settings saved to {os.path.basename(self.current_file)}\n", "green")
+
+        except Exception as e:
+            self.write(f"✗ Error saving settings to file: {str(e)}\n", "red")
+            import traceback
+            traceback.print_exc()
 
     def debug_slide_data(self):
         """Debug function to print slide data structure"""

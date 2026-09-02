@@ -1243,6 +1243,79 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{textcomp}
 \usepackage{adjustbox}
 \usepackage{tikz-3dplot}
+
+% ============================================================
+% INTELLIGENT AUTOMATIC SLIDE FITTING
+% ============================================================
+% Images preserve their aspect ratio and are constrained to the
+% actual space available to them. Text-heavy frames use Beamer's
+% automatic shrink mechanism only when content is too tall.
+%
+% These macros are deliberately local to generated slide content;
+% they do not impose global limits on background/overlay graphics.
+\newcommand{\AutoFitImage}[2][]{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.86\textheight,
+        keepaspectratio,
+        center
+    }%
+        \includegraphics[#1]{#2}%
+    \end{adjustbox}%
+}
+
+% Image sharing a frame with text, acknowledgements, citations,
+% controls, or other material. Reserve vertical room for those items.
+\newcommand{\AutoFitImageWithText}[2][]{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.55\textheight,
+        keepaspectratio,
+        center
+    }%
+        \includegraphics[#1]{#2}%
+    \end{adjustbox}%
+}
+
+% Playable-media preview: reserve room for the play control.
+\newcommand{\AutoFitPlayableImage}[2][]{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.50\textheight,
+        keepaspectratio,
+        center
+    }%
+        \includegraphics[#1]{#2}%
+    \end{adjustbox}%
+}
+
+% Beamer automatically computes the required shrink factor only when
+% a frame is too tall. This keeps normal slides at their normal size.
+% shrink=0 means no minimum artificial shrink is imposed.
+
+% ============================================================
+% WHOLE-FRAME CONTENT FITTING
+% ============================================================
+% The complete normal frame body is boxed as one unit. If the
+% combination of image + text + TikZ + citations + footnotes +
+% play controls is too large for the available slide area, the
+% complete body is proportionally reduced until it fits.
+%
+% This does NOT enlarge content that already fits, and it does not
+% affect background/overlay/special full-frame graphics.
+\newenvironment{AutoFitFrameBody}{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.80\textheight,
+        keepaspectratio,
+        center
+    }%
+    \begin{minipage}{\linewidth}
+}{%
+    \end{minipage}%
+    \end{adjustbox}%
+}
+
 \usepackage{pgfpages}
 \usepackage{hyperref}
 \usepackage{booktabs}
@@ -3196,8 +3269,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     # ========== IF CONTENT HAS EXISTING COLUMNS, USE THEM DIRECTLY ==========
     if has_existing_columns and existing_columns_content:
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         content_str = '\n'.join(str(c) for c in content)
         before_columns = content_str.split('\\begin{columns}')[0].strip()
@@ -3210,6 +3284,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         if after_columns:
             latex_code += after_columns + "\n"
 
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3251,8 +3326,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     # ========== HANDLE NO MEDIA CASE WITH TIKZ ==========
     if has_tikz and (not filename or filename == "\\None"):
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         in_itemize = False
         for item in content:
@@ -3286,16 +3362,19 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
         if in_itemize:
             latex_code += "    \\end{itemize}\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
     # ========== HANDLE NO MEDIA CASE ==========
     if not filename or filename == "\\None":
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
         content_items = generate_content_items(content)
         if content_items:
             latex_code += "    " + content_items + "\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3307,16 +3386,17 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         left_width = custom_left_width if custom_left_width else "0.48\\textwidth"
         right_width = custom_right_width if custom_right_width else "0.48\\textwidth"
 
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
 
         # Use custom image width if specified
         if custom_image_width:
-            latex_code += f"            \\includegraphics[width={custom_image_width},keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText[width={custom_image_width}]{{{filename}}}\n"
         else:
-            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText{{{filename}}}\n"
 
         latex_code += "        \\end{column}\n"
         latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
@@ -3325,6 +3405,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
             latex_code += "        " + content_items + "\n"
         latex_code += "        \\end{column}\n"
         latex_code += "    \\end{columns}\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3333,8 +3414,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         left_width = custom_left_width if custom_left_width else "0.68\\textwidth"
         right_width = custom_right_width if custom_right_width else "0.28\\textwidth"
 
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
         content_items = generate_content_items(content)
@@ -3345,12 +3427,13 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\vspace{1em}\n"
 
         if custom_image_width:
-            latex_code += f"            \\includegraphics[width={custom_image_width},keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText[width={custom_image_width}]{{{filename}}}\n"
         else:
-            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText{{{filename}}}\n"
 
         latex_code += "        \\end{column}\n"
         latex_code += "    \\end{columns}\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3371,8 +3454,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         image_width = "0.7\\textwidth"
 
     if playable and first_frame_path:
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         if use_two_columns:
             # Two columns - respect user column widths if specified
@@ -3381,7 +3465,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
             latex_code += "    \\begin{columns}[T]\n"
             latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
-            latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{first_frame_path}}}\n"
+            latex_code += f"            \\AutoFitPlayableImage{{{first_frame_path}}}\n"
             latex_code += "            \\begin{center}\n"
             latex_code += "                \\vspace{0.3em}\n"
             latex_code += "                \\footnotesize Click to play\\\\\n"
@@ -3399,7 +3483,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         else:
             # Single column layout - content below image
             latex_code += "    \\begin{center}\n"
-            latex_code += f"        \\includegraphics[width={image_width},keepaspectratio]{{{first_frame_path}}}\n"
+            latex_code += f"        \\AutoFitPlayableImage[width={image_width}]{{{first_frame_path}}}\n"
             latex_code += "        \\begin{center}\n"
             latex_code += "            \\vspace{0.3em}\n"
             latex_code += "            \\footnotesize Click to play\\\\\n"
@@ -3412,10 +3496,12 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
             if source_url:
                 latex_code += "    " + format_url_footnote(source_url) + "\n"
 
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
     else:
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         if use_two_columns:
             # Two columns - respect user column widths if specified
@@ -3424,7 +3510,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
             latex_code += "    \\begin{columns}[T]\n"
             latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
-            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText{{{filename}}}\n"
             latex_code += "        \\end{column}\n"
             latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
             content_items = generate_content_items(content)
@@ -3437,14 +3523,18 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         else:
             # Single column layout - content below image
             latex_code += "    \\begin{center}\n"
-            latex_code += f"        \\includegraphics[width={image_width},keepaspectratio]{{{filename}}}\n"
-            latex_code += "    \\end{center}\n"
             content_items = generate_content_items(content)
+            if content_items or source_url:
+                latex_code += f"        \\AutoFitImageWithText[width={image_width}]{{{filename}}}\n"
+            else:
+                latex_code += f"        \\AutoFitImage[width={image_width}]{{{filename}}}\n"
+            latex_code += "    \\end{center}\n"
             if content_items:
                 latex_code += "    " + content_items + "\n"
             if source_url:
                 latex_code += "    " + format_url_footnote(source_url) + "\n"
 
+    latex_code += "    \\end{AutoFitFrameBody}\n"
     latex_code += "\\end{frame}\n"
     return latex_code
 
@@ -4936,6 +5026,10 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
     errors = []
     warnings = []
 
+    # Always initialize this before any document/preamble branching.
+    # The output stage may reference it regardless of how the input was parsed.
+    verbatim_title_page = ''
+
     try:
         # ========== READ INPUT FILE ==========
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -5075,6 +5169,29 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
             # Remove any leading empty lines from content
             while content_lines and not content_lines[0].strip():
                 content_lines.pop(0)
+
+            # ============================================================
+            # PRESERVE EXPLICIT TITLE PAGE VERBATIM
+            # Keep a frame occurring before the first native \title
+            # exactly as it appears in the TEXT source.
+            # ============================================================
+            try:
+                content_text = ''.join(content_lines)
+                first_native_title = re.search(r'^\\title\s+', content_text, re.MULTILINE)
+                title_page_prefix = (
+                    content_text[:first_native_title.start()]
+                    if first_native_title else content_text
+                )
+                title_frame_match = re.search(
+                    r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?\\end\{frame\}',
+                    title_page_prefix,
+                    re.DOTALL
+                )
+                if title_frame_match:
+                    verbatim_title_page = title_frame_match.group(0)
+                    print("✓ Preserving explicit title page frame verbatim")
+            except Exception as e:
+                print(f"  ⚠ Could not detect explicit title page frame: {str(e)[:80]}")
         else:
             content_lines = lines
             preamble_lines = []
@@ -5178,6 +5295,13 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
             # Write document begin if not already in preamble
             if not has_document_begin:
                 outfile.write("\\begin{document}\n")
+
+            # Write an explicit title page from the TEXT file first.
+            # It is deliberately written verbatim rather than regenerated
+            # through the native slide parser.
+            if verbatim_title_page:
+                outfile.write(verbatim_title_page)
+                outfile.write('\n\n')
 
             # Write maketitle if needed
             if '\\maketitle' not in file_content and '\\titlepage' not in file_content:
@@ -5494,6 +5618,30 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             # Remove any leading empty lines from content
             while content_lines and not content_lines[0].strip():
                 content_lines.pop(0)
+
+            # ============================================================
+            # PRESERVE EXPLICIT TITLE PAGE VERBATIM
+            # Keep a frame occurring before the first native \title
+            # exactly as it appears in the TEXT source.
+            # ============================================================
+            verbatim_title_page = ''
+            try:
+                content_text = ''.join(content_lines)
+                first_native_title = re.search(r'^\\title\s+', content_text, re.MULTILINE)
+                title_page_prefix = (
+                    content_text[:first_native_title.start()]
+                    if first_native_title else content_text
+                )
+                title_frame_match = re.search(
+                    r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?\\end\{frame\}',
+                    title_page_prefix,
+                    re.DOTALL
+                )
+                if title_frame_match:
+                    verbatim_title_page = title_frame_match.group(0)
+                    print("✓ Preserving explicit title page frame verbatim")
+            except Exception as e:
+                print(f"  ⚠ Could not detect explicit title page frame: {str(e)[:80]}")
         else:
             content_lines = lines
             preamble_lines = []
@@ -5601,6 +5749,13 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             # Write document begin if not already in preamble
             if not has_document_begin:
                 outfile.write("\\begin{document}\n")
+
+            # Write an explicit title page from the TEXT file first.
+            # It is deliberately written verbatim rather than regenerated
+            # through the native slide parser.
+            if verbatim_title_page:
+                outfile.write(verbatim_title_page)
+                outfile.write('\n\n')
 
             # Write maketitle if needed
             if '\\maketitle' not in file_content and '\\titlepage' not in file_content:
