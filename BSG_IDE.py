@@ -7420,7 +7420,22 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         # ============================================================
         # STEP 5: Handle logo - SEPARATE, SIMPLE
         # ============================================================
-        logo_path = self.footer_logo_var.get().strip() if hasattr(self, 'footer_logo_var') else ""
+        logo_path = self.presentation_info.get('logo', '').strip()
+        if not logo_path and hasattr(self, 'footer_logo_var'):
+            logo_path = self.footer_logo_var.get().strip()
+        if logo_path:
+            logo_path = os.path.abspath(os.path.expanduser(logo_path))
+
+        # Keep the presentation logo as the single authoritative logo used by
+        # the footer.  Store the path as a TeX macro so the footline can use it
+        # without depending on Beamer's theme-specific \logo rendering.
+        if logo_path:
+            logo_tex = (logo_path.replace("\\", "/")
+                        .replace("#", r"\#")
+                        .replace("%", r"\%")
+                        .replace("{", r"\{")
+                        .replace("}", r"\}"))
+            footer_defs.append(f"\\def\\BSGPresentationLogo{{{logo_tex}}}")
 
         logo_command = ""
         if logo_path and os.path.exists(logo_path):
@@ -7444,7 +7459,11 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         \end{beamercolorbox}%
         \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
           \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
-          \insertframenumber{} / \inserttotalframenumber\hspace*{2ex}%
+          \IfFileExists{\BSGPresentationLogo}{%
+            \raisebox{-0.25ex}{\includegraphics[height=2.4ex]{\BSGPresentationLogo}}%
+          }{%
+            \insertframenumber{} / \inserttotalframenumber%
+          }\hspace*{1ex}%
         \end{beamercolorbox}}%
       \vskip0pt%
     }
@@ -7502,6 +7521,11 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             if len(text) > 80:
                 text = text[:77] + '...'
             return text
+
+        logo_path = self.presentation_info.get('logo', '').strip()
+        if logo_path:
+            logo_path = os.path.abspath(os.path.expanduser(logo_path))
+        logo_def = f"\\def\\BSGPresentationLogo{{{logo_path.replace(chr(92), '/') if logo_path else ''}}}" if logo_path else ''
 
         footer = f"""
     % Footer definitions
@@ -17326,6 +17350,16 @@ class BeamerSlideEditor(ctk.CTk):
             img_match = re.search(r'\\includegraphics(?:\[[^\]]*\])?{([^}]*)}', logo_content)
             if img_match:
                 self.presentation_info['logo'] = img_match.group(1)
+
+        # Presentation Settings persists its authoritative logo path in a
+        # dedicated definition.  Prefer it over a theme's generic \logo value.
+        persistent_logo = re.search(
+            r'\\def\\BSGPresentationLogo\{([^}]*)\}', content
+        )
+        if persistent_logo:
+            self.presentation_info['logo'] = persistent_logo.group(1).strip()
+            if hasattr(self, 'footer_logo_var'):
+                self.footer_logo_var.set(self.presentation_info['logo'])
 
     def enhanced_extract_slides_from_tex(self, content: str) -> list:
         """Enhanced slide extraction with comprehensive LaTeX feature support"""
@@ -28450,7 +28484,8 @@ Created by {self.__author__}
                 self.presentation_info['author'],
                 self.presentation_info['institution'],
                 self.presentation_info['short_institute'],
-                self.presentation_info['date']
+                self.presentation_info['date'],
+                self.presentation_info.get('logo', '')
             )
 
         # Modify preamble for notes configuration
@@ -28642,34 +28677,37 @@ Created by {self.__author__}
             update_progress(0.2, "Extracting preamble...")
 
             # ========== EXTRACT AND PRESERVE PREAMBLE FROM FILE ==========
+            # A TXT presentation may legitimately contain only a document wrapper
+            # and slide content.  Do NOT mistake that bare \begin{document} for
+            # a user-supplied preamble; doing so causes the empty preamble to be
+            # merged with the generated one and can move the title page into the
+            # wrong part of the document.
             preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
+            has_real_preamble = False
             if preamble_match:
                 file_preamble = preamble_match.group(1).strip()
+                has_real_preamble = bool(re.search(
+                    r'\\documentclass(?:\[[^]]*\])?\{beamer\}',
+                    file_preamble
+                ))
+
+            if preamble_match and has_real_preamble:
                 self.preamble_from_file = file_preamble
 
-                # ========== MERGE WITH DEFAULT PREAMBLE ==========
+                # Preserve the existing genuine preamble through the normal
+                # merge path.
                 self.write("\n" + "="*60 + "\n", "cyan")
                 self.write("MERGE PREAMBLE WITH FILE\n", "cyan")
                 self.write("="*60 + "\n", "cyan")
 
-                # ============================================================
-                # CRITICAL FIX: Temporarily clear _is_loading flag so dialogs can appear
-                # ============================================================
                 self._is_loading = False
-
                 update_progress(0.35, "Merging preamble...")
-
                 try:
                     merged_preamble = self.merge_preamble_with_file(filename)
                 finally:
-                    # Restore the loading flag after merge completes
                     self._is_loading = True
 
-                # ============================================================
-                # Update the file with merged preamble
-                # ============================================================
                 update_progress(0.5, "Updating file with merged preamble...")
-
                 doc_pos = content.find('\\begin{document}')
                 if doc_pos != -1:
                     document_body = content[doc_pos:]
@@ -28683,33 +28721,66 @@ Created by {self.__author__}
                     self.custom_preamble = merged_preamble
                     self.using_custom_preamble = True
                 else:
-                    self.write("⚠ Could not find \\begin{document} in file, adding it\n", "yellow")
+                    self.write("⚠ Could not find \begin{document} in file, adding it\n", "yellow")
                     new_content = merged_preamble + "\n\n\\begin{document}\n\n" + content
                     with open(filename, 'w', encoding='utf-8') as f:
                         f.write(new_content)
-                    self.write(f"✓ Added preamble and \\begin{document} to {os.path.basename(filename)}\n", "green")
+                    self.write(f"✓ Added preamble and \begin{{document}} to {os.path.basename(filename)}\n", "green")
                     content = new_content
                     self.preamble_from_file = merged_preamble
                     self.preamble_origin = 'merged'
                     self.custom_preamble = merged_preamble
                     self.using_custom_preamble = True
             else:
+                # No genuine Beamer preamble.  Keep the document body intact in
+                # memory and let get_custom_preamble()/save_file() generate the
+                # full BSG preamble.  The original TXT file is not rewritten just
+                # because it lacks a preamble.
                 self.preamble_from_file = None
                 self.preamble_origin = 'default'
                 self.using_custom_preamble = False
-                self.write(f"ℹ No preamble found in file, using default\n", "cyan")
+                self.write("ℹ No genuine Beamer preamble found in file, using default generated preamble\n", "cyan")
 
             update_progress(0.6, "Extracting presentation metadata...")
+
+            # Reset file-specific logo state before extracting this file.
+            # Otherwise a logo selected for a previous presentation can leak
+            # into the newly loaded Presentation Settings dialog.
+            self.presentation_info['logo'] = ''
+            if hasattr(self, 'footer_logo_var'):
+                self.footer_logo_var.set('')
 
             # ============================================================
             # Extract presentation metadata from the (possibly updated) content
             # ============================================================
             for key in ['title', 'subtitle', 'author', 'institute', 'date']:
-                pattern = rf"\\key{{([^}}]*)}}"
+                pattern = rf"\\{key}\{{([^}}]*)\}}"
                 match = re.search(pattern, content)
                 if match:
-                    self.presentation_info[key] = match.group(1).strip()
-                    logger.info(f"Extracted {key}: {self.presentation_info[key]}")
+                    value = match.group(1).strip()
+                    # The UI uses the semantic name 'institution'; keep that
+                    # name rather than creating a second 'institute' field.
+                    target_key = 'institution' if key == 'institute' else key
+                    self.presentation_info[target_key] = value
+                    logger.info(f"Extracted {target_key}: {value}")
+
+            # Extract the short institute used by the footer, when present.
+            short_match = re.search(
+                r'\\def\\insertshortinstitute\{([^}]*)\}', content
+            )
+            if short_match:
+                self.presentation_info['short_institute'] = short_match.group(1).strip()
+
+            # Presentation Settings stores the selected logo as a simple
+            # path in a dedicated preamble definition.
+            logo_match = re.search(
+                r'\\def\\BSGPresentationLogo\{([^}]*)\}', content
+            )
+            if logo_match:
+                logo_path = logo_match.group(1).strip()
+                self.presentation_info['logo'] = logo_path
+                if hasattr(self, 'footer_logo_var'):
+                    self.footer_logo_var.set(logo_path)
 
             update_progress(0.7, "Parsing slides...")
 
@@ -29080,8 +29151,40 @@ Created by {self.__author__}
             # Generate slide content
             slide_content = self._generate_slide_content_only()
 
-            # Combine preamble + slides
-            content = preamble + "\n\n" + slide_content
+            # get_custom_preamble() may include a document wrapper and/or a
+            # generated title-page frame.  _generate_slide_content_only()
+            # already owns the document body, including its single
+            # \begin{document}/\end{document}.  Normalize the two pieces here
+            # so a saved TXT file can never contain duplicate document markers
+            # or a title page in the preamble.
+            embedded_title_page = ''
+            if '\begin{document}' in preamble:
+                preamble, after_begin = preamble.split('\begin{document}', 1)
+                title_match = re.search(
+                    r'\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+                    r'(?:\\titlepage|\\maketitle).*?\end\{frame\}',
+                    after_begin,
+                    flags=re.DOTALL
+                )
+                if title_match:
+                    embedded_title_page = title_match.group(0).strip()
+
+            # If the generated preamble carried a title page but the current
+            # slide model does not, preserve that title page in the document
+            # body.  Otherwise the slide model's title page is authoritative.
+            if embedded_title_page and not re.search(
+                r'\begin\{frame\}(?:\[[^\]]*\])?.*?(?:\\titlepage|\\maketitle).*?\end\{frame\}',
+                slide_content,
+                flags=re.DOTALL
+            ):
+                slide_content = re.sub(
+                    r'^(\\begin\{document\}\n?)',
+                    lambda m: m.group(1) + embedded_title_page + '\n\n',
+                    slide_content,
+                    count=1
+                )
+
+            content = preamble.rstrip() + "\n\n" + slide_content.lstrip()
 
             # Write to file
             with open(filename, 'w', encoding='utf-8') as f:
@@ -32630,12 +32733,23 @@ Created by {self.__author__}
                 logo_path = logo_entry.get().strip()
                 if logo_path:
                     if os.path.exists(logo_path):
-                        self.presentation_info['logo'] = f"\\logo{{\\includegraphics[height=1cm]{{{logo_path}}}}}"
+                        # Store the actual image path.  get_beamer_preamble()
+                        # handles the LaTeX include/escaping when generating the
+                        # footer; storing a \logo{...} command here would make
+                        # the path unusable on the next generation pass.
+                        self.presentation_info['logo'] = logo_path
                     else:
                         messagebox.showerror("Error", f"Logo file not found:\n{logo_path}", parent=dialog)
                         return
                 else:
                     self.presentation_info.pop('logo', None)
+
+                # Presentation Settings logo is the authoritative logo.
+                # Keep the separate footer-settings variable synchronized so
+                # the footer preview and footer-generation paths use the same
+                # value.
+                if hasattr(self, 'footer_logo_var'):
+                    self.footer_logo_var.set(self.presentation_info.get('logo', ''))
 
                 # ============================================================
                 # CRITICAL: Save settings to the file immediately
@@ -32665,61 +32779,179 @@ Created by {self.__author__}
         dialog.lift()
 
     def _save_presentation_settings_to_file(self) -> None:
-        """Save presentation settings to the current file."""
+        """Persist Presentation Settings into the TXT file and synchronize the footer."""
         if not self.current_file or not os.path.exists(self.current_file):
             self.write("⚠ No file to save settings to\n", "yellow")
             return
 
         try:
-            # Read the current file
+            import re
+            from BeamerSlideGenerator import get_beamer_preamble
+
             with open(self.current_file, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            import re
-
-            # Update the preamble with new settings
-            # Find the preamble
-            doc_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
-            if not doc_match:
-                self.write("⚠ Could not find preamble in file\n", "yellow")
-                return
-
-            preamble = doc_match.group(1)
-            doc_body = content[doc_match.end():]
-
-            # Update \title, \author, \institute, \date in preamble
-            for key in ['title', 'subtitle', 'author', 'institute', 'date']:
-                value = self.presentation_info.get(key, '')
-                if value:
-                    # Replace existing or add new
-                    pattern = rf'\\{key}{{([^}}]*)}}'
-                    if re.search(pattern, preamble):
-                        preamble = re.sub(pattern, lambda m, key=key, value=value: f'\\{key}{{{value}}}', preamble)
-                    else:
-                        # Find a good place to insert
-                        if '\\begin{document}' in preamble:
-                            preamble = preamble.replace('\\begin{document}', f'\\{key}{{{value}}}\n\\begin{document}')
-                        else:
-                            preamble = preamble + f'\n\\{key}{{{value}}}'
-
-            # Update logo if present
-            logo = self.presentation_info.get('logo', '')
+            title = self.presentation_info.get('title', '').strip() or 'Presentation'
+            subtitle = self.presentation_info.get('subtitle', '').strip()
+            author = self.presentation_info.get('author', '').strip() or 'airis4D'
+            institution = self.presentation_info.get('institution', '').strip()
+            short_institute = self.presentation_info.get('short_institute', '').strip()
+            date = self.presentation_info.get('date', '').strip() or r'\today'
+            logo = self.presentation_info.get('logo', '').strip()
             if logo:
-                pattern = r'\\logo{[^}]*}'
-                if re.search(pattern, preamble):
-                    preamble = re.sub(pattern, lambda m, logo=logo: logo, preamble)
-                else:
-                    preamble = preamble.replace('\\begin{document}', f'{logo}\n\\begin{document}')
+                logo = os.path.abspath(os.path.expanduser(logo))
+                self.presentation_info['logo'] = logo
 
-            # Write back the file
-            new_content = preamble + '\n' + doc_body
+            # Persist the selected logo as a path in a dedicated definition.
+            # load_file() reads this definition back into Presentation Settings.
+            logo_tex = logo.replace('\\', '/')
+            logo_tex = (logo_tex
+                        .replace('#', r'\#')
+                        .replace('%', r'\%')
+                        .replace('{', r'\{')
+                        .replace('}', r'\}'))
+            logo_definition = f'\\def\\BSGPresentationLogo{{{logo_tex}}}' if logo_tex else ''
+
+            # Right side of the footer: logo when selected and valid; otherwise
+            # the normal frame counter.
+            if logo_tex:
+                right_footer = (
+                    f'\\IfFileExists{{{logo_tex}}}{{'
+                    f'\\raisebox{{-0.15ex}}{{\\includegraphics[height=2.2ex]{{{logo_tex}}}}}'
+                    f'}}{{\\insertframenumber{{}} / \\inserttotalframenumber}}'
+                    f'\\hspace*{{1ex}}%'
+                )
+            else:
+                right_footer = r'\insertframenumber{} / \inserttotalframenumber\hspace*{1ex}%'
+
+            footer_block = (
+                '% ============================================================\n'
+                '% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings\n'
+                '% ============================================================\n'
+                f'\\def\\insertshortinstitute{{{short_institute}}}\n'
+                f'\\def\\insertshortauthor{{{author}}}\n'
+                f'\\def\\insertshorttitle{{{title}}}\n'
+                f'\\def\\insertshortdate{{{date}}}\n'
+                + (logo_definition + '\n' if logo_definition else '')
+                + """\\makeatletter
+\\setbeamertemplate{footline}{%
+  \\leavevmode%
+  \\hbox{%
+    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
+      \\usebeamerfont{author in head/foot}\\insertshortauthor{} (\\insertshortinstitute)%
+    \\end{beamercolorbox}%
+    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
+      \\usebeamerfont{title in head/foot}\\insertshorttitle%
+    \\end{beamercolorbox}%
+    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
+      \\usebeamerfont{date in head/foot}\\insertshortdate{}\\hspace*{1.5em}%
+      """ + right_footer + """
+    \\end{beamercolorbox}%
+  }%
+  \\vskip0pt%
+}
+\\makeatother
+% ============================================================
+"""
+            )
+
+            standard_title_page = (
+                "% --- Title Page Slide ---\n"
+                "\\begin{frame}[plain]\n"
+                "\\titlepage\n"
+                "\\end{frame}"
+            )
+
+            # Generate the full BSG preamble only when the source has no real
+            # Beamer preamble.  Its generated title frame is removed here.
+            generated = get_beamer_preamble(
+                title=title, subtitle=subtitle, author=author,
+                institution=institution, short_institute=short_institute,
+                date=date, logo=logo
+            )
+            marker = '\n% Title page'
+            generated_preamble = generated.split(marker, 1)[0] if marker in generated else generated
+
+            begin_match = re.search(r'\\begin\{document\}', content)
+            if begin_match:
+                existing_prefix = content[:begin_match.start()]
+                body = content[begin_match.end():]
+                has_real_preamble = bool(re.search(
+                    r'\\documentclass(?:\[[^]]*\])?\{beamer\}', existing_prefix
+                ))
+            else:
+                existing_prefix = ''
+                body = content
+                has_real_preamble = False
+
+            managed_footer_re = re.compile(
+                r'% ============================================================\n'
+                r'% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings\n'
+                r'.*?'
+                r'% ============================================================\n',
+                re.DOTALL
+            )
+
+            if not has_real_preamble:
+                preamble = generated_preamble
+            else:
+                # Keep the user's genuine preamble, but remove only a previous
+                # BSG-managed footer before installing the updated one.
+                preamble = managed_footer_re.sub('', existing_prefix).rstrip()
+
+                replacements = {
+                    'title': title, 'subtitle': subtitle, 'author': author,
+                    'institute': institution, 'date': date,
+                }
+                for key, value in replacements.items():
+                    pattern = rf'\\{key}\{{[^}}]*\}}'
+                    replacement = f'\\{key}{{{value}}}'
+                    if re.search(pattern, preamble):
+                        preamble = re.sub(pattern, lambda m, r=replacement: r, preamble, count=1)
+                    else:
+                        preamble = preamble.rstrip() + '\n' + replacement
+
+            preamble = preamble.rstrip() + '\n\n' + footer_block.rstrip()
+
+            body = re.sub(r'\\begin\{document\}', '', body)
+            body = re.sub(r'\\end\{document\}', '', body)
+
+            title_frame_re = re.compile(
+                r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+                r'(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
+                re.DOTALL
+            )
+            if title_frame_re.search(body):
+                body = title_frame_re.sub(standard_title_page, body, count=1)
+            else:
+                body = standard_title_page + '\n\n' + body.lstrip()
+
+            new_content = (
+                preamble.rstrip() + '\n\n\\begin{document}\n\n'
+                + body.lstrip() + '\n\n\\end{document}\n'
+            )
+
             with open(self.current_file, 'w', encoding='utf-8') as f:
                 f.write(new_content)
 
-            self.write(f"✓ Presentation settings saved to {os.path.basename(self.current_file)}\n", "green")
+            self.preamble_from_file = preamble.strip()
+            self.custom_preamble = preamble.strip()
+            self.using_custom_preamble = True
+            self.preamble_origin = 'file' if has_real_preamble else 'default'
+            if hasattr(self, 'footer_logo_var'):
+                self.footer_logo_var.set(logo)
+
+            self.write(
+                f"✓ Presentation settings saved to {os.path.basename(self.current_file)}\n",
+                "green"
+            )
+            if logo:
+                self.write(f"  ✓ Logo persisted: {logo}\n", "green")
+            else:
+                self.write("  ℹ No presentation logo selected\n", "cyan")
 
         except Exception as e:
-            self.write(f"✗ Error saving settings to file: {str(e)}\n", "red")
+            self.write(f"✗ Error saving presentation settings to file: {str(e)}\n", "red")
             import traceback
             traceback.print_exc()
 
