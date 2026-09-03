@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BSG-IDE Complete Build and Deployment Script with Menu Entry Support
-Version: 5.7
+Version: 10.6.7 (FIX6)
 """
 
 import os
@@ -13,7 +13,7 @@ import platform
 from pathlib import Path
 
 # Configuration
-VERSION = "7.1.2"
+VERSION = "10.7.7"
 PACKAGE_NAME = "bsg_ide"
 PYPI_NAME = "bsg-ide"
 AUTHOR = "Ninan Sajeeth Philip"
@@ -97,6 +97,7 @@ class BSGIDEBuildDeploy:
             "InteractiveTerminal.py",
             "Grammarly.py",
             "EnhancedCommandDialog.py",
+            "LatexHelp.py",
         ]
 
         for file in source_files:
@@ -199,7 +200,7 @@ class BSGIDEBuildDeploy:
         if self.system == "Linux":
             desktop_lines = [
                 "[Desktop Entry]",
-                "Version=" + self.version,
+                "Version=1.0",
                 "Type=Application",
                 "Name=BSG-IDE",
                 "Name[en]=Beamer Slide Generator IDE",
@@ -468,7 +469,6 @@ class BSGIDEBuildDeploy:
             'from setuptools import setup, find_packages',
             'from pathlib import Path',
             'import sys',
-            'import subprocess',
             '',
             '__version__ = "' + self.version + '"',
             '',
@@ -476,15 +476,8 @@ class BSGIDEBuildDeploy:
             'readme_file = Path(__file__).parent / "README.md"',
             'long_description = readme_file.read_text(encoding="utf-8") if readme_file.exists() else "' + DESCRIPTION + '"',
             '',
-            'def post_install():',
-            '    """Run post-installation setup"""',
-            '    try:',
-            '        # Run the post-install script',
-            '        post_install_script = Path(__file__).parent / "bsg_ide" / "scripts" / "post_install.py"',
-            '        if post_install_script.exists():',
-            '            subprocess.run([sys.executable, str(post_install_script)], check=False)',
-            '    except Exception:',
-            '        pass',
+            '# Linux desktop integration is installed by setuptools data_files.',
+            '# No arbitrary post-install hook is used because pip does not execute one.',
             '',
             'setup(',
             '    name="' + self.pypi_name + '",',
@@ -511,6 +504,13 @@ class BSGIDEBuildDeploy:
             '            "*.py",',
             '        ],',
             '    },',
+            '    # Install Linux desktop integration through standard wheel data files.',
+            '    # pip installs these under the active user/system prefix, so no post-install hook is needed.',
+            '    data_files=([',
+            '        ("share/applications", ["bsg_ide/scripts/bsg-ide.desktop"]),',
+            '    ] + ([',
+            '        ("share/icons/hicolor/256x256/apps", ["bsg_ide/resources/bsg-ide.png"]),',
+            '    ] if Path("bsg_ide/resources/bsg-ide.png").exists() else []) if sys.platform.startswith("linux") else []),',
             '    install_requires=[',
             '        "customtkinter>=5.2.0",',
             '        "Pillow>=9.0.0",',
@@ -640,6 +640,10 @@ class BSGIDEBuildDeploy:
             'pip install bsg-ide',
             '```',
             '',
+            'On Linux, the wheel installs the BSG-IDE `.desktop` application entry into the active installation prefix and the icon when it is included in the package.',
+            'For a normal user installation, use `python -m pip install --user bsg-ide`; the entry is then placed under `~/.local/share/applications` by pip/setuptools.',
+            'If your desktop environment does not refresh its application cache immediately, log out/in or run `update-desktop-database ~/.local/share/applications` when that utility is available.',
+            '',
             '### Full installation (with all features):',
             '```bash',
             'pip install bsg-ide[full]',
@@ -737,7 +741,7 @@ class BSGIDEBuildDeploy:
 
             # Build using setuptools
             result = subprocess.run(
-                [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", "dist", "."],
+                [sys.executable, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps", "-w", "dist", "."],
                 capture_output=True,
                 text=True
             )
@@ -1086,7 +1090,7 @@ def main():
             ("Copying source files", build_deploy.copy_source_files),
             ("Creating launcher scripts", build_deploy.create_launcher_scripts),
             ("Creating desktop integration", build_deploy.create_desktop_integration),
-            ("Creating post-install script", build_deploy.create_post_install_script),
+            ("Creating post-install helper", build_deploy.create_post_install_script),
             ("Creating init files", build_deploy.create_init_files),
             ("Creating setup files", build_deploy.create_setup_files),
             ("Creating requirements", build_deploy.create_requirements),

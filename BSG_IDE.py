@@ -21,7 +21,8 @@ def setup_package_paths():
         current_dir = current_file.parent
 
         # Check if we're in source directory (look for key files)
-        is_source = (current_dir / 'BeamerSlideGenerator.py').exists()
+        is_source = ((current_dir / 'BeamerSlideGenerator.py').exists() or
+                     (current_dir / 'BeamerSlideGenerator.py').exists())
 
         if is_source:
             # Running from source - add current directory to path
@@ -73,7 +74,7 @@ def setup_package_paths():
 # Run path setup immediately
 PACKAGE_ROOT, RESOURCES_DIR = setup_package_paths()
 
-# Now try to import BeamerSlideGenerator
+# Use the canonical local/package BeamerSlideGenerator component.
 try:
     from BeamerSlideGenerator import (
         get_beamer_preamble,
@@ -1364,7 +1365,10 @@ try:
     print("✓ Enhanced command features loaded")
 except ImportError as e:
     print(f"Enhanced features not available: {e}")
-    from EnhancedCommandDialog import EnhancedCommandIndexDialog, IntelligentAutocomplete, LatexCommandHelper, CommandTooltip
+    try:
+        from EnhancedCommandDialog import EnhancedCommandIndexDialog, IntelligentAutocomplete, LatexCommandHelper, CommandTooltip
+    except ImportError:
+        from EnhancedCommandDialog import EnhancedCommandIndexDialog, IntelligentAutocomplete, LatexCommandHelper, CommandTooltip
     ENHANCED_FEATURES_AVAILABLE = True
     from Grammarly import  GrammarlyIntegration,GrammarlySetupDialog,AutomatedGrammarlyIntegration
     from InteractiveTerminal import InteractiveTerminal
@@ -5664,6 +5668,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
         # Store current values from preamble
         self.current_values = self._extract_current_settings(self.current_preamble)
+        self.current_values['footer_logo'] = self.presentation_info.get('logo', '').strip()
 
         # Window management - ensure dialog is on top
         self.transient(parent)
@@ -5725,6 +5730,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             'show_footer': True,
             'footer_logo': '',
             'footer_logo_color': '',
+            'logo_size': '2.2ex',
         }
 
         if not preamble:
@@ -5777,14 +5783,18 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         if img_match and 'background' in preamble.lower():
             settings['bg_image'] = img_match.group(1)
 
-        # Extract logo
-        logo_match = re.search(r'\\logo\{([^}]*)\}', preamble)
-        if logo_match:
-            settings['footer_logo'] = logo_match.group(1)
-            # Extract color from logo if present
-            color_match = re.search(r'\\textcolor\{([^}]+)\}', logo_match.group(1))
-            if color_match:
-                settings['footer_logo_color'] = color_match.group(1)
+        # Extract logo.  BSGPresentationLogo is authoritative; legacy \logo{}
+        # is only used as a fallback for older themes.
+        bsg_logo_match = re.search(r'\\def\\BSGPresentationLogo\{([^}]*)\}', preamble)
+        if bsg_logo_match:
+            settings['footer_logo'] = bsg_logo_match.group(1).strip()
+        else:
+            logo_match = re.search(r'\\logo\{([^}]*)\}', preamble)
+            if logo_match:
+                settings['footer_logo'] = logo_match.group(1)
+                color_match = re.search(r'\\textcolor\{([^}]+)\}', logo_match.group(1))
+                if color_match:
+                    settings['footer_logo_color'] = color_match.group(1)
 
         # Check for footer override
         if '\\def\\insertshortinstitute' in preamble:
@@ -6087,7 +6097,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
         # Footer Logo - NEW
         ctk.CTkLabel(footer_grid, text="Footer Logo:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        self.footer_logo_var = ctk.StringVar(value=self.current_values.get('footer_logo', ''))
+        self.footer_logo_var = ctk.StringVar(value=self.presentation_info.get('logo', self.current_values.get('footer_logo', '')).strip())
         logo_entry = ctk.CTkEntry(footer_grid, textvariable=self.footer_logo_var, width=200)
         logo_entry.grid(row=1, column=1, padx=5, pady=5)
         logo_entry.bind('<KeyRelease>', self.on_setting_changed)
@@ -6342,6 +6352,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         )
         if filename:
             self.footer_logo_var.set(filename)
+            self.presentation_info['logo'] = filename
+            if hasattr(self.parent, 'presentation_info'):
+                self.parent.presentation_info['logo'] = filename
             self.on_setting_changed()
 
     def update_footer_from_settings(self):
@@ -6385,7 +6398,8 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
     def get_footer_text(self) -> str:
         """Generate footer text for preview based on settings"""
-        if not self.show_footer_var.get():
+        show_footer = self.show_footer_var.get() if hasattr(self, 'show_footer_var') else True
+        if not show_footer:
             return ""
 
         author = self.presentation_info.get('author', 'Author')
@@ -6548,6 +6562,11 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         else:
             title_text_color = self._is_dark_color(title_bg_color) and "white" or "black"
 
+        # Tkinter requires an actual Tk color, not a LaTeX command such as
+        # \textcolorchoice.  Fall back safely when theme parsing returns LaTeX.
+        if isinstance(title_text_color, str) and title_text_color.strip().startswith("\\"):
+            title_text_color = "white" if self._is_dark_color(title_bg_color) else "black"
+
         canvas.create_text(header_x + 20, header_y + header_height/2, text="Slide Title",
                           fill=title_text_color, font=("Arial", header_font_size, "bold"), anchor="w", tags="header_text")
 
@@ -6568,6 +6587,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             content_text_color = fg_color
         else:
             content_text_color = text_color
+
+        if isinstance(content_text_color, str) and content_text_color.strip().startswith("\\"):
+            content_text_color = "white" if self._is_dark_color(bg_color) else "black"
 
         bullet_lines = ["• Main point or key concept", "• Supporting information", "• Additional details", "• Conclusion"]
         for i, line in enumerate(bullet_lines):
@@ -7082,6 +7104,14 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self._is_applying = True
 
         try:
+            # The logo in Theme & Styles is the same presentation logo.
+            # Keep Presentation Settings and Theme & Styles synchronized.
+            self.presentation_info['logo'] = self.footer_logo_var.get().strip()
+            if hasattr(self.parent, 'presentation_info'):
+                self.parent.presentation_info['logo'] = self.presentation_info['logo']
+                if hasattr(self.parent, 'footer_logo_var'):
+                    self.parent.footer_logo_var.set(self.presentation_info['logo'])
+
             preamble = self.current_preamble
 
             if self._current_theme_name:
@@ -7557,7 +7587,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         return preamble + '\n' + footer
 
     def _clean_text_for_def(self, text: str) -> str:
-        """
+        r"""
         Clean text for use in \def commands.
         Removes problematic characters that could cause runaway definitions.
         """
@@ -7625,35 +7655,74 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         return text
 
     def _apply_footer_logo(self, preamble: str, logo_path: str) -> str:
-        """Apply footer logo - FIXED to work with the footer template"""
-        import re
+        """Apply the single Presentation Settings logo to the BSG footer."""
+        import re, os
 
-        # Remove existing logo definitions
-        preamble = re.sub(r'\\logo\{[^}]*\}', '', preamble)
+        logo_path = (logo_path or '').strip()
+        if logo_path:
+            logo_path = os.path.abspath(os.path.expanduser(logo_path)).replace('\\', '/')
 
-        if not logo_path or logo_path == "":
-            return preamble
+        # Presentation Settings is the single source of truth.
+        if hasattr(self.parent, 'presentation_info'):
+            self.parent.presentation_info['logo'] = logo_path
+            if hasattr(self.parent, 'footer_logo_var'):
+                self.parent.footer_logo_var.set(logo_path)
+        self.presentation_info['logo'] = logo_path
 
-        # Clean the logo path
-        logo_path = logo_path.strip()
-        if not logo_path:
-            return preamble
+        # Remove legacy standalone \logo commands; BSG's managed footline is
+        # now the only place where the presentation logo is rendered.
+        preamble = re.sub(r'(?m)^\\logo\{.*?\}\s*$', '', preamble)
 
-        # Get logo color if set
-        logo_color = self.footer_logo_color_var.get().strip() if hasattr(self, 'footer_logo_color_var') else ""
+        logo_size = '2.2ex'
+        if hasattr(self.parent, 'presentation_info'):
+            logo_size = str(self.parent.presentation_info.get('logo_size', logo_size) or logo_size).strip()
+        if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)', logo_size):
+            logo_size = '2.2ex'
 
-        # Build the logo command
-        if logo_color and logo_color != "":
-            logo_cmd = f'\\logo{{\\textcolor{{{logo_color}}}{{\\includegraphics[height=0.6cm]{{{logo_path}}}}}}}'
+        if logo_path:
+            safe = (logo_path.replace('#', r'\#').replace('%', r'\%')
+                    .replace('{', r'\{').replace('}', r'\}'))
+            logo_definition = f'\\def\\BSGPresentationLogo{{{safe}}}'
+            right_footer = (
+                f'\\IfFileExists{{{safe}}}{{'
+                f'\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_size}]{{{safe}}}}}'
+                f'}}{{\\insertframenumber{{}} / \\inserttotalframenumber}}\\hspace*{{1ex}}%'
+            )
         else:
-            logo_cmd = f'\\logo{{\\includegraphics[height=0.6cm]{{{logo_path}}}}}'
+            logo_definition = ''
+            right_footer = r'\insertframenumber{} / \inserttotalframenumber\hspace*{1ex}%'
 
-        # Insert before \begin{document}
-        doc_pos = preamble.find('\\begin{document}')
-        if doc_pos != -1:
-            preamble = preamble[:doc_pos] + f'\n{logo_cmd}\n' + preamble[doc_pos:]
-        else:
-            preamble += f'\n{logo_cmd}\n'
+        # Update the BSGPresentationLogo definition wherever it exists.
+        preamble = re.sub(r'(?m)^\\def\\BSGPresentationLogo\{.*?\}\s*$', '', preamble)
+
+        # Update the right-hand side of the BSG-managed footline.  The managed
+        # block is deliberately identified by its marker so unrelated theme
+        # images are never changed.
+        marker = '% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings'
+        marker_pos = preamble.find(marker)
+        if marker_pos >= 0:
+            first_sep = preamble.find('% ============================================================', marker_pos + len(marker))
+            # The second separator closes the managed footer block.
+            block_end = preamble.find('% ============================================================', first_sep + len('% ============================================================')) if first_sep >= 0 else -1
+            if block_end >= 0:
+                block = preamble[marker_pos:block_end + len('% ============================================================')]
+                right_re = re.compile(
+                    r'\\IfFileExists\{.*?\}\{.*?\}\{\\insertframenumber\{\} / \\inserttotalframenumber\}\\hspace\*\{1ex\}%',
+                    re.DOTALL
+                )
+                if right_re.search(block):
+                    block = right_re.sub(right_footer, block, count=1)
+                else:
+                    # Older managed blocks may have had only the frame counter.
+                    counter_re = re.compile(r'\\insertframenumber\{\} / \\inserttotalframenumber\\hspace\*\{1ex\}%')
+                    block = counter_re.sub(right_footer, block, count=1)
+                if logo_definition:
+                    block = block.replace(
+                        '\n\\makeatletter',
+                        '\n' + logo_definition + '\n\\makeatletter',
+                        1
+                    )
+                preamble = preamble[:marker_pos] + block + preamble[block_end + len('% ============================================================'):]
 
         return preamble
 
@@ -13729,7 +13798,10 @@ class BeamerSyntaxHighlighter:
             'author': '',
             'institution': 'Artificial Intelligence Research and Intelligent Systems (airis4D)',
             'short_institute': 'airis4D',
-            'date': '\\today'
+            'date': '\\today',
+            'logo_size': '2.2ex',
+            'autocomplete_enabled': True,
+            'latex_engine': 'pdflatex'
         }
 
 
@@ -15709,7 +15781,10 @@ class BeamerSlideEditor(ctk.CTk):
             'author': '',
             'institution': 'Artificial Intelligence Research and Intelligent Systems (airis4D)',
             'short_institute': 'airis4D',
-            'date': '\\today'
+            'date': '\\today',
+            'logo_size': '2.2ex',
+            'autocomplete_enabled': True,
+            'latex_engine': 'pdflatex'
         }
 
         # Configure grid - KEEP ORIGINAL
@@ -16719,7 +16794,7 @@ class BeamerSlideEditor(ctk.CTk):
                 from EnhancedCommandDialog import LatexCommandHelper
                 self.command_helper = LatexCommandHelper()
                 self.use_enhanced_latex = True
-                print("✓ Enhanced LaTeX help system loaded from EnhancedCommandDialog")
+                print("✓ Enhanced LaTeX help system loaded from EnhancedCommandDialog.py")
             else:
                 # Fallback to basic implementation
                 from Grammarly import LatexCommandHelper
@@ -16737,7 +16812,7 @@ class BeamerSlideEditor(ctk.CTk):
                 from EnhancedCommandDialog import CommandTooltip
                 self.tooltip_manager = CommandTooltip(self)
                 self.use_enhanced_tooltips = True
-                print("✓ Enhanced command tooltips loaded from EnhancedCommandDialog")
+                print("✓ Enhanced command tooltips loaded from EnhancedCommandDialog.py")
             else:
                 # Fallback to basic implementation
                 from Grammarly import CommandTooltip
@@ -16773,6 +16848,18 @@ class BeamerSlideEditor(ctk.CTk):
         """Initialize enhanced features after UI is ready"""
         # Setup enhanced autocomplete
         self.setup_autocomplete()
+        if self.presentation_info.get('autocomplete_enabled', True):
+            print("💡 LaTeX Auto-Fill: type \\ to see commands; ↑/↓ select; Enter/Tab accept; Esc dismiss.")
+            if hasattr(self, 'status_label'):
+                self.status_label.configure(
+                    text="Ready | LaTeX Auto-Fill: ON (type \\) | Engine: " +
+                         str(self.presentation_info.get('latex_engine', 'pdflatex')).upper()
+                )
+        elif hasattr(self, 'status_label'):
+            self.status_label.configure(
+                text="Ready | LaTeX Auto-Fill: OFF | Engine: " +
+                     str(self.presentation_info.get('latex_engine', 'pdflatex')).upper()
+            )
 
         # Setup enhanced tooltips
         self.setup_command_tooltips()
@@ -21242,7 +21329,8 @@ Created by {self.__author__}
             'author': '',
             'institution': '',
             'short_institute': '',
-            'date': '\\today'
+            'date': '\\today',
+            'logo_size': '2.2ex'
         }
 
         import re
@@ -23532,7 +23620,8 @@ Created by {self.__author__}
             'author': '',
             'institution': '',
             'short_institute': '',
-            'date': '\\today'
+            'date': '\\today',
+            'logo_size': '2.2ex'
         }
 
     def open_file(self) -> None:
@@ -24323,7 +24412,7 @@ Created by {self.__author__}
                     return f"\\textcolor{{gray}}{{[File not found: {os.path.basename(file_path)}]}}"
 
             def convert_mosaic_to_latex(mosaic_line):
-                """Convert \mosaic directive to LaTeX tabular"""
+                r"""Convert \mosaic directive to LaTeX tabular"""
                 match = re.search(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', mosaic_line)
                 if not match:
                     return mosaic_line
@@ -24366,7 +24455,7 @@ Created by {self.__author__}
                 return latex
 
             def convert_play_to_movie(line):
-                """Convert \play directive to LaTeX movie command with YouTube download support"""
+                r"""Convert \play directive to LaTeX movie command with YouTube download support"""
                 stripped = line.strip()
 
                 # Check for quality specification
@@ -24916,7 +25005,7 @@ Created by {self.__author__}
         return processed
 
     def convert_mosaic_to_tabular(self, mosaic_line: str) -> str:
-        """Convert \mosaic{rows,cols}{images} to a proper tabular environment"""
+        r"""Convert \mosaic{rows,cols}{images} to a proper tabular environment"""
         import re
 
         match = re.match(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', mosaic_line)
@@ -25155,7 +25244,7 @@ Created by {self.__author__}
         return processed
 
     def convert_mosaic_to_tabular(self, mosaic_line: str) -> str:
-        """Convert \mosaic{rows,cols}{images} to a proper tabular environment"""
+        r"""Convert \mosaic{rows,cols}{images} to a proper tabular environment"""
         import re
 
         match = re.match(r'\\mosaic\{(\d+),(\d+)\}\{(.*?)\}', mosaic_line)
@@ -25995,7 +26084,8 @@ Created by {self.__author__}
             'slide_number': 0,
             'error_line_tex': None,
             'has_math_warning': False,
-            'missing_package': None
+            'missing_package': None,
+            'latex_engine': self.presentation_info.get('latex_engine', 'pdflatex')
         }
 
         try:
@@ -26080,9 +26170,68 @@ Created by {self.__author__}
                     txt_lines = f.readlines()
                 txt_slide_map = self._build_detailed_txt_slide_map(txt_lines)
 
-            # Run pdflatex
-            cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+            # Select the requested LaTeX engine. pdfLaTeX remains the default.
+            # XeLaTeX is optional and is useful for direct UTF-8 text and system fonts.
+            requested_engine = str(self.presentation_info.get('latex_engine', 'pdflatex')).lower()
+            if requested_engine == 'xelatex' and shutil.which('xelatex'):
+                latex_engine = 'xelatex'
+
+                # XeLaTeX natively handles UTF-8.  Make only BSG-managed,
+                # reversible changes to the generated TeX file.
+                if r'\usepackage[utf8]{inputenc}' in tex_content:
+                    tex_content = tex_content.replace(
+                        r'\usepackage[utf8]{inputenc}',
+                        '% BSG-XELATEX: inputenc disabled (XeLaTeX has native UTF-8 support)'
+                    )
+                if '% BSG-XELATEX: fontspec added' not in tex_content and r'\usepackage{fontspec}' not in tex_content:
+                    # fontspec must follow the document class.
+                    m = re.search(r'(?m)^\s*\\documentclass(?:\[[^\n]*\])?\{[^\n]*\}[^\n]*\n?', tex_content)
+                    if m:
+                        insertion = (
+                            '% BSG-XELATEX: fontspec added\n'
+                            r'\usepackage{fontspec}' + '\n'
+                            r'\IfFontExistsTF{Noto Sans}{\setsansfont{Noto Sans}}{}' + '\n'
+                        )
+                        tex_content = tex_content[:m.end()] + insertion + tex_content[m.end():]
+                with open(tex_file_abs, 'w', encoding='utf-8') as f:
+                    f.write(tex_content)
+
+                self.write("  🔤 XeLaTeX selected: native UTF-8/system-font support enabled\n", "cyan")
+            else:
+                latex_engine = 'pdflatex'
+
+                # Undo only modifications previously made by BSG for XeLaTeX.
+                if '% BSG-XELATEX: inputenc disabled' in tex_content:
+                    tex_content = tex_content.replace(
+                        '% BSG-XELATEX: inputenc disabled (XeLaTeX has native UTF-8 support)',
+                        r'\usepackage[utf8]{inputenc}'
+                    )
+                if '% BSG-XELATEX: fontspec added' in tex_content:
+                    tex_content = tex_content.replace(
+                        '% BSG-XELATEX: fontspec added\n',
+                        ''
+                    ).replace(
+                        r'\usepackage{fontspec}' + '\n' +
+                        r'\IfFontExistsTF{Noto Sans}{\setsansfont{Noto Sans}}{}' + '\n',
+                        ''
+                    )
+                if requested_engine == 'xelatex':
+                    self.write("  ⚠ XeLaTeX is not available; falling back to pdfLaTeX\n", "yellow")
+
+                with open(tex_file_abs, 'w', encoding='utf-8') as f:
+                    f.write(tex_content)
+
+            result['latex_engine'] = latex_engine
+            cmd = [latex_engine, '-interaction=nonstopmode', '-halt-on-error',
                    '-file-line-error', tex_file_abs]
+
+            # Prevent an old PDF from being mistaken for a successful new build.
+            pdf_file = tex_file_abs.replace('.tex', '.pdf')
+            try:
+                if os.path.exists(pdf_file):
+                    os.remove(pdf_file)
+            except OSError:
+                pass
 
             process = subprocess.Popen(
                 cmd,
@@ -26258,12 +26407,20 @@ Created by {self.__author__}
                 self.write(f"Error in Slide {result['slide_number']}\n", "yellow")
                 self.write(f"Open your .txt file and go to line {result['error_line']}\n", "green")
 
-            # Check if PDF was created
+            # A PDF is successful only when the compiler itself returned 0.
+            # Merely finding a PDF is insufficient because it may be stale.
             pdf_file = tex_file_abs.replace('.tex', '.pdf')
-            if os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0:
-                result['success'] = True
+            compiler_ok = (process.returncode == 0)
+            pdf_ok = os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0
+            result['success'] = bool(compiler_ok and pdf_ok and not error_lines)
+            if result['success']:
                 if result.get('fixed'):
                     self.write(f"\n✓ PDF generated successfully after auto-fix!\n", "green")
+            else:
+                if not compiler_ok:
+                    self.write(f"\n✗ {latex_engine} failed (return code {process.returncode}); no successful PDF was generated.\n", "red")
+                elif not pdf_ok:
+                    self.write(f"\n✗ {latex_engine} reported success but no valid PDF was produced.\n", "red")
 
             os.chdir(original_dir)
             return result
@@ -28485,7 +28642,9 @@ Created by {self.__author__}
                 self.presentation_info['institution'],
                 self.presentation_info['short_institute'],
                 self.presentation_info['date'],
-                self.presentation_info.get('logo', '')
+                self.presentation_info.get('logo', ''),
+                logo_height=self.presentation_info.get('logo_size', '2.2ex'),
+                auto_fit=self.presentation_info.get('auto_fit', True)
             )
 
         # Modify preamble for notes configuration
@@ -28782,6 +28941,37 @@ Created by {self.__author__}
                 if hasattr(self, 'footer_logo_var'):
                     self.footer_logo_var.set(logo_path)
 
+            logo_height_match = re.search(
+                r'\\def\\BSGLogoHeight\{([^}]*)\}', content
+            )
+            if logo_height_match:
+                self.presentation_info['logo_size'] = logo_height_match.group(1).strip()
+            else:
+                self.presentation_info.setdefault('logo_size', '2.2ex')
+
+            autocomplete_match = re.search(
+                r'\\def\\BSGAutoCompleteEnabled\{([^}]*)\}', content
+            )
+            if autocomplete_match:
+                self.presentation_info['autocomplete_enabled'] = (
+                    autocomplete_match.group(1).strip() not in {'0', 'false', 'False', 'off', 'OFF'}
+                )
+            else:
+                self.presentation_info['autocomplete_enabled'] = True
+
+            engine_match = re.search(
+                r'\\def\\BSGLaTeXEngine\{([^}]*)\}', content
+            )
+            if engine_match:
+                self.presentation_info['latex_engine'] = engine_match.group(1).strip().lower()
+            else:
+                self.presentation_info['latex_engine'] = 'pdflatex'
+
+            if hasattr(self, 'autocomplete_system') and hasattr(self.autocomplete_system, 'set_enabled'):
+                self.autocomplete_system.set_enabled(
+                    self.presentation_info.get('autocomplete_enabled', True)
+                )
+
             update_progress(0.7, "Parsing slides...")
 
             # ============================================================
@@ -28817,7 +29007,7 @@ Created by {self.__author__}
             # A custom title-page frame, however, legitimately appears before
             # the first \\title (after \\begin{document}).  The native parser
             # therefore cannot see it because it only starts a slide when it
-            # encounters 	itle.  Capture that frame before parsing so that
+            # encounters    itle.  Capture that frame before parsing so that
             # save_file() can write the original title page back unchanged.
             preserved_title_page = None
             try:
@@ -29247,7 +29437,9 @@ Created by {self.__author__}
             # NOT include \begin{document}.  Keep those two parts separate.
             base_preamble = get_beamer_preamble(
                 title, subtitle, author, institution, short_institute, date,
-                self.presentation_info.get('logo', '')
+                self.presentation_info.get('logo', ''),
+                logo_height=self.presentation_info.get('logo_size', '2.2ex'),
+                auto_fit=self.presentation_info.get('auto_fit', True)
             )
 
             title_page = ''
@@ -30657,7 +30849,7 @@ Created by {self.__author__}
                 self.lower_dynamic_toolbar.update_layout()
 
         # Bind mode changes (PRESERVED)
-        self.capture_mode.trace('w', toggle_anim_settings)
+        self.capture_mode.trace_add('write', toggle_anim_settings)
 
         # Initial state (PRESERVED)
         toggle_anim_settings()
@@ -32519,7 +32711,7 @@ Created by {self.__author__}
         return metadata
 
     def _parse_frame_format(self, content: str) -> list:
-        """Parse content in new format: \begin{frame} ... \end{frame}"""
+        r"""Parse content in new format: \begin{frame} ... \end{frame}"""
         slides = []
         import re
 
@@ -32654,7 +32846,7 @@ Created by {self.__author__}
         """Show presentation settings dialog with proper saving."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Presentation Settings")
-        dialog.geometry("500x450")
+        dialog.geometry("560x680")
 
         dialog.transient(self)
         dialog.grab_set()
@@ -32676,7 +32868,7 @@ Created by {self.__author__}
         entries = {}
         row = 0
         for key, value in self.presentation_info.items():
-            if key != 'logo':
+            if key not in ('logo', 'logo_size', 'autocomplete_enabled', 'latex_engine'):
                 label = ctk.CTkLabel(main_frame, text=key.title() + ":")
                 label.grid(row=row, column=0, padx=5, pady=5, sticky="e")
 
@@ -32722,6 +32914,78 @@ Created by {self.__author__}
 
         ctk.CTkButton(logo_frame, text="Browse", command=browse_logo).pack(side="left", padx=5)
 
+        # Footer logo size (height).  Stored as a TeX dimension and used by
+        # the managed Presentation Settings footer.
+        logo_size_label = ctk.CTkLabel(main_frame, text="Footer Logo Size:")
+        logo_size_label.grid(row=row + 1, column=0, padx=5, pady=5, sticky="e")
+        logo_size_entry = ctk.CTkEntry(main_frame, width=120)
+        logo_size_entry.insert(0, self.presentation_info.get('logo_size', '2.2ex'))
+        logo_size_entry.grid(row=row + 1, column=1, padx=5, pady=5, sticky="w")
+        self.create_tooltip(logo_size_entry, "Footer logo height, e.g. 2.2ex, 3ex, 0.7cm")
+
+        # Live LaTeX command Auto-Fill
+        autocomplete_var = tk.BooleanVar(
+            value=self.presentation_info.get('autocomplete_enabled', True)
+        )
+        autocomplete_check = ctk.CTkCheckBox(
+            main_frame,
+            text="Enable LaTeX Command Auto-Fill",
+            variable=autocomplete_var
+        )
+        autocomplete_check.grid(row=row + 2, column=0, columnspan=2, padx=5, pady=(10, 3), sticky="w")
+        self.create_tooltip(
+            autocomplete_check,
+            "When enabled, typing \\ opens live LaTeX command suggestions. "
+            "Continue typing to narrow the list; Enter/Tab accepts the selected command."
+        )
+
+        # Optional compiler. pdfLaTeX remains the default and unchanged.
+        engine_row = row + 3
+        ctk.CTkLabel(main_frame, text="LaTeX Engine:").grid(
+            row=engine_row, column=0, padx=5, pady=5, sticky="e"
+        )
+        available_engines = ["pdfLaTeX"]
+        xelatex_available = shutil.which("xelatex") is not None
+        if xelatex_available:
+            available_engines.append("XeLaTeX")
+        else:
+            available_engines.append("XeLaTeX (not installed)")
+
+        engine_map = {
+            "pdflatex": "pdfLaTeX",
+            "xelatex": "XeLaTeX"
+        }
+        current_engine = engine_map.get(
+            self.presentation_info.get('latex_engine', 'pdflatex').lower(),
+            "pdfLaTeX"
+        )
+        if current_engine == "XeLaTeX" and not xelatex_available:
+            current_engine = "pdfLaTeX"
+
+        engine_var = tk.StringVar(value=current_engine)
+        engine_menu = ctk.CTkOptionMenu(
+            main_frame,
+            values=available_engines,
+            variable=engine_var,
+            width=220
+        )
+        engine_menu.grid(row=engine_row, column=1, padx=5, pady=5, sticky="w")
+
+        engine_info = ctk.CTkLabel(
+            main_frame,
+            text=(
+                "pdfLaTeX: standard BSG mode.  "
+                "XeLaTeX: optional UTF-8/Unicode and system-font support."
+                if xelatex_available else
+                "XeLaTeX is not installed; pdfLaTeX remains the available compiler."
+            ),
+            font=("Arial", 9),
+            text_color="#4ECDC4",
+            justify="left",
+            wraplength=500
+        )
+        engine_info.grid(row=engine_row + 1, column=0, columnspan=2, padx=5, pady=(0, 8), sticky="w")
+
         def save_settings():
             """Save settings and persist them."""
             try:
@@ -32744,6 +33008,25 @@ Created by {self.__author__}
                 else:
                     self.presentation_info.pop('logo', None)
 
+                logo_size = logo_size_entry.get().strip() or '2.2ex'
+                if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)', logo_size):
+                    messagebox.showerror("Error", "Invalid footer logo size. Use e.g. 2.2ex, 3ex, or 0.7cm.", parent=dialog)
+                    return
+                self.presentation_info['logo_size'] = logo_size
+
+                self.presentation_info['autocomplete_enabled'] = bool(autocomplete_var.get())
+
+                selected_engine = engine_var.get()
+                if selected_engine == "XeLaTeX" and xelatex_available:
+                    self.presentation_info['latex_engine'] = 'xelatex'
+                else:
+                    self.presentation_info['latex_engine'] = 'pdflatex'
+
+                if hasattr(self, 'autocomplete_system') and hasattr(self.autocomplete_system, 'set_enabled'):
+                    self.autocomplete_system.set_enabled(
+                        self.presentation_info['autocomplete_enabled']
+                    )
+
                 # Presentation Settings logo is the authoritative logo.
                 # Keep the separate footer-settings variable synchronized so
                 # the footer preview and footer-generation paths use the same
@@ -32754,7 +33037,10 @@ Created by {self.__author__}
                 # ============================================================
                 # CRITICAL: Save settings to the file immediately
                 # ============================================================
-                self._save_presentation_settings_to_file()
+                # Persist the file first.  The save routine returns False on
+                # any write/rewrite failure; do not report success in that case.
+                if not self._save_presentation_settings_to_file():
+                    return
 
                 dialog.grab_release()
                 dialog.destroy()
@@ -32768,7 +33054,7 @@ Created by {self.__author__}
             dialog.destroy()
 
         buttons_frame = ctk.CTkFrame(main_frame)
-        buttons_frame.grid(row=row + 1, column=0, columnspan=2, pady=20)
+        buttons_frame.grid(row=row + 5, column=0, columnspan=2, pady=20)
 
         ctk.CTkButton(buttons_frame, text="Save Settings", command=save_settings).pack(side="left", padx=10)
         ctk.CTkButton(buttons_frame, text="Cancel", command=on_cancel).pack(side="left", padx=10)
@@ -32782,7 +33068,7 @@ Created by {self.__author__}
         """Persist Presentation Settings into the TXT file and synchronize the footer."""
         if not self.current_file or not os.path.exists(self.current_file):
             self.write("⚠ No file to save settings to\n", "yellow")
-            return
+            return False
 
         try:
             import re
@@ -32790,6 +33076,33 @@ Created by {self.__author__}
 
             with open(self.current_file, 'r', encoding='utf-8') as f:
                 content = f.read()
+
+            # Remove every previous footline template before installing the
+            # Presentation Settings footer. Older BSG files can contain multiple
+            # footlines; LaTeX uses the last one, making logo-size changes appear
+            # ineffective.
+            def _remove_footline_templates(text):
+                marker = r'\setbeamertemplate{footline}{'
+                while True:
+                    start = text.find(marker)
+                    if start < 0:
+                        break
+                    depth = 0
+                    i = start + len(marker) - 1
+                    while i < len(text):
+                        ch = text[i]
+                        if ch == '{' and (i == 0 or text[i-1] != '\\'):
+                            depth += 1
+                        elif ch == '}' and (i == 0 or text[i-1] != '\\'):
+                            depth -= 1
+                            if depth == 0:
+                                i += 1
+                                break
+                        i += 1
+                    text = text[:start] + text[i:]
+                text = re.sub(r'(?m)^\\def\\BSGPresentationLogo\{[^}]*\}\s*\n?', '', text)
+                text = re.sub(r'(?m)^\\def\\BSGLogoHeight\{[^}]*\}\s*\n?', '', text)
+                return text
 
             title = self.presentation_info.get('title', '').strip() or 'Presentation'
             subtitle = self.presentation_info.get('subtitle', '').strip()
@@ -32801,6 +33114,13 @@ Created by {self.__author__}
             if logo:
                 logo = os.path.abspath(os.path.expanduser(logo))
                 self.presentation_info['logo'] = logo
+
+            logo_height = str(self.presentation_info.get('logo_size', '2.2ex')).strip() or '2.2ex'
+            if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', logo_height):
+                logo_height += 'ex'
+            elif not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)', logo_height):
+                logo_height = '2.2ex'
+            self.presentation_info['logo_size'] = logo_height
 
             # Persist the selected logo as a path in a dedicated definition.
             # load_file() reads this definition back into Presentation Settings.
@@ -32814,10 +33134,13 @@ Created by {self.__author__}
 
             # Right side of the footer: logo when selected and valid; otherwise
             # the normal frame counter.
+            logo_size = self.presentation_info.get('logo_size', '2.2ex').strip() or '2.2ex'
+            if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)', logo_size):
+                logo_size = '2.2ex'
             if logo_tex:
                 right_footer = (
                     f'\\IfFileExists{{{logo_tex}}}{{'
-                    f'\\raisebox{{-0.15ex}}{{\\includegraphics[height=2.2ex]{{{logo_tex}}}}}'
+                    f'\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_size}]{{{logo_tex}}}}}'
                     f'}}{{\\insertframenumber{{}} / \\inserttotalframenumber}}'
                     f'\\hspace*{{1ex}}%'
                 )
@@ -32832,7 +33155,10 @@ Created by {self.__author__}
                 f'\\def\\insertshortauthor{{{author}}}\n'
                 f'\\def\\insertshorttitle{{{title}}}\n'
                 f'\\def\\insertshortdate{{{date}}}\n'
-                + (logo_definition + '\n' if logo_definition else '')
+                f'\\def\\BSGAutoCompleteEnabled{{{1 if self.presentation_info.get("autocomplete_enabled", True) else 0}}}\n'
+                f'\\def\\BSGLaTeXEngine{{{self.presentation_info.get("latex_engine", "pdflatex")}}}\n'
+                f'\\def\\BSGLogoHeight{{{logo_height}}}\n'
+                                + (logo_definition + '\n' if logo_definition else '')
                 + """\\makeatletter
 \\setbeamertemplate{footline}{%
   \\leavevmode%
@@ -32867,7 +33193,8 @@ Created by {self.__author__}
             generated = get_beamer_preamble(
                 title=title, subtitle=subtitle, author=author,
                 institution=institution, short_institute=short_institute,
-                date=date, logo=logo
+                date=date, logo=logo, logo_height=logo_height,
+                auto_fit=self.presentation_info.get('auto_fit', True)
             )
             marker = '\n% Title page'
             generated_preamble = generated.split(marker, 1)[0] if marker in generated else generated
@@ -32883,6 +33210,8 @@ Created by {self.__author__}
                 existing_prefix = ''
                 body = content
                 has_real_preamble = False
+
+            existing_prefix = _remove_footline_templates(existing_prefix)
 
             managed_footer_re = re.compile(
                 r'% ============================================================\n'
@@ -32922,7 +33251,14 @@ Created by {self.__author__}
                 re.DOTALL
             )
             if title_frame_re.search(body):
-                body = title_frame_re.sub(standard_title_page, body, count=1)
+                # The replacement contains literal LaTeX backslashes.  Pass it
+                # through a callable replacement so re.sub() does not interpret
+                # \begin{...}, \titlepage, etc. as replacement escapes.
+                body = title_frame_re.sub(
+                    lambda m: standard_title_page,
+                    body,
+                    count=1
+                )
             else:
                 body = standard_title_page + '\n\n' + body.lstrip()
 
@@ -32950,10 +33286,13 @@ Created by {self.__author__}
             else:
                 self.write("  ℹ No presentation logo selected\n", "cyan")
 
+            return True
+
         except Exception as e:
             self.write(f"✗ Error saving presentation settings to file: {str(e)}\n", "red")
             import traceback
             traceback.print_exc()
+            return False
 
     def debug_slide_data(self):
         """Debug function to print slide data structure"""
@@ -34320,7 +34659,7 @@ Created by {self.__author__}
         return latex
 
     def _fix_table_formatting(self, table_lines: list) -> list:
-        """
+        r"""
         Fix table formatting issues including:
         - Missing \hline at the beginning
         - Escaped newline issues (\\hline\\)
@@ -34746,7 +35085,7 @@ Created by {self.__author__}
         return latex
 
     def _extract_and_format_content_from_columns(self, content: list) -> str:
-        """
+        r"""
         Extract content from inside columns environment and format it properly.
         Preserves itemize environments and converts bullet points to \item commands.
         """
@@ -34798,7 +35137,7 @@ Created by {self.__author__}
         return '\n'.join(result)
 
     def _extract_content_from_columns(self, content: list) -> list:
-        """
+        r"""
         Extract content from inside columns environment.
         Removes the \begin{columns}, \end{columns}, and \column commands
         but preserves the actual content.
@@ -37202,7 +37541,7 @@ Created by {self.__author__}
         return fixed_preamble, resolutions
 
     def process_content_with_features(self, content):
-        """
+        r"""
         Process content with full feature support including itemize/enumerate.
         PRESERVES existing LaTeX commands and environments.
         Only converts plain text bullet points (- and •) to \item.
@@ -37738,7 +38077,7 @@ Created by {self.__author__}
 
     @staticmethod
     def fix_special_characters(text):
-        """
+        r"""
         Fix special character issues in LaTeX content.
 
         Handles:
