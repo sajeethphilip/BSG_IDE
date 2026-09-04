@@ -17906,7 +17906,17 @@ class BeamerSlideEditor(ctk.CTk):
                 messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.", parent=self)
                 return
 
-            self.load_file(text_file)
+            # IMPORTANT: When importing a real Beamer TeX file, the TXT source
+            # must inherit the COMPLETE original preamble verbatim by default.
+            # load_file() normally merges a genuine preamble with the BSG default;
+            # that is useful for ordinary TXT files, but it would silently alter
+            # an imported TeX preamble.  Tell load_file() to preserve this imported
+            # preamble exactly for this one load operation.
+            self._preserve_imported_tex_preamble = True
+            try:
+                self.load_file(text_file)
+            finally:
+                self._preserve_imported_tex_preamble = False
 
             self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
             self.write(f"  Loaded {len(self.slides)} slides\n", "green")
@@ -28952,43 +28962,60 @@ Created by {self.__author__}
             if preamble_match and has_real_preamble:
                 self.preamble_from_file = file_preamble
 
-                # Preserve the existing genuine preamble through the normal
-                # merge path.
-                self.write("\n" + "="*60 + "\n", "cyan")
-                self.write("MERGE PREAMBLE WITH FILE\n", "cyan")
-                self.write("="*60 + "\n", "cyan")
-
-                self._is_loading = False
-                update_progress(0.35, "Merging preamble...")
-                try:
-                    merged_preamble = self.merge_preamble_with_file(filename)
-                finally:
-                    self._is_loading = True
-
-                update_progress(0.5, "Updating file with merged preamble...")
-                doc_pos = content.find('\\begin{document}')
-                if doc_pos != -1:
-                    document_body = content[doc_pos:]
-                    new_content = merged_preamble + "\n\n" + document_body
-                    with open(filename, 'w', encoding='utf-8') as f:
-                        f.write(new_content)
-                    self.write(f"✓ Updated {os.path.basename(filename)} with merged preamble\n", "green")
-                    content = new_content
-                    self.preamble_from_file = merged_preamble
-                    self.preamble_origin = 'merged'
-                    self.custom_preamble = merged_preamble
+                # A TeX import is different from an ordinary TXT load.  The
+                # original TeX preamble is authoritative and must be copied to
+                # the generated TXT file unchanged.  In particular, do not run
+                # the normal default-preamble merge here, because that changes
+                # the imported source before the user has chosen to modify it.
+                if getattr(self, '_preserve_imported_tex_preamble', False):
+                    self.preamble_origin = 'tex_import'
+                    self.custom_preamble = file_preamble
                     self.using_custom_preamble = True
+                    self.write("\n" + "="*60 + "\n", "cyan")
+                    self.write("PRESERVING ORIGINAL TEX PREAMBLE\n", "cyan")
+                    self.write("="*60 + "\n", "cyan")
+                    self.write(
+                        f"✓ Preserved complete imported preamble ({len(file_preamble)} chars)\n",
+                        "green"
+                    )
                 else:
-                    self.write("⚠ Could not find \begin{document} in file, adding it\n", "yellow")
-                    new_content = merged_preamble + "\n\n\\begin{document}\n\n" + content
-                    with open(filename, 'w', encoding='utf-8') as f:
-                        f.write(new_content)
-                    self.write(f"✓ Added preamble and \begin{{document}} to {os.path.basename(filename)}\n", "green")
-                    content = new_content
-                    self.preamble_from_file = merged_preamble
-                    self.preamble_origin = 'merged'
-                    self.custom_preamble = merged_preamble
-                    self.using_custom_preamble = True
+                    # Preserve the existing genuine preamble through the normal
+                    # merge path.
+                    self.write("\n" + "="*60 + "\n", "cyan")
+                    self.write("MERGE PREAMBLE WITH FILE\n", "cyan")
+                    self.write("="*60 + "\n", "cyan")
+
+                    self._is_loading = False
+                    update_progress(0.35, "Merging preamble...")
+                    try:
+                        merged_preamble = self.merge_preamble_with_file(filename)
+                    finally:
+                        self._is_loading = True
+
+                    update_progress(0.5, "Updating file with merged preamble...")
+                    doc_pos = content.find('\\begin{document}')
+                    if doc_pos != -1:
+                        document_body = content[doc_pos:]
+                        new_content = merged_preamble + "\n\n" + document_body
+                        with open(filename, 'w', encoding='utf-8') as f:
+                            f.write(new_content)
+                        self.write(f"✓ Updated {os.path.basename(filename)} with merged preamble\n", "green")
+                        content = new_content
+                        self.preamble_from_file = merged_preamble
+                        self.preamble_origin = 'merged'
+                        self.custom_preamble = merged_preamble
+                        self.using_custom_preamble = True
+                    else:
+                        self.write("⚠ Could not find \begin{document} in file, adding it\n", "yellow")
+                        new_content = merged_preamble + "\n\n\\begin{document}\n\n" + content
+                        with open(filename, 'w', encoding='utf-8') as f:
+                            f.write(new_content)
+                        self.write(f"✓ Added preamble and \begin{{document}} to {os.path.basename(filename)}\n", "green")
+                        content = new_content
+                        self.preamble_from_file = merged_preamble
+                        self.preamble_origin = 'merged'
+                        self.custom_preamble = merged_preamble
+                        self.using_custom_preamble = True
             else:
                 # No genuine Beamer preamble.  Keep the document body intact in
                 # memory and let get_custom_preamble()/save_file() generate the
@@ -29852,13 +29879,74 @@ Created by {self.__author__}
         new_preamble = editor.preamble
 
         if new_preamble is not None:
-            # Store the custom preamble
+            # Store the preamble in memory first.  This keeps the existing
+            # in-memory behaviour unchanged for unsaved presentations.
             self.custom_preamble = new_preamble
             self.using_custom_preamble = True
             self.preamble_origin = 'custom'
             self.preamble_from_file = new_preamble
-            messagebox.showinfo("Success", "Preamble updated successfully!")
-            self.write("✓ Custom preamble saved and will be used for all future PDF generation\n", "green")
+
+            # IMPORTANT: When a presentation already has a backing TXT file,
+            # persist the newly applied preamble immediately.  In particular,
+            # this is required when the user presses Reset to Default and then
+            # Apply: otherwise memory contains the new preamble while the TXT
+            # file still contains the old one, and subsequent operations that
+            # reload/read the file can silently restore the old preamble.
+            if self.current_file and os.path.exists(self.current_file):
+                try:
+                    with open(self.current_file, 'r', encoding='utf-8') as f:
+                        file_content = f.read()
+
+                    doc_match = re.search(
+                        r'\\begin\{document\}', file_content
+                    )
+
+                    if doc_match:
+                        # Preserve everything from \begin{document} onward
+                        # exactly as it is; only replace the preamble.
+                        document_body = file_content[doc_match.start():]
+                        saved_content = new_preamble.rstrip() + "\n\n" + document_body.lstrip()
+                    else:
+                        # A native TXT file may not yet have a LaTeX document
+                        # wrapper.  Preserve its slide content and make the
+                        # saved file a valid hybrid document rather than
+                        # discarding the existing slides.
+                        saved_content = (
+                            new_preamble.rstrip() +
+                            "\n\n\\begin{document}\n\n" +
+                            file_content.lstrip() +
+                            "\n\n\\end{document}\n"
+                        )
+
+                    with open(self.current_file, 'w', encoding='utf-8') as f:
+                        f.write(saved_content)
+
+                    self.preamble_from_file = new_preamble
+                    self.preamble_origin = 'file'
+                    self.write(
+                        f"✓ Preamble and TXT file updated: {os.path.basename(self.current_file)}\n",
+                        "green"
+                    )
+                    messagebox.showinfo(
+                        "Success",
+                        "Preamble updated successfully and saved to the current text file!"
+                    )
+                except Exception as e:
+                    # Keep the in-memory update, but make the persistence
+                    # failure explicit rather than silently losing the change.
+                    self.write(
+                        f"⚠ Preamble updated in memory, but could not save the text file: {str(e)}\n",
+                        "yellow"
+                    )
+                    messagebox.showwarning(
+                        "Preamble Updated",
+                        "The preamble was updated in memory, but could not be saved to the current text file.\n\n"
+                        f"Error: {str(e)}"
+                    )
+            else:
+                messagebox.showinfo("Success", "Preamble updated successfully!")
+                self.write("✓ Custom preamble saved and will be used for all future PDF generation\n", "green")
+
             self.write("  To reset to default, use the 'Reset to Default' button in the editor\n", "cyan")
 
     def _get_safe_current_preamble(self) -> str:
@@ -31130,15 +31218,17 @@ Created by {self.__author__}
             doc_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
 
             if doc_match:
-                preamble = doc_match.group(1).strip()
+                # IMPORTANT: keep the imported preamble as a separate, immutable
+                # source string.  The TXT file must receive the COMPLETE original
+                # TeX preamble, not a reconstructed/merged/normalized version.
+                # In particular, do not run _tex_preamble_to_bsg_text() here: that
+                # changes macro bodies (e.g. #1 -> ##1) and therefore is not a
+                # verbatim copy of the source preamble.
+                original_preamble = doc_match.group(1)
+                preamble = original_preamble
                 document_body = tex_content[doc_match.end():]
                 has_begin_document = True
-                print(f"✓ Extracted preamble ({len(preamble)} chars)")
-
-                # BSG TEXT has a deliberate representation for tcolorbox
-                # parameters: ##1/##2. Preserve that representation during
-                # TeX -> TEXT import; normal preamble macros remain #1/#2.
-                preamble = BeamerSlideEditor._tex_preamble_to_bsg_text(preamble)
+                print(f"✓ Extracted original preamble ({len(original_preamble)} chars)")
 
                 # ============================================================
                 # Remove ALL \begin{document} from document body
@@ -31192,95 +31282,28 @@ Created by {self.__author__}
                 add_warning(1, "No preamble found, using default", "")
 
             # ============================================================
-            # Remove any \begin{document} that might still be in the preamble
+            # Keep the original imported preamble untouched.
+            # The regex above already stopped immediately before the first
+            # \begin{document}, so there is nothing to remove here.
             # ============================================================
-            preamble = re.sub(r'\\begin\{document\}\s*', '', preamble)
+            if doc_match:
+                preamble = original_preamble
 
             # ============================================================
-            # EXTRACT DEFINITIONS FROM IMPORTED PREAMBLE
+            # IMPORTANT: DO NOT RECONSTRUCT OR MERGE THE IMPORTED PREAMBLE
             # ============================================================
-            print("\n📋 Extracting preamble definitions from imported file...")
-
-            # Use the static method from BeamerSlideEditor
-            imported_defs = BeamerSlideEditor.extract_preamble_definitions_static(preamble)
-            print(f"  ✓ Found {len(imported_defs['packages'])} packages")
-            print(f"  ✓ Found {len(imported_defs['colors'])} colors")
-            print(f"  ✓ Found {len(imported_defs['tikzlibraries'])} TikZ libraries")
-            print(f"  ✓ Found {len(imported_defs['custom_commands'])} custom commands")
-            print(f"  ✓ Theme: {imported_defs['theme'] or 'default'}")
-            print(f"  ✓ Color theme: {imported_defs['colortheme'] or 'default'}")
-
-            # ============================================================
-            # GET DEFAULT DEFINITIONS
-            # ============================================================
-            print("\n📋 Getting default preamble definitions...")
-            default_preamble = get_beamer_preamble(
-                "Title", "Subtitle", "Author", "Institution", "Short Inst", "\\today"
-            )
-            default_preamble = BeamerSlideEditor._tex_preamble_to_bsg_text(default_preamble)
-            default_defs = BeamerSlideEditor.extract_preamble_definitions_static(default_preamble)
-
-            # ============================================================
-            # MERGE DEFINITIONS
-            # ============================================================
-            print("\n🔧 Merging definitions...")
-
-            # Merge the definitions
-            merged_defs = {
-                'packages': list(set(default_defs['packages'] + imported_defs['packages'])),
-                'package_options': {**default_defs['package_options'], **imported_defs['package_options']},
-                'colors': {**default_defs['colors'], **imported_defs['colors']},
-                'colorlets': {**default_defs['colorlets'], **imported_defs['colorlets']},
-                'tikzlibraries': list(set(default_defs['tikzlibraries'] + imported_defs['tikzlibraries'])),
-                'pgfplotsset': default_defs['pgfplotsset'] + imported_defs['pgfplotsset'],
-                'beamercolors': default_defs['beamercolors'] + imported_defs['beamercolors'],
-                'beamerfonts': default_defs['beamerfonts'] + imported_defs['beamerfonts'],
-                'beamertemplates': default_defs['beamertemplates'] + imported_defs['beamertemplates'],
-                'beamersizes': default_defs['beamersizes'] + imported_defs['beamersizes'],
-                'custom_commands': default_defs['custom_commands'] + imported_defs['custom_commands'],
-                'tcolorboxes': list(dict.fromkeys(default_defs.get('tcolorboxes', []) + imported_defs.get('tcolorboxes', []))),
-                'def_commands': default_defs['def_commands'] + imported_defs['def_commands'],
-                'let_commands': default_defs['let_commands'] + imported_defs['let_commands'],
-                'theme': imported_defs['theme'] or default_defs['theme'],
-                'colortheme': imported_defs['colortheme'] or default_defs['colortheme'],
-                'fonttheme': imported_defs['fonttheme'] or default_defs['fonttheme'],
-                'sisetup': imported_defs['sisetup'] or default_defs['sisetup'],
-                'hypersetup': imported_defs['hypersetup'] or default_defs['hypersetup'],
-                'arraystretch': imported_defs['arraystretch'] or default_defs['arraystretch'],
-                'parskip': imported_defs['parskip'] or default_defs['parskip'],
-                'itemsep': imported_defs['itemsep'] or default_defs['itemsep'],
-                'topsep': imported_defs['topsep'] or default_defs['topsep'],
-                'footline': imported_defs['footline'] or default_defs['footline'],
-                'logo': imported_defs['logo'] or default_defs['logo'],
-                'title': imported_defs['title'] or default_defs['title'],
-                'subtitle': imported_defs['subtitle'] or default_defs['subtitle'],
-                'author': imported_defs['author'] or default_defs['author'],
-                'institute': imported_defs['institute'] or default_defs['institute'],
-                'date': imported_defs['date'] or default_defs['date'],
-                'shortinstitute': imported_defs['shortinstitute'] or default_defs['shortinstitute'],
-                'note_page': imported_defs['note_page'] or default_defs['note_page'],
-                'navigation_symbols': imported_defs['navigation_symbols'] or default_defs['navigation_symbols'],
-                'other_settings': default_defs['other_settings'] + imported_defs['other_settings'],
-                'critical_fixes': default_defs['critical_fixes'] + imported_defs['critical_fixes'],
-            }
-
-            print(f"  ✓ Merged {len(merged_defs['packages'])} packages")
-            print(f"  ✓ Merged {len(merged_defs['colors'])} colors")
-
-            # ============================================================
-            # GENERATE MERGED PREAMBLE
-            # ============================================================
-            print("\n🔧 Generating merged preamble...")
-            merged_preamble = BeamerSlideEditor.generate_merged_preamble(merged_defs)
-
-            # ============================================================
-            # FIX CUSTOM COMMANDS
-            # ============================================================
-            print("\n🔧 Fixing custom commands...")
-            merged_preamble = BeamerSlideEditor.fix_custom_commands_with_guards(merged_preamble)
-            # generate_merged_preamble historically appends \begin{document}; the
-            # TEX→TEXT output must contain it exactly once, after the complete preamble.
-            merged_preamble = re.sub(r'\\begin\{document\}\s*', '', merged_preamble).rstrip()
+            # The complete original TeX preamble is the authoritative source
+            # during TEX -> TEXT import.  The definition-extraction/merge path
+            # used elsewhere in the IDE is intentionally NOT used here because
+            # it can silently omit arbitrary LaTeX constructs that the parser
+            # does not understand (custom macros, environments, hooks, comments,
+            # package-specific settings, conditionals, etc.).
+            #
+            # Parsing may inspect the preamble for metadata elsewhere, but the
+            # bytes written to the TXT must come directly from original_preamble.
+            imported_defs = {}
+            merged_preamble = original_preamble if has_begin_document else preamble
+            print(f"✓ Using complete original preamble unchanged ({len(merged_preamble)} chars)")
 
             # ========== FIND FRAMES ==========
             # Do not use a single regex for complete frame parsing.  Frame bodies
@@ -31555,12 +31578,14 @@ Created by {self.__author__}
             slides = deduped_slides
 
             # ========== WRITE TO OUTPUT FILE ==========
+            # IMPORTANT: the original TeX preamble is copied byte-for-byte as
+            # the prefix of the TXT file.  The blank separator added before
+            # \begin{document} is NOT part of the preamble and is therefore
+            # deliberately excluded from the integrity comparison below.
+            output_preamble = original_preamble if has_begin_document else preamble
             with open(output_path, 'w', encoding='utf-8') as f:
-                # Write the merged preamble (without \begin{document})
-                f.write(merged_preamble)
+                f.write(output_preamble)
                 f.write("\n\n")
-
-                # Write \begin{document} exactly ONCE
                 f.write("\\begin{document}\n\n")
 
                 for slide in slides:
@@ -31585,8 +31610,49 @@ Created by {self.__author__}
 
                 f.write("\\end{document}\n")
 
+            # ============================================================
+            # CRITICAL VALIDATION: verify that the TXT begins with the
+            # ORIGINAL TEX PREAMBLE exactly.  Do NOT extract it with
+            # '(.*?)\\begin{document}' and compare that whole substring,
+            # because the TXT writer intentionally adds a separator newline
+            # before \begin{document}.
+            # ============================================================
+            if has_begin_document:
+                with open(output_path, 'r', encoding='utf-8') as vf:
+                    written_content = vf.read()
+
+                begin_pos = written_content.find('\\begin{document}')
+                if begin_pos < 0:
+                    raise RuntimeError(
+                        "TEX import preamble integrity check failed: "
+                        "\\begin{document} was not written to the TXT file"
+                    )
+
+                written_preamble = written_content[:begin_pos]
+                if not written_preamble.startswith(original_preamble):
+                    raise RuntimeError(
+                        "TEX import preamble integrity check failed: "
+                        "the original TeX preamble was not copied intact to the TXT file"
+                    )
+
+                # The only permitted bytes between the exact original preamble
+                # and \begin{document} are the separator newlines added by the
+                # TXT container format.
+                separator = written_preamble[len(original_preamble):]
+                if separator.strip():
+                    raise RuntimeError(
+                        "TEX import preamble integrity check failed: "
+                        "unexpected content was inserted between the original "
+                        "preamble and \begin{document}"
+                    )
+
+                print(
+                    f"✓ VERIFIED: complete original TeX preamble copied intact "
+                    f"({len(original_preamble)} chars)"
+                )
+
             print(f"\n✓ Converted {len(slides)} slides from {tex_file_path}")
-            print(f"✓ Preamble preserved and merged in output file")
+            print(f"✓ Complete original TeX preamble copied to output file")
             print(f"✓ \\begin{{document}} included" + (" (from original)" if has_begin_document else " (added)"))
 
             if errors:
