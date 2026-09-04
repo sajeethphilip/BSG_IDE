@@ -12289,8 +12289,34 @@ class PreambleEditor(ctk.CTkToplevel):
                                        "You have unsaved changes. Are you sure you want to reset to default?"):
                 return
 
+        # The generated default preamble may contain a historical title-page
+        # frame.  The IDE slide model owns the title page, so never place that
+        # frame into the editable/saved preamble.  The frame in the default
+        # preamble is marked explicitly with ``% Title page`` and may contain
+        # literal title text rather than \titlepage/\maketitle.
+        reset_preamble = self.default_preamble
+
+        reset_preamble = re.sub(
+            r'(?ms)^\s*%\s*Title page\s*\n'
+            r'\s*\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+            r'\\end\{frame\}\s*',
+            '\n',
+            reset_preamble,
+            count=1
+        )
+
+        # Conservative fallback for unmarked title-page frames: only remove a
+        # frame that actually contains the title-page commands.
+        reset_preamble = re.sub(
+            r'(?ms)\s*\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+            r'(?:\\titlepage|\\maketitle).*?\\end\{frame\}\s*',
+            '\n',
+            reset_preamble,
+            count=1
+        )
+
         self.editor.delete('1.0', 'end')
-        self.editor.insert('1.0', self.default_preamble)
+        self.editor.insert('1.0', reset_preamble.strip())
         self.modified = False
         self.is_custom = False
         self.update_status()
@@ -17909,6 +17935,74 @@ class BeamerSlideEditor(ctk.CTk):
             traceback.print_exc()
             messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.", parent=self)
 
+
+    @staticmethod
+    def _tex_preamble_to_bsg_text(preamble: str) -> str:
+        """Encode TeX macro parameters inside newtcolorbox bodies for BSG TEXT."""
+        if not preamble or '\\newtcolorbox' not in preamble:
+            return preamble
+
+        import re
+
+        def match_balanced(src, start, opening='{', closing='}'):
+            depth = 0
+            escaped = False
+            for i in range(start, len(src)):
+                ch = src[i]
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\\\':
+                    escaped = True
+                    continue
+                if ch == opening:
+                    depth += 1
+                elif ch == closing:
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            return -1
+
+        result = preamble
+        offset = 0
+        while True:
+            m = re.search(r'\\newtcolorbox\b', result[offset:])
+            if not m:
+                break
+            start = offset + m.start()
+            i = offset + m.end()
+            n = len(result)
+            while i < n and result[i].isspace():
+                i += 1
+            if i >= n or result[i] != '{':
+                offset = start + len('\\newtcolorbox')
+                continue
+            e = match_balanced(result, i)
+            if e < 0:
+                break
+            i = e + 1
+            for _ in range(2):
+                while i < n and result[i].isspace():
+                    i += 1
+                if i < n and result[i] == '[':
+                    e = match_balanced(result, i, '[', ']')
+                    if e < 0:
+                        break
+                    i = e + 1
+            while i < n and result[i].isspace():
+                i += 1
+            if i >= n or result[i] != '{':
+                offset = start + len('\\newtcolorbox')
+                continue
+            e = match_balanced(result, i)
+            if e < 0:
+                break
+            body = result[i:e + 1]
+            body = re.sub(r'(?<!#)#(\d+)', r'##\1', body)
+            result = result[:i] + body + result[e + 1:]
+            offset = i + len(body)
+
+        return result
 
     def extract_preamble_info_safe(self, content: str) -> dict:
         """Extract preamble information with safer regex patterns"""
@@ -26070,8 +26164,52 @@ Created by {self.__author__}
                 self.write(traceback.format_exc(), "red")
             messagebox.showerror("Error", f"Error generating PDF:\n{str(e)}")
 
+    def _prepare_tex_for_compilation(self, tex_file: str):
+        """Read the TeX file and determine the LaTeX engine without modifying it.
+
+        The PDF compiler must receive the exact TeX file produced by the generator.
+        This method therefore deliberately performs NO normalization, rewriting,
+        auto-fixing, or guard transformation.  It only reads the file and selects
+        the requested compiler.
+        """
+        tex_file_abs = os.path.abspath(tex_file)
+
+        if not os.path.isfile(tex_file_abs):
+            raise FileNotFoundError(f"TeX file not found: {tex_file_abs}")
+
+        with open(tex_file_abs, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+
+        # Prefer the engine explicitly recorded in the generated TeX.  Fall back
+        # to Presentation Settings for older TeX files that have no marker.
+        marker = re.search(
+            r'(?m)^\\def\\BSGLatexEngine\{(pdflatex|xelatex)\}\s*$', content
+        )
+        engine = marker.group(1) if marker else str(
+            self.presentation_info.get('latex_engine', 'pdflatex')
+        ).lower()
+
+        if engine not in ('pdflatex', 'xelatex'):
+            engine = 'pdflatex'
+
+        compiler_path = shutil.which(engine)
+        if not compiler_path:
+            raise RuntimeError(
+                f"{engine} is selected for this presentation, but the executable "
+                f"'{engine}' was not found on PATH."
+            )
+
+        return content, engine
+
     def run_pdflatex_with_detailed_errors(self, tex_file: str) -> dict:
-        """Run pdflatex and capture detailed error information with precise slide-based line mapping"""
+        """Compile the generated TeX without changing it.
+
+        The compiler's return code is authoritative.  A valid PDF produced by a
+        zero-return compiler is a successful build even if the textual compiler
+        output contains a line that happens to begin with '!'.  stdout and stderr
+        are consumed together so the subprocess cannot deadlock on a full stderr
+        pipe.
+        """
         result = {
             'success': False,
             'errors': [],
@@ -26088,348 +26226,294 @@ Created by {self.__author__}
             'latex_engine': self.presentation_info.get('latex_engine', 'pdflatex')
         }
 
+        tex_file_abs = os.path.abspath(tex_file)
+        tex_dir = os.path.dirname(tex_file_abs) or os.getcwd()
+        pdf_file = os.path.splitext(tex_file_abs)[0] + '.pdf'
+        log_file = os.path.splitext(tex_file_abs)[0] + '.log'
+        process = None
+
         try:
-            tex_dir = os.path.dirname(tex_file) or '.'
-            original_dir = os.getcwd()
-            os.chdir(tex_dir)
+            # Read only.  No compiler-side normalization is allowed here.
+            tex_content, latex_engine = self._prepare_tex_for_compilation(tex_file_abs)
+            tex_lines = tex_content.splitlines(True)
+            result['latex_engine'] = latex_engine
 
-            tex_file_abs = os.path.abspath(tex_file)
+            self.write(
+                f"  ✓ Using {latex_engine}; compiling the generated TeX unchanged\n",
+                "cyan"
+            )
 
-            # Read the current TeX content
-            with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
-                tex_lines = f.readlines()
-                tex_content = ''.join(tex_lines)
-
-            # ========== AGGRESSIVE PRE-PROCESSING: Fix common issues ==========
-            self.write("\n🔧 Running aggressive pre-processing to fix common LaTeX errors...\n", "cyan")
-
-            fixed_content = tex_content
-            fixes_applied = []
-
-            # Fix 1: Fix unclosed math in titles (critical for the Open-Circuit Voltage error)
-            import re
-
-            lines = fixed_content.split('\n')
-            fixed_lines = []
-
-            for i, line in enumerate(lines):
-                # Check for title with unclosed math mode
-                if '\\title' in line:
-                    dollar_count = line.count('$')
-                    if dollar_count % 2 != 0:
-                        line = line.rstrip() + '$'
-                        fixes_applied.append(f"Line {i+1}: Added missing $ to close math mode in title")
-                        self.write(f"  ✓ Fixed unclosed math in title at line {i+1}\n", "green")
-
-                # Check for frame titles with unclosed math
-                elif '\\begin{frame}' in line and '$' in line:
-                    dollar_count = line.count('$')
-                    if dollar_count % 2 != 0:
-                        line = line.rstrip() + '$'
-                        fixes_applied.append(f"Line {i+1}: Added missing $ to close math mode in frame title")
-                        self.write(f"  ✓ Fixed unclosed math in frame title at line {i+1}\n", "green")
-
-                fixed_lines.append(line)
-
-            if fixes_applied:
-                fixed_content = '\n'.join(fixed_lines)
-                with open(tex_file_abs, 'w', encoding='utf-8') as f:
-                    f.write(fixed_content)
-                result['fixed'] = True
-                result['fix_description'] = '; '.join(fixes_applied[:5])
-
-                # Also update the TXT file
-                txt_file = tex_file_abs.replace('.tex', '.txt')
-                if os.path.exists(txt_file):
-                    with open(txt_file, 'r', encoding='utf-8') as f:
-                        txt_content = f.read()
-                    txt_lines = txt_content.split('\n')
-                    fixed_txt_lines = []
-                    for line in txt_lines:
-                        if '\\title' in line and line.count('$') % 2 != 0:
-                            line = line.rstrip() + '$'
-                        fixed_txt_lines.append(line)
-                    with open(txt_file, 'w', encoding='utf-8') as f:
-                        f.write('\n'.join(fixed_txt_lines))
-                    self.write("  ✓ Also updated TXT file with fixes\n", "green")
-
-                # Re-read the fixed content
-                with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
-                    tex_lines = f.readlines()
-                    tex_content = ''.join(tex_lines)
-
-            # Build detailed slide map with line ranges
+            # Build maps before compilation so any genuine LaTeX error can still
+            # be mapped back to the corresponding slide/TXT source.
             tex_slide_map = self._build_detailed_tex_slide_map(tex_lines)
 
-            # Also build TXT slide map for mapping back to source
-            txt_file = tex_file.replace('.tex', '.txt')
+            txt_file = os.path.splitext(tex_file_abs)[0] + '.txt'
             txt_slide_map = {}
             txt_lines = []
             if os.path.exists(txt_file):
-                with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                with open(txt_file, 'r', encoding='utf-8', errors='replace') as f:
                     txt_lines = f.readlines()
                 txt_slide_map = self._build_detailed_txt_slide_map(txt_lines)
 
-            # Select the requested LaTeX engine. pdfLaTeX remains the default.
-            # XeLaTeX is optional and is useful for direct UTF-8 text and system fonts.
-            requested_engine = str(self.presentation_info.get('latex_engine', 'pdflatex')).lower()
-            if requested_engine == 'xelatex' and shutil.which('xelatex'):
-                latex_engine = 'xelatex'
-
-                # XeLaTeX natively handles UTF-8.  Make only BSG-managed,
-                # reversible changes to the generated TeX file.
-                if r'\usepackage[utf8]{inputenc}' in tex_content:
-                    tex_content = tex_content.replace(
-                        r'\usepackage[utf8]{inputenc}',
-                        '% BSG-XELATEX: inputenc disabled (XeLaTeX has native UTF-8 support)'
-                    )
-                if '% BSG-XELATEX: fontspec added' not in tex_content and r'\usepackage{fontspec}' not in tex_content:
-                    # fontspec must follow the document class.
-                    m = re.search(r'(?m)^\s*\\documentclass(?:\[[^\n]*\])?\{[^\n]*\}[^\n]*\n?', tex_content)
-                    if m:
-                        insertion = (
-                            '% BSG-XELATEX: fontspec added\n'
-                            r'\usepackage{fontspec}' + '\n'
-                            r'\IfFontExistsTF{Noto Sans}{\setsansfont{Noto Sans}}{}' + '\n'
-                        )
-                        tex_content = tex_content[:m.end()] + insertion + tex_content[m.end():]
-                with open(tex_file_abs, 'w', encoding='utf-8') as f:
-                    f.write(tex_content)
-
-                self.write("  🔤 XeLaTeX selected: native UTF-8/system-font support enabled\n", "cyan")
-            else:
-                latex_engine = 'pdflatex'
-
-                # Undo only modifications previously made by BSG for XeLaTeX.
-                if '% BSG-XELATEX: inputenc disabled' in tex_content:
-                    tex_content = tex_content.replace(
-                        '% BSG-XELATEX: inputenc disabled (XeLaTeX has native UTF-8 support)',
-                        r'\usepackage[utf8]{inputenc}'
-                    )
-                if '% BSG-XELATEX: fontspec added' in tex_content:
-                    tex_content = tex_content.replace(
-                        '% BSG-XELATEX: fontspec added\n',
-                        ''
-                    ).replace(
-                        r'\usepackage{fontspec}' + '\n' +
-                        r'\IfFontExistsTF{Noto Sans}{\setsansfont{Noto Sans}}{}' + '\n',
-                        ''
-                    )
-                if requested_engine == 'xelatex':
-                    self.write("  ⚠ XeLaTeX is not available; falling back to pdfLaTeX\n", "yellow")
-
-                with open(tex_file_abs, 'w', encoding='utf-8') as f:
-                    f.write(tex_content)
-
-            result['latex_engine'] = latex_engine
-            cmd = [latex_engine, '-interaction=nonstopmode', '-halt-on-error',
-                   '-file-line-error', tex_file_abs]
-
-            # Prevent an old PDF from being mistaken for a successful new build.
-            pdf_file = tex_file_abs.replace('.tex', '.pdf')
-            try:
-                if os.path.exists(pdf_file):
+            # Remove only the previous PDF.  This prevents a stale PDF from being
+            # reported as the result of the current compilation.
+            if os.path.exists(pdf_file):
+                try:
                     os.remove(pdf_file)
-            except OSError:
-                pass
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Could not remove the previous PDF before compilation: {exc}"
+                    )
+
+            compile_started = time.time()
+            compiler_path = shutil.which(latex_engine)
+            if not compiler_path:
+                raise RuntimeError(f"LaTeX compiler not found: {latex_engine}")
+
+            # Use cwd instead of os.chdir(): changing the IDE process-wide working
+            # directory can affect unrelated application functionality.
+            cmd = [
+                compiler_path,
+                '-interaction=nonstopmode',
+                '-halt-on-error',
+                '-file-line-error',
+                tex_file_abs
+            ]
+
+            self.write(f"  Compiler: {compiler_path}\n", "white")
+            self.write(f"  Working directory: {tex_dir}\n", "white")
 
             process = subprocess.Popen(
                 cmd,
+                cwd=tex_dir,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,
                 universal_newlines=True,
-                errors='replace'
+                errors='replace',
+                bufsize=1
             )
 
+            try:
+                compiler_output, _ = process.communicate(timeout=300)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                compiler_output, _ = process.communicate()
+                result['errors'].append(
+                    f"{latex_engine} timed out after 300 seconds."
+                )
+                self.write(
+                    f"\n✗ {latex_engine} timed out after 300 seconds.\n",
+                    "red"
+                )
+                return result
+
+            return_code = process.returncode
+            output_lines = compiler_output.splitlines(True)
+
+            # Display compiler output while retaining the complete stream for
+            # diagnostics.  stdout and stderr were deliberately merged above.
+            for line in output_lines:
+                stripped = line.strip()
+                if stripped.startswith('!'):
+                    self.write(line, "red")
+                elif 'Warning' in line or 'warning' in line:
+                    self.write(line, "yellow")
+                elif not line.startswith('[') and not line.startswith('('):
+                    self.write(line, "white")
+
+            # Track slide progress from normal Beamer/pdfTeX output.
+            last_slide_compiled = 0
+            slide_pattern = r'\[(\d+)\]'
+            for line in output_lines:
+                slide_match = re.search(slide_pattern, line)
+                if slide_match and 'pdfTeX warning' not in line:
+                    slide_num = int(slide_match.group(1))
+                    if slide_num > last_slide_compiled:
+                        last_slide_compiled = slide_num
+                        result['last_successful_slide'] = slide_num
+
+            # Parse genuine fatal/error information for diagnostics.  These
+            # findings do NOT override a successful compiler return code.
             error_lines = []
+            all_error_lines = []
             error_context_lines = []
             in_error_context = False
-            last_slide_compiled = 0
-            actual_error_tex_line = None
-            error_message = ""
+            error_message = ''
 
-            # Store all line numbers found in the log
-            all_error_lines = []
-            line_context_map = {}  # Map line number to context
+            for line in output_lines:
+                line_match = re.search(r'l\.(\d+)', line)
+                if line_match:
+                    all_error_lines.append(int(line_match.group(1)))
 
-            slide_pattern = r'\[(\d+)\]'
+                if line.startswith('!'):
+                    error_message = line.strip()
+                    error_lines.append(error_message)
+                    in_error_context = True
+                    continue
 
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
+                if in_error_context:
+                    stripped = line.strip()
+                    if stripped:
+                        error_context_lines.append(stripped)
+                    if len(error_context_lines) >= 20:
+                        in_error_context = False
 
-                if line:
-                    # Track successfully compiled slides
-                    slide_match = re.search(slide_pattern, line)
-                    if slide_match and ']' in line and 'pdfTeX warning' not in line:
-                        slide_num = int(slide_match.group(1))
-                        if slide_num > last_slide_compiled:
-                            last_slide_compiled = slide_num
-                            result['last_successful_slide'] = slide_num
+                if 'textendash' in line and ('Warning' in line or 'warning' in line):
+                    result['has_math_warning'] = True
 
-                    # CRITICAL: Collect ALL line numbers from the log
-                    line_match = re.search(r'l\.(\d+)', line)
-                    if line_match:
-                        found_line = int(line_match.group(1))
-                        all_error_lines.append(found_line)
-                        line_context_map[found_line] = line
+            result['errors'] = error_lines
+            result['error_context'] = error_context_lines
 
-                    # Capture error messages - look for fatal errors
-                    if line.startswith('!'):
-                        error_message = line.strip()
-                        error_lines.append(error_message)
-                        result['errors'].append(error_message)
-                        in_error_context = True
-                        self.write(line, "red")
+            if all_error_lines:
+                result['error_line_tex'] = all_error_lines[-1]
 
-                        # If this is a fatal error, this is our target
-                        if 'Fatal error' in line or 'no output PDF' in line:
-                            # Use the last line number collected
-                            if all_error_lines:
-                                actual_error_tex_line = all_error_lines[-1]  # Use the LAST line number
-                                result['error_line_tex'] = actual_error_tex_line
-                                self.write(f"\n⚠ Fatal error at line {actual_error_tex_line}\n", "red")
-
-                    elif in_error_context:
-                        error_context_lines.append(line.strip())
-                        if len(error_context_lines) < 20:
-                            self.write(line, "yellow")
-
-                        # Stop capturing after we see the next error or end of context
-                        if line.startswith('!') or 'l.' in line:
-                            in_error_context = False
-
-                    elif 'Warning' in line:
-                        if 'Citation' in line:
-                            self.write(line, "yellow")
-                        elif 'textendash' in line:
-                            self.write(line, "yellow")
-                            result['has_math_warning'] = True
-                        else:
-                            self.write(line, "yellow")
-                    elif not line.startswith('[') and not line.startswith('('):
-                        self.write(line, "white")
-
-            process.wait()
-
-            # If we found a fatal error but no line number from the pattern, check the error message
-            if actual_error_tex_line is None and all_error_lines:
-                # Use the last line number found in the log
-                actual_error_tex_line = all_error_lines[-1]
-                result['error_line_tex'] = actual_error_tex_line
-                self.write(f"\n⚠ Using last error line from log: {actual_error_tex_line}\n", "yellow")
-
-            # Find which slide contains this line
+            actual_error_tex_line = result.get('error_line_tex')
             if actual_error_tex_line:
-                error_slide_num = None
                 for slide_num, slide_info in tex_slide_map.items():
                     if slide_info['start_line'] <= actual_error_tex_line <= slide_info['end_line']:
-                        error_slide_num = slide_num
                         result['slide_number'] = slide_num
+                        relative_line = actual_error_tex_line - slide_info['start_line']
+                        if slide_num in txt_slide_map:
+                            txt_info = txt_slide_map[slide_num]
+                            txt_error_line = txt_info['start_line'] + relative_line
+                            if txt_error_line <= txt_info['end_line']:
+                                result['error_line'] = txt_error_line
                         break
 
-                if error_slide_num:
-                    self.write(f"\n📍 ERROR LOCATED:", "red")
-                    self.write(f" Slide {error_slide_num}", "yellow")
-                    self.write(f" (TeX line {actual_error_tex_line})\n", "cyan")
+            # Preserve the existing targeted auto-fix workflow, but only after a
+            # genuine compiler failure.  Nothing is modified on a successful build.
+            if return_code != 0 and result.get('error_line') and txt_lines:
+                txt_error_line = result['error_line']
+                if 1 <= txt_error_line <= len(txt_lines):
+                    problematic_line = txt_lines[txt_error_line - 1].strip()
+                    if ('Open-Circuit Voltage' in problematic_line or
+                            'V_{oc}' in problematic_line) and problematic_line.count('$') % 2 != 0:
+                        fixed_line = problematic_line.rstrip() + '$'
+                        txt_lines[txt_error_line - 1] = fixed_line + '\n'
+                        try:
+                            with open(txt_file, 'w', encoding='utf-8') as f:
+                                f.writelines(txt_lines)
+                            from BeamerSlideGenerator import process_input_file
+                            process_input_file(txt_file, tex_file_abs)
+                            result['fixed'] = True
+                            result['fix_description'] = (
+                                f"Closed unclosed math mode in TXT line {txt_error_line}"
+                            )
+                            self.write(
+                                f"\n✓ Auto-fixed unclosed math mode in TXT line {txt_error_line}; "
+                                "TeX regenerated for the next attempt.\n",
+                                "green"
+                            )
+                        except Exception as fix_error:
+                            self.write(
+                                f"\n⚠ Targeted auto-fix could not be applied: {fix_error}\n",
+                                "yellow"
+                            )
 
-                    # Get the slide content
-                    slide_info = tex_slide_map[error_slide_num]
-                    self.write(f"   Slide title: {slide_info['title'][:50]}\n", "cyan")
+            # Use the actual compiler result, not a fragile text-output heuristic,
+            # to decide whether the build succeeded.
+            compiler_ok = (return_code == 0)
+            pdf_ok = (
+                os.path.isfile(pdf_file)
+                and os.path.getsize(pdf_file) > 0
+            )
+            pdf_is_new = False
+            if pdf_ok:
+                try:
+                    pdf_is_new = os.path.getmtime(pdf_file) >= compile_started - 1.0
+                except OSError:
+                    pdf_is_new = False
 
-                    # Find the exact line within the slide
-                    relative_line = actual_error_tex_line - slide_info['start_line']
-                    self.write(f"   Relative position: line {relative_line} within slide\n", "cyan")
+            result['success'] = bool(compiler_ok and pdf_ok and pdf_is_new)
 
-                    # Map to TXT file line
-                    if error_slide_num in txt_slide_map:
-                        txt_info = txt_slide_map[error_slide_num]
-                        txt_error_line = txt_info['start_line'] + relative_line
-                        if txt_error_line <= txt_info['end_line']:
-                            result['error_line'] = txt_error_line
-                            self.write(f"   Maps to TXT line: {txt_error_line}\n", "green")
+            if result['success']:
+                size = os.path.getsize(pdf_file)
+                self.write(
+                    f"\n✓ {latex_engine} completed successfully "
+                    f"(return code 0).\n",
+                    "green"
+                )
+                self.write(
+                    f"  PDF: {os.path.basename(pdf_file)} "
+                    f"({self.format_file_size(size)})\n",
+                    "green"
+                )
+                return result
 
-                            # Show the problematic line from TXT
-                            if 1 <= txt_error_line <= len(txt_lines):
-                                problematic_line = txt_lines[txt_error_line - 1].strip()
-                                self.write(f"   Problematic content: {problematic_line[:100]}\n", "yellow")
+            # If the compiler failed, enrich the result from the .log file.  Do
+            # not attempt to modify the TeX here; generate_pdf() retains its
+            # existing error-handling/editor workflow.
+            if not compiler_ok:
+                self.write(
+                    f"\n✗ {latex_engine} failed with return code {return_code}.\n",
+                    "red"
+                )
+            elif not pdf_ok:
+                self.write(
+                    f"\n✗ {latex_engine} returned 0 but no valid PDF was produced.\n",
+                    "red"
+                )
+            else:
+                self.write(
+                    "\n✗ A PDF exists, but it was not produced by this compilation.\n",
+                    "red"
+                )
 
-                                # Check if this is the Open-Circuit Voltage slide
-                                if 'Open-Circuit Voltage' in problematic_line or 'V_{oc}' in problematic_line:
-                                    self.write(f"\n💡 SPECIFIC FIX NEEDED:\n", "cyan")
-                                    self.write(f"   The title has unclosed math mode.\n", "yellow")
-                                    self.write(f"   Change: {problematic_line}\n", "yellow")
-                                    self.write(f"   To:     {problematic_line.rstrip()}$\n", "green")
+            if os.path.exists(log_file):
+                try:
+                    with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+                        log_content = f.read()
+                    log_lines = log_content.splitlines()
 
-                                    # Auto-fix if possible
-                                    if problematic_line.count('$') % 2 != 0:
-                                        fixed_line = problematic_line.rstrip() + '$'
-                                        txt_lines[txt_error_line - 1] = fixed_line + '\n'
-                                        with open(txt_file, 'w', encoding='utf-8') as f:
-                                            f.writelines(txt_lines)
-                                        self.write(f"\n✓ Auto-fixed the TXT file!\n", "green")
-                                        result['fixed'] = True
+                    if not result['errors']:
+                        for line in log_lines:
+                            if line.startswith('!'):
+                                result['errors'].append(line.strip())
 
-                                        # Regenerate TeX
-                                        from BeamerSlideGenerator import process_input_file
-                                        process_input_file(txt_file, tex_file_abs)
-                                        self.write(f"✓ Regenerated TeX file\n", "green")
+                    if not result['error_line_tex']:
+                        log_line_numbers = []
+                        for line in log_lines:
+                            m = re.search(r'l\.(\d+)', line)
+                            if m:
+                                log_line_numbers.append(int(m.group(1)))
+                        if log_line_numbers:
+                            result['error_line_tex'] = log_line_numbers[-1]
 
-            # If we found an error but no slide number, try to infer
-            if error_lines and result['slide_number'] == 0 and result['last_successful_slide'] > 0:
-                result['slide_number'] = result['last_successful_slide'] + 1
-                if result['slide_number'] in txt_slide_map:
-                    result['error_line'] = txt_slide_map[result['slide_number']]['start_line']
-                    self.write(f"\n⚠ Inferring error in Slide {result['slide_number']}\n", "yellow")
+                    if result['error_line_tex'] and not result['slide_number']:
+                        error_line = result['error_line_tex']
+                        for slide_num, slide_info in tex_slide_map.items():
+                            if slide_info['start_line'] <= error_line <= slide_info['end_line']:
+                                result['slide_number'] = slide_num
+                                relative_line = error_line - slide_info['start_line']
+                                if slide_num in txt_slide_map:
+                                    txt_info = txt_slide_map[slide_num]
+                                    txt_error_line = txt_info['start_line'] + relative_line
+                                    if txt_error_line <= txt_info['end_line']:
+                                        result['error_line'] = txt_error_line
+                                break
+                except OSError:
+                    pass
 
-            # Analyze the error
-            if error_lines and not result['success']:
-                result['error_context'] = error_context_lines
-
+            if result['errors'] and error_message:
                 if 'Extra }' in error_message or 'forgotten $' in error_message:
                     result['analysis'] = {
                         'error_type': 'extra_brace_or_forgotten_dollar',
-                        'suggestion': 'Extra } or forgotten $. This is often caused by unclosed math mode (e.g., $V_{oc} without closing $). Check for $ signs in titles.',
-                        'auto_fixable': True,
-                        'fix_type': 'fix_math_delimiters',
-                        'line': result['error_line'],
-                        'slide': result['slide_number']
+                        'suggestion': (
+                            'Extra } or forgotten $. Check for unclosed math mode '
+                            'or unmatched braces in the TeX source.'
+                        ),
+                        'auto_fixable': False,
+                        'fix_type': 'manual_review',
+                        'line': result.get('error_line'),
+                        'slide': result.get('slide_number')
                     }
 
-            # Show helpful context
-            if result['slide_number'] > 0 and result['error_line']:
-                self.write(f"\n" + "="*60 + "\n", "cyan")
-                self.write(f"HELPFUL CONTEXT:\n", "cyan")
-                self.write(f"="*60 + "\n", "cyan")
-                self.write(f"Error in Slide {result['slide_number']}\n", "yellow")
-                self.write(f"Open your .txt file and go to line {result['error_line']}\n", "green")
-
-            # A PDF is successful only when the compiler itself returned 0.
-            # Merely finding a PDF is insufficient because it may be stale.
-            pdf_file = tex_file_abs.replace('.tex', '.pdf')
-            compiler_ok = (process.returncode == 0)
-            pdf_ok = os.path.exists(pdf_file) and os.path.getsize(pdf_file) > 0
-            result['success'] = bool(compiler_ok and pdf_ok and not error_lines)
-            if result['success']:
-                if result.get('fixed'):
-                    self.write(f"\n✓ PDF generated successfully after auto-fix!\n", "green")
-            else:
-                if not compiler_ok:
-                    self.write(f"\n✗ {latex_engine} failed (return code {process.returncode}); no successful PDF was generated.\n", "red")
-                elif not pdf_ok:
-                    self.write(f"\n✗ {latex_engine} reported success but no valid PDF was produced.\n", "red")
-
-            os.chdir(original_dir)
             return result
 
         except Exception as e:
             result['errors'].append(str(e))
-            import traceback
-            traceback.print_exc()
-            os.chdir(original_dir)
+            self.write(f"\n✗ PDF compilation error: {e}\n", "red")
             return result
 
     def _build_detailed_tex_slide_map(self, tex_lines: list) -> dict:
@@ -26797,6 +26881,7 @@ Created by {self.__author__}
             os.chdir(tex_dir)
 
             tex_file_abs = os.path.abspath(tex_file)
+            tex_content, latex_engine = self._prepare_tex_for_compilation(tex_file_abs)
 
             # Read the current TeX content
             with open(tex_file_abs, 'r', encoding='utf-8', errors='ignore') as f:
@@ -26815,7 +26900,7 @@ Created by {self.__author__}
                     })
 
             # Run pdflatex
-            cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+            cmd = [latex_engine, '-interaction=nonstopmode', '-halt-on-error',
                    '-file-line-error', tex_file_abs]
 
             process = subprocess.Popen(
@@ -27143,7 +27228,18 @@ Created by {self.__author__}
                 popup.title("Success")
                 popup.geometry("300x120")
                 popup.transient(dialog)
-                popup.grab_set()
+                # CTkToplevel may not be mapped yet when the callback runs.
+                # Acquire the grab only after the popup is actually viewable.
+                popup.update_idletasks()
+                popup.deiconify()
+                popup.update()
+                try:
+                    popup.grab_set()
+                except tk.TclError:
+                    # A transient popup can briefly remain unmapped on some
+                    # Tk/CTk combinations.  Do not let Copy Log fail merely
+                    # because the grab cannot be acquired at that instant.
+                    pass
                 popup.resizable(False, False)
                 popup.attributes('-topmost', True)
                 popup.lift()
@@ -27218,10 +27314,10 @@ Created by {self.__author__}
                 self.write(f"✗ TeX file not found: {tex_file_abs}\n", "red")
                 return result
 
-            # Run pdflatex and capture all output
-            self.write("\nCompiling with pdflatex...\n", "white")
+            tex_content, latex_engine = self._prepare_tex_for_compilation(tex_file_abs)
+            self.write(f"\nCompiling with {latex_engine}...\n", "white")
 
-            cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+            cmd = [latex_engine, '-interaction=nonstopmode', '-halt-on-error',
                    '-file-line-error', tex_file_abs]
 
             all_errors = []
@@ -27851,8 +27947,11 @@ Created by {self.__author__}
                     except Exception as e:
                         self.write(f"✗ Error regenerating TeX: {e}\n", "red")
 
-                # Run pdflatex
-                cmd = ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+                tex_content, latex_engine = self._prepare_tex_for_compilation(tex_file_abs)
+                self.write(f"FIX12 compile guard: {latex_engine}\n", "cyan")
+
+                # Run selected LaTeX engine
+                cmd = [latex_engine, '-interaction=nonstopmode', '-halt-on-error',
                        '-file-line-error', tex_file_abs]
 
                 process = subprocess.Popen(
@@ -29683,16 +29782,50 @@ Created by {self.__author__}
     # ============================================================
 
     def reset_to_default_preamble(self) -> None:
-        """Reset preamble to default generated preamble"""
+        """Reset to the default preamble without embedding a second title-page frame.
+
+        The slide model owns the title-page frame.  The generated default preamble
+        from BeamerSlideGenerator may also contain a title-page frame for historical
+        compatibility, so remove that frame when installing the reset state.
+        """
         if messagebox.askyesno("Reset Preamble",
                                "This will discard your custom/file preamble and use the default generated one.\n\n"
                                "Are you sure?"):
+            default_preamble = self.get_default_preamble()
+
+            # Keep the 	itle/uthor/etc. metadata in the preamble, but remove
+            # any embedded title-page FRAME.  The slide model generates the
+            # authoritative title-page slide, so retaining both would create a
+            # duplicate title page after reset.
+            default_preamble = re.sub(
+                r'(?ms)^\s*%\s*Title page\s*\n?'
+                r'\s*\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+                r'(?:\\titlepage|\\maketitle).*?'
+                r'\\end\{frame\}\s*',
+                '\n',
+                default_preamble,
+                count=1
+            )
+
+            # Some default-preamble versions do not carry the marker comment.
+            # Remove a title-page frame directly as a safe fallback.
+            default_preamble = re.sub(
+                r'(?ms)\s*\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+                r'(?:\\titlepage|\\maketitle).*?\\end\{frame\}\s*',
+                '\n',
+                default_preamble,
+                count=1
+            )
+
             self.preamble_from_file = None
             self.preamble_origin = 'default'
-            if hasattr(self, 'custom_preamble'):
-                delattr(self, 'custom_preamble')
-            self.using_custom_preamble = False
-            self.write("✓ Reset to default preamble\n", "green")
+
+            # Install the cleaned default explicitly so get_custom_preamble()
+            # cannot regenerate the historical title-page-bearing variant.
+            self.custom_preamble = default_preamble.strip()
+            self.using_custom_preamble = True
+
+            self.write("✓ Reset to default preamble (title page kept in slide model)\n", "green")
             messagebox.showinfo("Success", "Preamble reset to default")
 
     # ============================================================
@@ -29760,6 +29893,7 @@ Created by {self.__author__}
             'beamertemplates': [],
             'beamersizes': [],
             'custom_commands': [],
+            'tcolorboxes': [],
             'def_commands': [],
             'let_commands': [],
             'theme': '',
@@ -29787,11 +29921,13 @@ Created by {self.__author__}
             'frame_helpers': [],
         }
 
+        scan_preamble = BeamerSlideEditor._mask_nested_preamble_definitions(preamble)
+
         # ============================================================
         # Safe package extraction
         # ============================================================
         usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
-        for options, pkg_list in re.findall(usepackage_pattern, preamble):
+        for options, pkg_list in re.findall(usepackage_pattern, scan_preamble):
             for pkg in pkg_list.split(','):
                 pkg = pkg.strip()
                 if pkg and not pkg.startswith('%'):
@@ -29803,13 +29939,13 @@ Created by {self.__author__}
         # Safe color extraction - skip malformed colors
         # ============================================================
         definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
-        for name, model, value in re.findall(definecolor_pattern, preamble):
+        for name, model, value in re.findall(definecolor_pattern, scan_preamble):
             if name and model and value and not name.startswith('%'):
                 if model.upper() in ['RGB', 'HTML', 'CMYK', 'GRAY']:
                     definitions['colors'][name.strip()] = (model.strip(), value.strip())
 
         colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
-        for name, source in re.findall(colorlet_pattern, preamble):
+        for name, source in re.findall(colorlet_pattern, scan_preamble):
             if name and source and not name.startswith('%'):
                 definitions['colorlets'][name.strip()] = source.strip()
 
@@ -29817,7 +29953,7 @@ Created by {self.__author__}
         # Safe TikZ library extraction
         # ============================================================
         tikzlib_pattern = r'\\usetikzlibrary\s*\{([^}]+)\}'
-        for libs in re.findall(tikzlib_pattern, preamble):
+        for libs in re.findall(tikzlib_pattern, scan_preamble):
             for lib in libs.split(','):
                 lib = lib.strip()
                 if lib and not lib.startswith('%'):
@@ -29827,7 +29963,7 @@ Created by {self.__author__}
         # Safe pgfplots extraction
         # ============================================================
         pgfplotsset_pattern = r'\\pgfplotsset\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
-        for settings in re.findall(pgfplotsset_pattern, preamble, re.DOTALL):
+        for settings in re.findall(pgfplotsset_pattern, scan_preamble, re.DOTALL):
             if settings and settings.strip():
                 if any(key in settings for key in ['compat', 'xlabel', 'ylabel', 'grid', 'legend']):
                     definitions['pgfplotsset'].append(settings.strip())
@@ -29836,7 +29972,7 @@ Created by {self.__author__}
         # Safe beamer color extraction - validate braces
         # ============================================================
         beamercolor_pattern = r'\\setbeamercolor\s*\{([^}]*)\}\s*\{([^}]*)\}'
-        for name, value in re.findall(beamercolor_pattern, preamble):
+        for name, value in re.findall(beamercolor_pattern, scan_preamble):
             if name and value and not name.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamercolors'].append((name.strip(), value.strip()))
@@ -29845,7 +29981,7 @@ Created by {self.__author__}
         # Safe beamer font extraction
         # ============================================================
         beamerfont_pattern = r'\\setbeamerfont\s*\{([^}]*)\}\s*\{([^}]*)\}'
-        for name, value in re.findall(beamerfont_pattern, preamble):
+        for name, value in re.findall(beamerfont_pattern, scan_preamble):
             if name and value and not name.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamerfonts'].append((name.strip(), value.strip()))
@@ -29854,7 +29990,7 @@ Created by {self.__author__}
         # Safe beamer template extraction
         # ============================================================
         beamertemplate_pattern = r'\\setbeamertemplate\s*\{([^}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
-        for name, value in re.findall(beamertemplate_pattern, preamble, re.DOTALL):
+        for name, value in re.findall(beamertemplate_pattern, scan_preamble, re.DOTALL):
             if name and value and not name.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamertemplates'].append((name.strip(), value.strip()))
@@ -29863,7 +29999,7 @@ Created by {self.__author__}
         # Safe beamer size extraction
         # ============================================================
         beamersize_pattern = r'\\setbeamersize\s*\{([^}]*)\}'
-        for value in re.findall(beamersize_pattern, preamble):
+        for value in re.findall(beamersize_pattern, scan_preamble):
             if value and value.strip() and not value.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamersizes'].append(value.strip())
@@ -29905,7 +30041,7 @@ Created by {self.__author__}
         # Safe extraction of arraystretch - validate value
         # ============================================================
         arraystretch_pattern = r'\\renewcommand\{\\arraystretch\}\{([^}]*)\}'
-        matches = re.findall(arraystretch_pattern, preamble)
+        matches = re.findall(arraystretch_pattern, scan_preamble)
         for value in matches:
             if value and value.strip():
                 try:
@@ -29920,12 +30056,14 @@ Created by {self.__author__}
         # Safe extraction of spacing settings
         # ============================================================
         parskip_pattern = r'\\setlength\{\\parskip\}\{([^}]*)\}'
-        matches = re.findall(parskip_pattern, preamble)
+        matches = re.findall(parskip_pattern, scan_preamble)
         for value in matches:
             if value and value.strip():
                 if any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
                     definitions['parskip'] = value.strip()
                     break
+
+        definitions['tcolorboxes'] = BeamerSlideEditor._extract_top_level_tcolorboxes(preamble)
 
         # ============================================================
         # Extract critical LaTeX fixes
@@ -30172,6 +30310,22 @@ Created by {self.__author__}
         if merged_defs['colorlets']:
             for name, source in merged_defs['colorlets'].items():
                 lines.append(f"\\colorlet{{{name}}}{{{source}}}")
+
+        # ============================================================
+        # Preserved tcolorbox definitions
+        # ============================================================
+        if merged_defs.get('tcolorboxes'):
+            lines.append("")
+            lines.append("% ========== T-COLORBOX DEFINITIONS ==========")
+            for box_definition in merged_defs['tcolorboxes']:
+                # Merged definitions are stored in BSG TEXT form (##1).
+                # Decode only inside newtcolorbox bodies before writing TeX.
+                try:
+                    from BeamerSlideGenerator import bsg_text_preamble_to_tex
+                    decoded = bsg_text_preamble_to_tex(box_definition)
+                except Exception:
+                    decoded = box_definition
+                lines.extend(decoded.strip().splitlines())
 
         # ============================================================
         # Beamer colors, fonts, templates
@@ -30981,6 +31135,11 @@ Created by {self.__author__}
                 has_begin_document = True
                 print(f"✓ Extracted preamble ({len(preamble)} chars)")
 
+                # BSG TEXT has a deliberate representation for tcolorbox
+                # parameters: ##1/##2. Preserve that representation during
+                # TeX -> TEXT import; normal preamble macros remain #1/#2.
+                preamble = BeamerSlideEditor._tex_preamble_to_bsg_text(preamble)
+
                 # ============================================================
                 # Remove ALL \begin{document} from document body
                 # ============================================================
@@ -31058,6 +31217,7 @@ Created by {self.__author__}
             default_preamble = get_beamer_preamble(
                 "Title", "Subtitle", "Author", "Institution", "Short Inst", "\\today"
             )
+            default_preamble = BeamerSlideEditor._tex_preamble_to_bsg_text(default_preamble)
             default_defs = BeamerSlideEditor.extract_preamble_definitions_static(default_preamble)
 
             # ============================================================
@@ -31078,6 +31238,7 @@ Created by {self.__author__}
                 'beamertemplates': default_defs['beamertemplates'] + imported_defs['beamertemplates'],
                 'beamersizes': default_defs['beamersizes'] + imported_defs['beamersizes'],
                 'custom_commands': default_defs['custom_commands'] + imported_defs['custom_commands'],
+                'tcolorboxes': list(dict.fromkeys(default_defs.get('tcolorboxes', []) + imported_defs.get('tcolorboxes', []))),
                 'def_commands': default_defs['def_commands'] + imported_defs['def_commands'],
                 'let_commands': default_defs['let_commands'] + imported_defs['let_commands'],
                 'theme': imported_defs['theme'] or default_defs['theme'],
@@ -31117,146 +31278,281 @@ Created by {self.__author__}
             # ============================================================
             print("\n🔧 Fixing custom commands...")
             merged_preamble = BeamerSlideEditor.fix_custom_commands_with_guards(merged_preamble)
+            # generate_merged_preamble historically appends \begin{document}; the
+            # TEX→TEXT output must contain it exactly once, after the complete preamble.
+            merged_preamble = re.sub(r'\\begin\{document\}\s*', '', merged_preamble).rstrip()
 
             # ========== FIND FRAMES ==========
-            frame_patterns = [
-                r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{([^}]*)\})?(?:\{([^}]*)\})?(.*?)\\end\{frame\}',
-                r'\\begin\{frame\}(?:\[[^\]]*\])?\{([^}]*)\}(.*?)\\end\{frame\}',
-                r'\\begin\{frame\}(?:\[[^\]]*\])?(.*?)\\end\{frame\}',
-            ]
+            # Do not use a single regex for complete frame parsing.  Frame bodies
+            # routinely contain nested braces (TikZ, textcolor, notes, etc.).
+            # We only need the frame delimiter here; command bodies are parsed
+            # separately with balanced-brace logic below.
+            def extract_frames_from_document(body):
+                frames = []
+                pos = 0
+                while True:
+                    m = re.search(r'\\begin\{frame\}', body[pos:])
+                    if not m:
+                        break
+                    start = pos + m.start()
+                    i = pos + m.end()
 
-            frames = []
-            used_pattern = None
+                    # Optional frame options [..]
+                    while i < len(body) and body[i].isspace():
+                        i += 1
+                    if i < len(body) and body[i] == '[':
+                        depth = 1
+                        i += 1
+                        while i < len(body) and depth:
+                            if body[i] == '\\':
+                                i += 2
+                                continue
+                            if body[i] == '[':
+                                depth += 1
+                            elif body[i] == ']':
+                                depth -= 1
+                            i += 1
 
-            for pattern in frame_patterns:
-                found_frames = list(re.finditer(pattern, document_body, re.DOTALL))
-                if found_frames:
-                    if len(found_frames) > len(frames):
-                        frames = found_frames
-                        used_pattern = pattern
-                        print(f"✓ Found {len(frames)} frames")
+                    # Optional short frame title {..}
+                    frame_title = ''
+                    while i < len(body) and body[i].isspace():
+                        i += 1
+                    if i < len(body) and body[i] == '{':
+                        open_pos = i
+                        depth = 0
+                        escaped = False
+                        close_pos = -1
+                        for j in range(i, len(body)):
+                            ch = body[j]
+                            if escaped:
+                                escaped = False
+                                continue
+                            if ch == '\\':
+                                escaped = True
+                                continue
+                            if ch == '{':
+                                depth += 1
+                            elif ch == '}':
+                                depth -= 1
+                                if depth == 0:
+                                    close_pos = j
+                                    break
+                        if close_pos < 0:
+                            break
+                        frame_title = body[open_pos + 1:close_pos]
+                        i = close_pos + 1
 
-            # Deduplicate frames
-            seen_content = set()
-            unique_frames = []
-            for frame in frames:
-                content_key = frame.group(0)[:200]
-                if content_key not in seen_content:
-                    seen_content.add(content_key)
-                    unique_frames.append(frame)
+                    body_start = i
+                    end_match = re.search(r'\\end\{frame\}', body[body_start:])
+                    if not end_match:
+                        break
+                    body_end = body_start + end_match.start()
+                    end_pos = body_start + end_match.end()
+                    frames.append({
+                        'title': frame_title,
+                        'content': body[body_start:body_end],
+                        'raw': body[start:end_pos]
+                    })
+                    pos = end_pos
+                return frames
 
-            if unique_frames and len(unique_frames) < len(frames):
-                print(f"✓ Deduplicated: {len(frames)} → {len(unique_frames)} unique frames")
+            def extract_balanced_commands(text, command):
+                """Return (text_without_commands, complete command bodies)."""
+                extracted = []
+                pieces = []
+                pos = 0
+                last = 0
+                pattern = re.compile(r'\\' + re.escape(command) + r'(?:\s*<[^>]*>)?\s*\{')
 
-            if not unique_frames:
-                add_error(1, "No frames found in document", "")
-                slides = [{
-                    'title': 'Untitled Slide',
-                    'content': ['\\begin{frame}{Untitled Slide}', '\\frametitle{Untitled Slide}', '\\end{frame}'],
-                    'notes': []
-                }]
-            else:
-                slides = []
-                slide_count = 0
-                title_page_found = False
+                while True:
+                    m = pattern.search(text, pos)
+                    if not m:
+                        pieces.append(text[last:])
+                        break
 
-                for frame_match in unique_frames:
-                    slide_count += 1
-
-                    if used_pattern and used_pattern.startswith(r'\\begin\{frame\}\{'):
-                        title = frame_match.group(1) or f"Slide {slide_count}"
-                        frame_content = frame_match.group(2).strip() if len(frame_match.groups()) >= 2 else ""
-                    else:
-                        if len(frame_match.groups()) >= 3:
-                            title = frame_match.group(1) or f"Slide {slide_count}"
-                            subtitle = frame_match.group(2) or ""
-                            frame_content = frame_match.group(3).strip()
-                        elif len(frame_match.groups()) >= 2:
-                            title = frame_match.group(1) or f"Slide {slide_count}"
-                            subtitle = ""
-                            frame_content = frame_match.group(2).strip()
-                        else:
-                            title = f"Slide {slide_count}"
-                            subtitle = ""
-                            frame_content = frame_match.group(0).strip()
-
-                    # ============================================================
-                    # Fix special characters in title
-                    # ============================================================
-                    title = BeamerSlideEditor.fix_special_characters(title)
-                    title = clean_latex_title(title)
-
-                    # ============================================================
-                    # Handle title page frames
-                    # ============================================================
-                    if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
-                        title_match = re.search(r'\\title\{([^}]*)\}', preamble)
-                        title_text = title_match.group(1) if title_match else "Title Page"
-                        title_text = BeamerSlideEditor.fix_special_characters(title_text)
-
-                        if title_page_found:
-                            print(f"  ℹ Skipping duplicate title page")
+                    start = m.start()
+                    brace_open = m.end() - 1
+                    depth = 0
+                    escaped = False
+                    close = -1
+                    for j in range(brace_open, len(text)):
+                        ch = text[j]
+                        if escaped:
+                            escaped = False
                             continue
+                        if ch == '\\':
+                            escaped = True
+                            continue
+                        if ch == '{':
+                            depth += 1
+                        elif ch == '}':
+                            depth -= 1
+                            if depth == 0:
+                                close = j
+                                break
 
-                        title_page_found = True
-                        slides.append({
-                            'title': title_text,
-                            'content': [
-                                f"\\begin{{frame}}{{{title_text}}}",
-                                "\\titlepage",
-                                "\\end{frame}"
-                            ],
-                            'notes': []
-                        })
+                    if close < 0:
+                        # Malformed command: leave it visible rather than lose it.
+                        pieces.append(text[last:])
+                        break
+
+                    pieces.append(text[last:start])
+                    extracted.append(text[brace_open + 1:close])
+                    pos = close + 1
+                    last = pos
+
+                return ''.join(pieces), extracted
+
+            def extract_media_directive(frame_content):
+                """Extract the first image/movie directive without damaging other content."""
+                media = ''
+
+                image = re.search(
+                    r'\\includegraphics(?:\[[^\]]*\])?\s*\{([^{}]+)\}',
+                    frame_content,
+                    re.DOTALL
+                )
+                if image:
+                    media = f"\\file {image.group(1).strip()}"
+                    cleaned = frame_content[:image.start()] + frame_content[image.end():]
+                    # If the image was the only thing in a center environment,
+                    # remove that now-empty wrapper.  Otherwise preserve the wrapper.
+                    cleaned = re.sub(
+                        r'\\begin\{center\}\s*\\end\{center\}',
+                        '', cleaned, flags=re.DOTALL
+                    )
+                    return cleaned, media
+
+                movie = re.search(
+                    r'\\movie(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{([^{}]+)\}',
+                    frame_content,
+                    re.DOTALL
+                )
+                if movie:
+                    media = f"\\play {movie.group(1).strip()}"
+                    cleaned = frame_content[:movie.start()] + frame_content[movie.end():]
+                    return cleaned, media
+
+                return frame_content, media
+
+            frames = extract_frames_from_document(document_body)
+            print(f"✓ Found {len(frames)} frames")
+
+            slides = []
+            slide_count = 0
+            for frame in frames:
+                slide_count += 1
+                title = frame['title'].strip()
+                frame_content = frame['content']
+
+                # Standard titlepage frame belongs to the presentation metadata,
+                # not to the native BSG slide stream.  The preamble already carries
+                # \title/\author/\institute/\date.
+                if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
+                    print(f"  ℹ Skipping title-page frame {slide_count} during TEX → TEXT import")
+                    continue
+
+                # Extract frametitle with balanced braces, then remove it from content.
+                frame_content_no_title, frame_titles = extract_balanced_commands(
+                    frame_content, 'frametitle'
+                )
+                if frame_titles:
+                    ft = frame_titles[0].strip()
+                    if ft:
+                        title = ft
+                frame_content = frame_content_no_title
+
+                if 'rametitle' in frame_content:
+                    # Only repair an actually damaged command, never normal text.
+                    frame_content = frame_content.replace('rametitle', '\\frametitle')
+
+                # Extract and REMOVE every note before content processing.
+                # This is the key fix: a note can contain nested braces and must
+                # never remain in the Content block.
+                frame_content, note_bodies = extract_balanced_commands(
+                    frame_content, 'note'
+                )
+
+                notes = []
+                for note_body in note_bodies:
+                    note_body = note_body.strip()
+                    if not note_body:
                         continue
 
-                    # Fix malformed frametitle
-                    if 'rametitle' in frame_content:
-                        frame_content = frame_content.replace('rametitle', '\\frametitle')
-                        add_warning(slide_count, f"Fixed 'rametitle' to '\\frametitle' in slide {slide_count}", "")
+                    # process_slide_with_features() wraps bullet notes in an
+                    # outer itemize environment when producing TeX.  Reverse
+                    # that wrapper here so TEX -> TEXT returns the native BSG
+                    # note representation rather than introducing a second
+                    # itemize level.  A genuinely nested itemize is preserved.
+                    note_lines = note_body.splitlines()
+                    if (len(note_lines) >= 2 and
+                            note_lines[0].strip() == '\\begin{itemize}' and
+                            note_lines[-1].strip() == '\\end{itemize}'):
+                        inner = [ln.strip() for ln in note_lines[1:-1]]
+                        if any('\\begin{itemize}' in ln for ln in inner):
+                            # The outer wrapper is synthetic; retain the inner
+                            # itemize that belonged to the original BSG TEXT.
+                            note_body = '\n'.join(inner)
+                            note_body = re.sub(
+                                r'(?m)^\\item\s+(\\begin\{itemize\}|\\end\{itemize\})\s*$',
+                                r'\1',
+                                note_body
+                            )
+                        else:
+                            # Synthetic wrapper only: restore native '-' bullets.
+                            restored = []
+                            for ln in inner:
+                                if ln.startswith('\\item '):
+                                    restored.append('- ' + ln[6:])
+                                elif ln == '\\item':
+                                    restored.append('-')
+                                else:
+                                    restored.append(ln)
+                            note_body = '\n'.join(restored)
 
-                    # Extract frametitle
-                    frametitle_match = re.search(r'\\frametitle\{([^}]*)\}', frame_content)
-                    if frametitle_match:
-                        frametitle = clean_latex_title(frametitle_match.group(1))
-                        if frametitle and len(frametitle) > 3:
-                            title = frametitle
-                        frame_content = re.sub(r'\\frametitle\{[^}]*\}', '', frame_content)
+                    note_body = BeamerSlideEditor.fix_special_characters(note_body)
+                    notes.append(note_body)
 
-                    content_lines = []
+                # Convert the first media object to BSG's native media directive.
+                frame_content, media = extract_media_directive(frame_content)
 
-                    # Build frame with title
-                    if subtitle:
-                        content_lines.append(f"\\begin{{frame}}{{{title} - {subtitle}}}")
-                        content_lines.append(f"\\frametitle{{{title} — {subtitle}}}")
-                    else:
-                        content_lines.append(f"\\begin{{frame}}{{{title}}}")
-                        content_lines.append(f"\\frametitle{{{title}}}")
+                # Build native BSG TEXT content -- deliberately NO frame wrapper.
+                content_lines = []
+                for line in frame_content.splitlines():
+                    line = line.strip()
+                    if not line or line == '\\f':
+                        continue
+                    line = BeamerSlideEditor.fix_special_characters(line)
+                    content_lines.append(line)
 
-                    # Add frame content with special character fixes
-                    for line in frame_content.split('\n'):
-                        line = line.strip()
-                        if line:
-                            line = BeamerSlideEditor.fix_special_characters(line)
-                            if line.startswith('rametitle'):
-                                line = line.replace('rametitle', '\\frametitle', 1)
-                            content_lines.append(line)
+                # A frame containing only a removed image can legitimately have no
+                # content apart from its media directive.
+                if not content_lines:
+                    content_lines = ['% No content for this slide']
 
-                    content_lines.append("\\end{frame}")
+                slides.append({
+                    'title': BeamerSlideEditor.fix_special_characters(title) or f'Slide {len(slides) + 1}',
+                    'content': content_lines,
+                    'notes': notes,
+                    'media': media,
+                })
 
-                    # Extract notes with special character fixes
-                    notes = []
-                    note_match = re.search(r'\\note\{(.*?)\}', frame_content, re.DOTALL)
-                    if note_match:
-                        note_content = note_match.group(1).strip()
-                        note_content = BeamerSlideEditor.fix_special_characters(note_content)
-                        notes = [note_content]
-
-                    slides.append({
-                        'title': title,
-                        'content': content_lines,
-                        'notes': notes
-                    })
+            # ========== FINAL TITLE-PAGE DEDUPLICATION ==========
+            # Different frame regex variants can occasionally identify the same
+            # title-page frame more than once. Keep the first and discard all
+            # later title-page slides before writing the BSG TEXT file.
+            deduped_slides = []
+            title_page_written = False
+            for slide in slides:
+                is_title_page = '\\titlepage' in ''.join(slide.get('content', [])) or \
+                    '\\maketitle' in ''.join(slide.get('content', []))
+                if is_title_page:
+                    if title_page_written:
+                        print("  ℹ Removed duplicate title page during final normalization")
+                        continue
+                    title_page_written = True
+                deduped_slides.append(slide)
+            slides = deduped_slides
 
             # ========== WRITE TO OUTPUT FILE ==========
             with open(output_path, 'w', encoding='utf-8') as f:
@@ -31267,19 +31563,14 @@ Created by {self.__author__}
                 # Write \begin{document} exactly ONCE
                 f.write("\\begin{document}\n\n")
 
-                # Write the title page if we have a title slide
-                has_title_slide = any('\\titlepage' in ''.join(slide['content']) for slide in slides)
-
-                if not has_title_slide and merged_defs['title']:
-                    title_text = merged_defs['title']
-                    f.write(f"\\begin{{frame}}[plain]{{{title_text}}}\n")
-                    f.write("\\titlepage\n")
-                    f.write("\\end{frame}\n\n")
-
                 for slide in slides:
+                    f.write(f"\\title {slide['title']}\n")
+                    f.write("\\begin{Content}\n")
+                    if slide.get('media'):
+                        f.write(f"{slide['media']}\n")
                     for line in slide['content']:
                         f.write(f"{line}\n")
-                    f.write("\n")
+                    f.write("\\end{Content}\n\n")
 
                     if slide['notes']:
                         f.write("\\begin{Notes}\n")
@@ -31435,6 +31726,23 @@ Created by {self.__author__}
     # MODIFICATION 3: Merge file preamble with default preamble
     # ============================================================
 
+    @staticmethod
+    def _sanitize_merged_preamble(preamble: str) -> str:
+        """Remove invalid placeholder settings accidentally lifted from macro bodies."""
+        if not preamble:
+            return preamble
+        import re
+        masked = BeamerSlideEditor._mask_nested_preamble_definitions(preamble)
+        out = []
+        for original, visible in zip(preamble.splitlines(True), masked.splitlines(True)):
+            v = visible.strip()
+            if v.startswith('\\setbeamercolor') and ('#' in v or '\\textcolorchoice' in v):
+                continue
+            out.append(original)
+        cleaned = ''.join(out)
+        cleaned = re.sub(r'(?m)^\\ifcsname\s+insertshortinstitute\\endcsname\s*\\else\s*\n\s*\\fi\s*\n?', '', cleaned)
+        return cleaned
+
     def merge_preamble_with_file(self, file_path: str) -> str:
         """Merge the preamble from the file with the default preamble."""
         try:
@@ -31489,6 +31797,8 @@ Created by {self.__author__}
                 self.write(f"✓ Resolved {len(resolutions)} conflicts\n", "green")
             else:
                 self.write("✓ No conflicts found\n", "green")
+
+            fixed_preamble = BeamerSlideEditor._sanitize_merged_preamble(fixed_preamble)
 
             # ============================================================
             # STEP 3: CHECK IF PREAMBLE CHANGED
@@ -31858,6 +32168,7 @@ Created by {self.__author__}
         - \arraystretch
         """
         import re
+        scan_preamble = BeamerSlideEditor._mask_nested_preamble_definitions(preamble)
 
         result = {
             'colors': {},
@@ -31875,17 +32186,17 @@ Created by {self.__author__}
 
         # Extract \definecolor{name}{model}{value}
         definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
-        for name, model, value in re.findall(definecolor_pattern, preamble):
+        for name, model, value in re.findall(definecolor_pattern, scan_preamble):
             result['colors'][name.strip()] = (model.strip(), value.strip())
 
         # Extract \colorlet{name}{source}
         colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
-        for name, source in re.findall(colorlet_pattern, preamble):
+        for name, source in re.findall(colorlet_pattern, scan_preamble):
             result['colors'][name.strip()] = ('colorlet', source.strip())
 
         # Extract \usepackage[options]{package}
         usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
-        for options, pkg_list in re.findall(usepackage_pattern, preamble):
+        for options, pkg_list in re.findall(usepackage_pattern, scan_preamble):
             for pkg in pkg_list.split(','):
                 pkg = pkg.strip()
                 if pkg:
@@ -31924,7 +32235,7 @@ Created by {self.__author__}
 
         # Extract \setbeamertemplate
         beamertemplate_pattern = r'\\setbeamertemplate\s*\{([^}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
-        matches = re.findall(beamertemplate_pattern, preamble, re.DOTALL)
+        matches = re.findall(beamertemplate_pattern, scan_preamble, re.DOTALL)
         for name, content in matches:
             if content.count('{') == content.count('}'):
                 result['templates'].append((name.strip(), content.strip()))
@@ -31932,21 +32243,21 @@ Created by {self.__author__}
 
         # Extract \setbeamercolor
         beamercolor_pattern = r'\\setbeamercolor\s*\{([^}]*)\}\s*\{([^}]*)\}'
-        matches = re.findall(beamercolor_pattern, preamble)
+        matches = re.findall(beamercolor_pattern, scan_preamble)
         for name, value in matches:
             result['beamercolors'].append((name.strip(), value.strip()))
             result['settings'].append(f"\\setbeamercolor{{{name}}}{{{value}}}")
 
         # Extract \setbeamerfont
         beamerfont_pattern = r'\\setbeamerfont\s*\{([^}]*)\}\s*\{([^}]*)\}'
-        matches = re.findall(beamerfont_pattern, preamble)
+        matches = re.findall(beamerfont_pattern, scan_preamble)
         for name, value in matches:
             result['beamerfonts'].append((name.strip(), value.strip()))
             result['settings'].append(f"\\setbeamerfont{{{name}}}{{{value}}}")
 
         # Extract \setbeamersize
         beamersize_pattern = r'\\setbeamersize\s*\{([^}]*)\}'
-        matches = re.findall(beamersize_pattern, preamble)
+        matches = re.findall(beamersize_pattern, scan_preamble)
         for value in matches:
             result['settings'].append(f"\\setbeamersize{{{value}}}")
 
@@ -33368,10 +33679,11 @@ Created by {self.__author__}
             self.write("\nGenerating PDF with notes on side...\n", "cyan")
 
             try:
-                # Use the compile_with_notes_mode function
-                from BSG_IDE import compile_with_notes_mode
-
-                # This will save the PDF in the same directory as the source file
+                # Use the compile_with_notes_mode function defined in this
+                # module.  Do not import it from a hard-coded ``BSG_IDE``
+                # module name: when this IDE is run under a versioned filename
+                # (for example BSG_IDE_FIXED17.py), that import can silently
+                # select an older module and lose the current notes handling.
                 result_pdf = compile_with_notes_mode(tex_file, "both", keep_temp=False)
 
                 if result_pdf and os.path.exists(result_pdf):
@@ -38206,6 +38518,136 @@ Created by {self.__author__}
 
 
     @staticmethod
+    def _mask_nested_preamble_definitions(preamble: str) -> str:
+        """Mask macro-definition bodies while preserving newlines.
+
+        Structural preamble scanners must not mistake commands inside a
+        ``\\newcommand``/``\\def`` body for independent top-level settings.
+        """
+        import re
+        chars = list(preamble)
+        # Word-boundary-like guards are essential: ``\def`` is a prefix of
+        # ``\definecolor`` and must never mask color definitions.
+        commands = (r"\\newcommand(?![A-Za-z@])", r"\\renewcommand(?![A-Za-z@])",
+                    r"\\providecommand(?![A-Za-z@])", r"\\DeclareRobustCommand(?![A-Za-z@])",
+                    r"\\newenvironment(?![A-Za-z@])", r"\\renewenvironment(?![A-Za-z@])",
+                    r"\\def(?![A-Za-z@])", r"\\gdef(?![A-Za-z@])",
+                    r"\\edef(?![A-Za-z@])", r"\\xdef(?![A-Za-z@])",
+                    r"\\newtcolorbox(?![A-Za-z@])")
+        pattern = re.compile('|'.join(commands))
+
+        def matching(src, start, op, cl):
+            depth = 0
+            escaped = False
+            for i in range(start, len(src)):
+                ch = src[i]
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\\\':
+                    escaped = True
+                elif ch == op:
+                    depth += 1
+                elif ch == cl:
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            return -1
+
+        pos = 0
+        while True:
+            m = pattern.search(preamble, pos)
+            if not m:
+                break
+            i = m.end()
+            n = len(preamble)
+            # Find the body brace. Skip command name and optional [n]/[default]
+            # groups; for \def also skip its parameter text.
+            body_start = -1
+            groups_seen = 0
+            while i < n:
+                while i < n and preamble[i].isspace():
+                    i += 1
+                if i >= n:
+                    break
+                if preamble[i] == '{':
+                    e = matching(preamble, i, '{', '}')
+                    if e < 0:
+                        break
+                    groups_seen += 1
+                    if m.group(0) in (r"\def", r"\gdef", r"\edef", r"\xdef") or groups_seen >= 2:
+                        body_start = i
+                        break
+                    i = e + 1
+                    continue
+                if preamble[i] == '[':
+                    e = matching(preamble, i, '[', ']')
+                    if e < 0:
+                        break
+                    i = e + 1
+                    continue
+                # \def\foo#1#2 -> advance through parameter text.
+                i += 1
+            if body_start < 0:
+                pos = m.end()
+                continue
+            body_end = matching(preamble, body_start, '{', '}')
+            if body_end < 0:
+                pos = m.end()
+                continue
+            for j in range(m.start(), body_end + 1):
+                if chars[j] not in '\r\n':
+                    chars[j] = ' '
+            pos = body_end + 1
+        return ''.join(chars)
+
+    @staticmethod
+    def _extract_top_level_tcolorboxes(preamble: str) -> list:
+        """Extract complete top-level \newtcolorbox definitions."""
+        import re
+        results = []
+        pattern = re.compile(r"\\newtcolorbox\b")
+
+        def matching(src, start, op, cl):
+            depth = 0
+            escaped = False
+            for i in range(start, len(src)):
+                ch = src[i]
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\\\':
+                    escaped = True
+                elif ch == op:
+                    depth += 1
+                elif ch == cl:
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            return -1
+
+        for m in pattern.finditer(preamble):
+            i = m.end(); n = len(preamble)
+            while i < n and preamble[i].isspace(): i += 1
+            if i >= n or preamble[i] != '{': continue
+            e = matching(preamble, i, '{', '}')
+            if e < 0: continue
+            i = e + 1
+            for _ in range(2):
+                while i < n and preamble[i].isspace(): i += 1
+                if i < n and preamble[i] == '[':
+                    e = matching(preamble, i, '[', ']')
+                    if e < 0: break
+                    i = e + 1
+            while i < n and preamble[i].isspace(): i += 1
+            if i >= n or preamble[i] != '{': continue
+            e = matching(preamble, i, '{', '}')
+            if e < 0: continue
+            d = preamble[m.start():e+1].strip()
+            if d and d not in results: results.append(d)
+        return results
+
+    @staticmethod
     def extract_preamble_definitions_static(preamble: str) -> dict:
         """
         Extract ALL definitions from preamble for merging.
@@ -38226,6 +38668,7 @@ Created by {self.__author__}
             'beamertemplates': [],
             'beamersizes': [],
             'custom_commands': [],
+            'tcolorboxes': [],
             'def_commands': [],
             'let_commands': [],
             'theme': '',
@@ -38253,11 +38696,13 @@ Created by {self.__author__}
             'critical_fixes': []
         }
 
+        scan_preamble = BeamerSlideEditor._mask_nested_preamble_definitions(preamble)
+
         # ============================================================
         # Safe package extraction
         # ============================================================
         usepackage_pattern = r'\\usepackage(?:\[([^\]]*)\])?\{([^}]+)\}'
-        for options, pkg_list in re.findall(usepackage_pattern, preamble):
+        for options, pkg_list in re.findall(usepackage_pattern, scan_preamble):
             for pkg in pkg_list.split(','):
                 pkg = pkg.strip()
                 if pkg and not pkg.startswith('%'):
@@ -38269,12 +38714,12 @@ Created by {self.__author__}
         # Safe color extraction
         # ============================================================
         definecolor_pattern = r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
-        for name, model, value in re.findall(definecolor_pattern, preamble):
+        for name, model, value in re.findall(definecolor_pattern, scan_preamble):
             if name and model and value and not name.startswith('%'):
                 definitions['colors'][name.strip()] = (model.strip(), value.strip())
 
         colorlet_pattern = r'\\colorlet\{([^}]+)\}\{([^}]+)\}'
-        for name, source in re.findall(colorlet_pattern, preamble):
+        for name, source in re.findall(colorlet_pattern, scan_preamble):
             if name and source and not name.startswith('%'):
                 definitions['colorlets'][name.strip()] = source.strip()
 
@@ -38282,7 +38727,7 @@ Created by {self.__author__}
         # Safe TikZ library extraction
         # ============================================================
         tikzlib_pattern = r'\\usetikzlibrary\s*\{([^}]+)\}'
-        for libs in re.findall(tikzlib_pattern, preamble):
+        for libs in re.findall(tikzlib_pattern, scan_preamble):
             for lib in libs.split(','):
                 lib = lib.strip()
                 if lib and not lib.startswith('%'):
@@ -38292,7 +38737,7 @@ Created by {self.__author__}
         # Safe pgfplots extraction
         # ============================================================
         pgfplotsset_pattern = r'\\pgfplotsset\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
-        for settings in re.findall(pgfplotsset_pattern, preamble, re.DOTALL):
+        for settings in re.findall(pgfplotsset_pattern, scan_preamble, re.DOTALL):
             if settings and settings.strip():
                 if 'compat' in settings or '=' in settings:
                     definitions['pgfplotsset'].append(settings.strip())
@@ -38301,7 +38746,7 @@ Created by {self.__author__}
         # Safe beamer color extraction
         # ============================================================
         beamercolor_pattern = r'\\setbeamercolor\s*\{([^}]*)\}\s*\{([^}]*)\}'
-        for name, value in re.findall(beamercolor_pattern, preamble):
+        for name, value in re.findall(beamercolor_pattern, scan_preamble):
             if name and value and not name.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamercolors'].append((name.strip(), value.strip()))
@@ -38310,7 +38755,7 @@ Created by {self.__author__}
         # Safe beamer font extraction
         # ============================================================
         beamerfont_pattern = r'\\setbeamerfont\s*\{([^}]*)\}\s*\{([^}]*)\}'
-        for name, value in re.findall(beamerfont_pattern, preamble):
+        for name, value in re.findall(beamerfont_pattern, scan_preamble):
             if name and value and not name.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamerfonts'].append((name.strip(), value.strip()))
@@ -38319,7 +38764,7 @@ Created by {self.__author__}
         # Safe beamer template extraction
         # ============================================================
         beamertemplate_pattern = r'\\setbeamertemplate\s*\{([^}]*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
-        for name, value in re.findall(beamertemplate_pattern, preamble, re.DOTALL):
+        for name, value in re.findall(beamertemplate_pattern, scan_preamble, re.DOTALL):
             if name and value and not name.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamertemplates'].append((name.strip(), value.strip()))
@@ -38328,7 +38773,7 @@ Created by {self.__author__}
         # Safe beamer size extraction
         # ============================================================
         beamersize_pattern = r'\\setbeamersize\s*\{([^}]*)\}'
-        for value in re.findall(beamersize_pattern, preamble):
+        for value in re.findall(beamersize_pattern, scan_preamble):
             if value and value.strip() and not value.startswith('%'):
                 if value.count('{') == value.count('}'):
                     definitions['beamersizes'].append(value.strip())
@@ -38359,7 +38804,7 @@ Created by {self.__author__}
         # Safe extraction of arraystretch
         # ============================================================
         arraystretch_pattern = r'\\renewcommand\{\\arraystretch\}\{([^}]*)\}'
-        matches = re.findall(arraystretch_pattern, preamble)
+        matches = re.findall(arraystretch_pattern, scan_preamble)
         for value in matches:
             if value and value.strip() and (value.strip().isdigit() or '.' in value):
                 definitions['arraystretch'] = value.strip()
@@ -38369,7 +38814,7 @@ Created by {self.__author__}
         # Safe extraction of spacing settings
         # ============================================================
         parskip_pattern = r'\\setlength\{\\parskip\}\{([^}]*)\}'
-        matches = re.findall(parskip_pattern, preamble)
+        matches = re.findall(parskip_pattern, scan_preamble)
         for value in matches:
             if value and value.strip():
                 if any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
@@ -38377,14 +38822,14 @@ Created by {self.__author__}
                     break
 
         itemsep_pattern = r'\\setlength\{\\itemsep\}\{([^}]*)\}'
-        matches = re.findall(itemsep_pattern, preamble)
+        matches = re.findall(itemsep_pattern, scan_preamble)
         for value in matches:
             if value and value.strip() and any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
                 definitions['itemsep'] = value.strip()
                 break
 
         topsep_pattern = r'\\setlength\{\\topsep\}\{([^}]*)\}'
-        matches = re.findall(topsep_pattern, preamble)
+        matches = re.findall(topsep_pattern, scan_preamble)
         for value in matches:
             if value and value.strip() and any(unit in value for unit in ['pt', 'em', 'ex', 'mm', 'cm', 'in']):
                 definitions['topsep'] = value.strip()
@@ -38398,7 +38843,39 @@ Created by {self.__author__}
                     '\\emergencystretch=3em', '\\hfuzz=2pt', '\\raggedright']:
             if fix in preamble:
                 critical_fixes.append(fix)
+        definitions['tcolorboxes'] = BeamerSlideEditor._extract_top_level_tcolorboxes(preamble)
         definitions['critical_fixes'] = critical_fixes
+
+        # ============================================================
+        # Extract themes and presentation metadata
+        # ============================================================
+        theme_match = re.search(r'\\usetheme\s*\{([^}]+)\}', preamble)
+        if theme_match and not theme_match.group(1).startswith('%'):
+            definitions['theme'] = theme_match.group(1).strip()
+        colortheme_match = re.search(r'\\usecolortheme\s*\{([^}]+)\}', preamble)
+        if colortheme_match and not colortheme_match.group(1).startswith('%'):
+            definitions['colortheme'] = colortheme_match.group(1).strip()
+        fonttheme_match = re.search(r'\\usefonttheme\s*\{([^}]+)\}', preamble)
+        if fonttheme_match and not fonttheme_match.group(1).startswith('%'):
+            definitions['fonttheme'] = fonttheme_match.group(1).strip()
+
+        for key, command in (
+            ('title', 'title'), ('subtitle', 'subtitle'), ('author', 'author'),
+            ('institute', 'institute'), ('date', 'date')
+        ):
+            m = re.search(r'\\' + command + r'\s*\{([^}]*)\}', preamble)
+            if m:
+                definitions[key] = m.group(1).strip()
+
+        short_inst = re.search(r'\\def\\insertshortinstitute\s*\{([^}]*)\}', preamble)
+        if short_inst:
+            definitions['shortinstitute'] = short_inst.group(1).strip()
+
+        logo_match = re.search(r'\\def\\BSGPresentationLogo\s*\{([^}]*)\}', preamble)
+        if not logo_match:
+            logo_match = re.search(r'\\logo\s*\{([^}]*)\}', preamble)
+        if logo_match:
+            definitions['logo'] = logo_match.group(1).strip()
 
         return definitions
 
@@ -38490,6 +38967,20 @@ Created by {self.__author__}
         if merged_defs['colorlets']:
             for name, source in merged_defs['colorlets'].items():
                 lines.append(f"\\colorlet{{{name}}}{{{source}}}")
+
+        # ============================================================
+        # Preserved tcolorbox definitions
+        # ============================================================
+        if merged_defs.get('tcolorboxes'):
+            lines.append("")
+            lines.append("% ========== T-COLORBOX DEFINITIONS ==========")
+            for box_definition in merged_defs['tcolorboxes']:
+                try:
+                    from BeamerSlideGenerator import bsg_text_preamble_to_tex
+                    decoded = bsg_text_preamble_to_tex(box_definition)
+                except Exception:
+                    decoded = box_definition
+                lines.extend(decoded.strip().splitlines())
 
         # ============================================================
         # Beamer colors, fonts, templates
@@ -40426,14 +40917,28 @@ def compile_with_notes_mode(input_file: str, mode: str, keep_temp: bool = False)
         # The final PDF will be in the same directory as the input file
         final_pdf = os.path.join(input_dir, f"{base_name}_{mode}.pdf")
 
+        # Never allow a stale PDF to masquerade as a successful build.
+        try:
+            if os.path.exists(final_pdf):
+                os.remove(final_pdf)
+        except OSError:
+            pass
+
         # Create temp directory for compilation
         temp_dir = tempfile.mkdtemp()
         temp_tex = os.path.join(temp_dir, f"{base_name}_{mode}.tex")
         temp_pdf = os.path.join(temp_dir, f"{base_name}_{mode}.pdf")
 
-        # Read original content
+        # Read and normalize the exact source before creating the temp build.
+        # FIX11 is intentionally the final gate: the compiler never receives
+        # an unvalidated intermediate file.
+        from BeamerCompileGuard import normalize_file
+        normalize_file(input_file, None)
         with open(input_file, 'r', encoding='utf-8') as f:
             content = f.read()
+
+        engine_match = re.search(r'(?m)^\\def\\BSGLatexEngine\{(pdflatex|xelatex)\}', content)
+        selected_engine = engine_match.group(1) if engine_match else 'pdflatex'
 
         # Modify content for notes mode
         modified_content = modify_preamble_for_notes_mode(content, mode)
@@ -40456,11 +40961,15 @@ def compile_with_notes_mode(input_file: str, mode: str, keep_temp: bool = False)
         os.chdir(temp_dir)
 
         try:
-            # Compile document (two passes for references)
+            # Compile document (two passes for references) using the engine
+            # explicitly selected by Presentation Settings / FIX11 marker.
+            compiler = selected_engine if shutil.which(selected_engine) else 'pdflatex'
+            if selected_engine == 'xelatex' and compiler != 'xelatex':
+                raise RuntimeError('XeLaTeX was selected but xelatex is not installed.')
             for pass_num in range(2):
                 result = subprocess.run(
-                    ['pdflatex', '-interaction=nonstopmode',
-                     '-file-line-error', temp_tex],
+                    [compiler, '-interaction=nonstopmode',
+                     '-halt-on-error', '-file-line-error', temp_tex],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -40468,11 +40977,10 @@ def compile_with_notes_mode(input_file: str, mode: str, keep_temp: bool = False)
                 )
 
                 if result.returncode != 0:
-                    print(f"⚠ Compilation pass {pass_num + 1} had errors")
-                    # Check for fatal errors
-                    if 'Fatal error' in result.stdout or '! ' in result.stdout:
-                        print(f"✗ Fatal error in compilation: {result.stdout[-500:]}")
-                        return None
+                    diagnostic = result.stdout[-4000:] if result.stdout else result.stderr[-4000:]
+                    print(f"✗ Compilation pass {pass_num + 1} failed with {compiler} (return code {result.returncode})")
+                    print(diagnostic)
+                    return None
 
             # Check if PDF was created
             if os.path.exists(temp_pdf) and os.path.getsize(temp_pdf) > 0:

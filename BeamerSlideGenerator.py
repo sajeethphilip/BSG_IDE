@@ -1184,9 +1184,18 @@ def generate_preview_frame(filepath, output_path=None):
         return None
 
 # ============================================================
+# PRESENTATION FEATURE STATE
+# ============================================================
+# These values are set by get_beamer_preamble() whenever a presentation
+# is generated.  They allow the Presentation Settings dialog to control
+# features without changing the public generate_latex_code() interface.
+AUTO_FIT_ENABLED = True
+DEFAULT_FOOTER_LOGO_HEIGHT = "2.2ex"
+
+# ============================================================
 # ENHANCED: CLEANER DEFAULT PREAMBLE WITH FULL FEATURE SUPPORT
 # ============================================================
-def get_beamer_preamble(title, subtitle, author, institution, short_institute, date, logo=""):
+def get_beamer_preamble(title, subtitle, author, institution, short_institute, date, logo="", logo_height="2.2", auto_fit=True):
     """
     Returns complete Beamer preamble with intelligent auto-scaling and frame mode support.
     PRESERVES user-defined colors and doesn't override them with defaults.
@@ -1217,12 +1226,27 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     short_institute = clean_text(short_institute) if short_institute else clean_text(institution)
     date = clean_text(date) if date else r'\today'
 
+    # Presentation feature settings.  Logo height accepts either a bare
+    # numeric value (e.g. 2.2) or a complete TeX dimension (e.g. 2.2ex).
+    global AUTO_FIT_ENABLED
+    AUTO_FIT_ENABLED = bool(auto_fit)
+    logo_height = str(logo_height).strip() if logo_height is not None else DEFAULT_FOOTER_LOGO_HEIGHT
+    if not logo_height:
+        logo_height = DEFAULT_FOOTER_LOGO_HEIGHT
+    if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', logo_height):
+        logo_height = logo_height + 'ex'
+    elif not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)', logo_height):
+        logo_height = DEFAULT_FOOTER_LOGO_HEIGHT
+
     # Extract short versions for footer
     short_author = clean_text(author.split(',')[0] if ',' in author else author[:30] if len(author) > 30 else author)
     short_title = clean_text(title[:40] if len(title) > 40 else title)
 
     # Logo path is a filename, so do not apply normal text escaping to it.
-    logo_path = (logo or "").strip().replace("\\", "/")
+    logo_path = (logo or "").strip()
+    if logo_path:
+        logo_path = os.path.abspath(os.path.expanduser(logo_path))
+    logo_path = logo_path.replace("\\", "/")
     logo_path = logo_path.replace("#", r"\#").replace("%", r"\%").replace("{", r"\{").replace("}", r"\}")
 
     # ============================================================
@@ -1247,6 +1271,58 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \usepackage{textcomp}
 \usepackage{adjustbox}
 \usepackage{tikz-3dplot}
+
+% ============================================================
+% INTELLIGENT AUTOMATIC SLIDE FITTING
+% ============================================================
+% These commands are used by generated standard slide bodies when
+% Automatic Slide Fitting is enabled in Presentation Settings.
+\newcommand{\AutoFitImage}[2][]{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.86\textheight,
+        keepaspectratio,
+        center
+    }%
+        \includegraphics[#1]{#2}%
+    \end{adjustbox}%
+}
+
+\newcommand{\AutoFitImageWithText}[2][]{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.55\textheight,
+        keepaspectratio,
+        center
+    }%
+        \includegraphics[#1]{#2}%
+    \end{adjustbox}%
+}
+
+\newcommand{\AutoFitPlayableImage}[2][]{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.50\textheight,
+        keepaspectratio,
+        center
+    }%
+        \includegraphics[#1]{#2}%
+    \end{adjustbox}%
+}
+
+\newenvironment{AutoFitFrameBody}{%
+    \begin{adjustbox}{
+        max width=\linewidth,
+        max height=0.80\textheight,
+        keepaspectratio,
+        center
+    }%
+    \begin{minipage}{\linewidth}
+}{%
+    \end{minipage}%
+    \end{adjustbox}%
+}
+
 \usepackage{pgfpages}
 \usepackage{hyperref}
 \usepackage{booktabs}
@@ -1867,7 +1943,7 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     # Title page with compact layout
     title_page = (
        "% Title page\n"
-       "\\begin{frame}[plain]\n"
+       "\\begin{frame}\n"
        "   \\begin{tikzpicture}[overlay,remember picture]\n"
        "       \\fill[top color=white,bottom color=white]\n"
        "       (current page.south west) rectangle (current page.north east);\n"
@@ -1894,12 +1970,22 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     if logo_path:
         logo_footer = (
             f"\\IfFileExists{{{logo_path}}}{{"
-            f"\\raisebox{{-0.15ex}}{{\\includegraphics[height=1.25ex]{{{logo_path}}}}}"
+            f"\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_height}]{{{logo_path}}}}}"
             f"}}{{\\insertframenumber{{}} / \\inserttotalframenumber}}\\hspace*{{1ex}}%"
         )
     else:
         logo_footer = "\\insertframenumber{} / \\inserttotalframenumber\\hspace*{1ex}%"
     core_preamble = core_preamble.replace("%LOGOFOOTER%", logo_footer, 1)
+
+    # Persist the logo path in generated TeX as well.  This lets BSG-IDE
+    # recover the Presentation Settings logo when the generated file is
+    # loaded again, instead of relying on a theme-specific \logo command.
+    # Persist feature settings in generated TeX so the IDE can round-trip them.
+    core_preamble += f"\n\\def\\BSGAutoFitEnabled{{{1 if AUTO_FIT_ENABLED else 0}}}"
+    core_preamble += f"\n\\def\\BSGLogoHeight{{{logo_height}}}"
+    if logo_path:
+        core_preamble += f"\n\\def\\BSGPresentationLogo{{{logo_path}}}"
+    core_preamble += "\n"
 
     return core_preamble + "\n" + title_page
 
@@ -2950,7 +3036,7 @@ def process_latex_content(content_line: str) -> str:
     return sanitize_latex_content(processed)
 
 #----------------------------------------------------------------------
-def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
+def _generate_latex_code_autofit(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
     """
     Generate LaTeX code with support for all media layouts.
     PRESERVES all user specifications including column widths, math, TikZ, and LaTeX environments.
@@ -3216,8 +3302,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     # ========== IF CONTENT HAS EXISTING COLUMNS, USE THEM DIRECTLY ==========
     if has_existing_columns and existing_columns_content:
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         content_str = '\n'.join(str(c) for c in content)
         before_columns = content_str.split('\\begin{columns}')[0].strip()
@@ -3230,6 +3317,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         if after_columns:
             latex_code += after_columns + "\n"
 
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3271,8 +3359,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
     # ========== HANDLE NO MEDIA CASE WITH TIKZ ==========
     if has_tikz and (not filename or filename == "\\None"):
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         in_itemize = False
         for item in content:
@@ -3306,16 +3395,19 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
         if in_itemize:
             latex_code += "    \\end{itemize}\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
     # ========== HANDLE NO MEDIA CASE ==========
     if not filename or filename == "\\None":
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
         content_items = generate_content_items(content)
         if content_items:
             latex_code += "    " + content_items + "\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3327,16 +3419,17 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         left_width = custom_left_width if custom_left_width else "0.48\\textwidth"
         right_width = custom_right_width if custom_right_width else "0.48\\textwidth"
 
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
 
         # Use custom image width if specified
         if custom_image_width:
-            latex_code += f"            \\includegraphics[width={custom_image_width},keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText[width={custom_image_width}]{{{filename}}}\n"
         else:
-            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText{{{filename}}}\n"
 
         latex_code += "        \\end{column}\n"
         latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
@@ -3345,6 +3438,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
             latex_code += "        " + content_items + "\n"
         latex_code += "        \\end{column}\n"
         latex_code += "    \\end{columns}\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3353,8 +3447,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         left_width = custom_left_width if custom_left_width else "0.68\\textwidth"
         right_width = custom_right_width if custom_right_width else "0.28\\textwidth"
 
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
         latex_code += "    \\begin{columns}[T]\n"
         latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
         content_items = generate_content_items(content)
@@ -3365,12 +3460,13 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         latex_code += "            \\vspace{1em}\n"
 
         if custom_image_width:
-            latex_code += f"            \\includegraphics[width={custom_image_width},keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText[width={custom_image_width}]{{{filename}}}\n"
         else:
-            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText{{{filename}}}\n"
 
         latex_code += "        \\end{column}\n"
         latex_code += "    \\end{columns}\n"
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
         return latex_code
 
@@ -3391,8 +3487,9 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         image_width = "0.7\\textwidth"
 
     if playable and first_frame_path:
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         if use_two_columns:
             # Two columns - respect user column widths if specified
@@ -3401,7 +3498,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
             latex_code += "    \\begin{columns}[T]\n"
             latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
-            latex_code += f"            \\includegraphics[width=\\textwidth,height=0.6\\textheight,keepaspectratio]{{{first_frame_path}}}\n"
+            latex_code += f"            \\AutoFitPlayableImage{{{first_frame_path}}}\n"
             latex_code += "            \\begin{center}\n"
             latex_code += "                \\vspace{0.3em}\n"
             latex_code += "                \\footnotesize Click to play\\\\\n"
@@ -3419,7 +3516,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         else:
             # Single column layout - content below image
             latex_code += "    \\begin{center}\n"
-            latex_code += f"        \\includegraphics[width={image_width},keepaspectratio]{{{first_frame_path}}}\n"
+            latex_code += f"        \\AutoFitPlayableImage[width={image_width}]{{{first_frame_path}}}\n"
             latex_code += "        \\begin{center}\n"
             latex_code += "            \\vspace{0.3em}\n"
             latex_code += "            \\footnotesize Click to play\\\\\n"
@@ -3432,10 +3529,12 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
             if source_url:
                 latex_code += "    " + format_url_footnote(source_url) + "\n"
 
+        latex_code += "    \\end{AutoFitFrameBody}\n"
         latex_code += "\\end{frame}\n"
     else:
-        latex_code = f"\\begin{{frame}}{{{frame_title_code}}}\n"
+        latex_code = f"\\begin{{frame}}[t,shrink=0]{{{frame_title_code}}}\n"
         latex_code += f"\\frametitle{{{frame_title_code}}}\n"
+        latex_code += "    \\begin{AutoFitFrameBody}\n"
 
         if use_two_columns:
             # Two columns - respect user column widths if specified
@@ -3444,7 +3543,7 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
 
             latex_code += "    \\begin{columns}[T]\n"
             latex_code += f"        \\begin{{column}}{{{left_width}}}\n"
-            latex_code += f"            \\includegraphics[width=\\textwidth,keepaspectratio]{{{filename}}}\n"
+            latex_code += f"            \\AutoFitImageWithText{{{filename}}}\n"
             latex_code += "        \\end{column}\n"
             latex_code += f"        \\begin{{column}}{{{right_width}}}\n"
             content_items = generate_content_items(content)
@@ -3457,18 +3556,66 @@ def generate_latex_code(base_name, filename, first_frame_path, content=None, tit
         else:
             # Single column layout - content below image
             latex_code += "    \\begin{center}\n"
-            latex_code += f"        \\includegraphics[width={image_width},keepaspectratio]{{{filename}}}\n"
-            latex_code += "    \\end{center}\n"
             content_items = generate_content_items(content)
+            if content_items or source_url:
+                latex_code += f"        \\AutoFitImageWithText[width={image_width}]{{{filename}}}\n"
+            else:
+                latex_code += f"        \\AutoFitImage[width={image_width}]{{{filename}}}\n"
+            latex_code += "    \\end{center}\n"
             if content_items:
                 latex_code += "    " + content_items + "\n"
             if source_url:
                 latex_code += "    " + format_url_footnote(source_url) + "\n"
 
+    latex_code += "    \\end{AutoFitFrameBody}\n"
     latex_code += "\\end{frame}\n"
     return latex_code
 
         #----------------------------------------------------------------------
+
+
+def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
+    """Generate slide LaTeX, honoring the Presentation Settings auto-fit switch."""
+    latex_code = _generate_latex_code_autofit(
+        base_name, filename, first_frame_path, content, title,
+        playable, source_url, layout
+    )
+
+    if AUTO_FIT_ENABLED:
+        return latex_code
+
+    # Automatic fitting OFF: restore the original frame/image constructs.
+    latex_code = latex_code.replace(r'\begin{frame}[t,shrink=0]{', r'\begin{frame}{')
+    latex_code = latex_code.replace(r'\begin{frame}[t,shrink=0]', r'\begin{frame}')
+    latex_code = latex_code.replace(r'    \begin{AutoFitFrameBody}\n', '')
+    latex_code = latex_code.replace(r'    \end{AutoFitFrameBody}\n', '')
+
+    # Restore normal includegraphics commands used before auto-fit was enabled.
+    latex_code = re.sub(
+        r'\\AutoFitImageWithText\[width=([^\]]+)\]\{([^{}]+)\}',
+        r'\\includegraphics[width=\1,keepaspectratio]{\2}', latex_code
+    )
+    latex_code = re.sub(
+        r'\\AutoFitImageWithText\{([^{}]+)\}',
+        r'\\includegraphics[width=\\textwidth,keepaspectratio]{\1}', latex_code
+    )
+    latex_code = re.sub(
+        r'\\AutoFitPlayableImage\[width=([^\]]+)\]\{([^{}]+)\}',
+        r'\\includegraphics[width=\1,keepaspectratio]{\2}', latex_code
+    )
+    latex_code = re.sub(
+        r'\\AutoFitPlayableImage\{([^{}]+)\}',
+        r'\\includegraphics[width=\\textwidth,keepaspectratio]{\1}', latex_code
+    )
+    latex_code = re.sub(
+        r'\\AutoFitImage\[width=([^\]]+)\]\{([^{}]+)\}',
+        r'\\includegraphics[width=\1,keepaspectratio]{\2}', latex_code
+    )
+    latex_code = re.sub(
+        r'\\AutoFitImage\{([^{}]+)\}',
+        r'\\includegraphics[width=\\textwidth,keepaspectratio]{\1}', latex_code
+    )
+    return latex_code
 
 def generate_source_citation(source_url):
     """Generate LaTeX code for source citation"""
@@ -4957,6 +5104,13 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
     warnings = []
 
     try:
+        # Presentation Settings control generated standard slide fitting.
+        # Set this before any slide generation, including when a genuine user
+        # preamble is preserved and get_beamer_preamble() is not called.
+        global AUTO_FIT_ENABLED
+        if presentation_info is not None:
+            AUTO_FIT_ENABLED = bool(presentation_info.get('auto_fit', True))
+
         # ========== READ INPUT FILE ==========
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
@@ -5123,7 +5277,9 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
                 institution=presentation_info.get('institution', ''),
                 short_institute=presentation_info.get('short_institute', ''),
                 date=presentation_info.get('date', r'\today'),
-                logo=presentation_info.get('logo', '')
+                logo=presentation_info.get('logo', ''),
+                logo_height=presentation_info.get('logo_size', '2.2'),
+                auto_fit=presentation_info.get('auto_fit', True)
             )
 
             # get_beamer_preamble historically returns the title frame together
@@ -5137,6 +5293,33 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
             preamble_lines = preamble_text.split('\n')
             preamble_generated = True
             warnings.append("Generated full BSG preamble (no user preamble found in file)")
+
+        # ========== PRESERVE EXPLICIT TITLE PAGE FROM INPUT ==========
+        # Native parsing intentionally starts at \title and therefore ignores
+        # standalone LaTeX frames that appear before the first native slide.
+        # A titlepage frame is presentation content, not preamble, so extract it
+        # here and emit it explicitly before the parsed slides.
+        input_title_page = ""
+        title_frame_pattern = re.compile(
+            r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?'
+            r'.*?(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
+            re.DOTALL
+        )
+        title_frame_match = title_frame_pattern.search(''.join(content_lines))
+        if title_frame_match:
+            input_title_page = title_frame_match.group(0).strip()
+            # An explicit title-page frame in the TXT file is authoritative.
+            # It must not be lost merely because the native parser starts at
+            # the first \title command.  For a standard \titlepage frame,
+            # Beamer will use the Presentation Settings metadata from the
+            # generated/updated preamble.
+            generated_title_page = re.sub(r'\\begin\{frame\}\[plain\]', r'\\begin{frame}', input_title_page)
+
+            content_without_title = (
+                ''.join(content_lines)[:title_frame_match.start()] +
+                ''.join(content_lines)[title_frame_match.end():]
+            )
+            content_lines = content_without_title.splitlines(keepends=True)
 
         # ========== DEBUG: Print first 20 content lines ==========
         print("\nFirst 20 content lines:")
@@ -5360,6 +5543,13 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
     warnings = []
 
     try:
+        # Presentation Settings control generated standard slide fitting.
+        # Set this before any slide generation, including when a genuine user
+        # preamble is preserved and get_beamer_preamble() is not called.
+        global AUTO_FIT_ENABLED
+        if presentation_info is not None:
+            AUTO_FIT_ENABLED = bool(presentation_info.get('auto_fit', True))
+
         # ========== READ INPUT FILE ==========
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
@@ -5568,7 +5758,9 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 institution=presentation_info.get('institution', ''),
                 short_institute=presentation_info.get('short_institute', ''),
                 date=presentation_info.get('date', r'\today'),
-                logo=presentation_info.get('logo', '')
+                logo=presentation_info.get('logo', ''),
+                logo_height=presentation_info.get('logo_size', '2.2'),
+                auto_fit=presentation_info.get('auto_fit', True)
             )
 
             # get_beamer_preamble historically returns the title frame together
@@ -5582,6 +5774,27 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             preamble_lines = preamble_text.split('\n')
             preamble_generated = True
             warnings.append("Generated full BSG preamble (no user preamble found in file)")
+
+        # ========== PRESERVE EXPLICIT TITLE PAGE FROM INPUT ==========
+        # Native parsing starts at the first native \title command and would
+        # otherwise silently discard a standalone title-page frame.
+        input_title_page = ""
+        title_frame_pattern = re.compile(
+            r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?'
+            r'.*?(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
+            re.DOTALL
+        )
+        title_frame_match = title_frame_pattern.search(''.join(content_lines))
+        if title_frame_match:
+            input_title_page = title_frame_match.group(0).strip()
+            # The explicit title page in the TXT file is authoritative.
+            # Its standard \titlepage command uses the metadata in the preamble.
+            generated_title_page = re.sub(r'\\begin\{frame\}\[plain\]', r'\\begin{frame}', input_title_page)
+            content_without_title = (
+                ''.join(content_lines)[:title_frame_match.start()] +
+                ''.join(content_lines)[title_frame_match.end():]
+            )
+            content_lines = content_without_title.splitlines(keepends=True)
 
         # ========== DEBUG: Print first 20 content lines ==========
         print("\nFirst 20 content lines:")
@@ -6729,7 +6942,7 @@ def fix_tikz_in_tex_content(tex_content: str) -> str:
     return tex_content
 
 def _fix_table_formatting(self, table_lines: list) -> list:
-    """
+    r"""
     Fix table formatting issues including:
     - Missing @{} syntax
     - Missing \hline at the beginning
@@ -6807,12 +7020,17 @@ import sys
 
 # Setup debug logging
 def setup_debug_logging():
-    """Setup debug logging to a file"""
-    log_filename = f"tabular_debug_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-    # Create logger
+    """Setup debug logging to a file, without installing duplicate handlers."""
     logger = logging.getLogger('tabular_debug')
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    # Reuse an already configured logger.  This prevents duplicate console
+    # lines when setup_debug_logging() is called more than once.
+    if logger.handlers:
+        return logger
+
+    log_filename = f"tabular_debug_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
     # File handler
     file_handler = logging.FileHandler(log_filename)
@@ -6847,7 +7065,7 @@ def log_line_by_line(func_name, lines, label=""):
     debug_logger.debug(f"{'-'*40}\n")
 
 
-logger = setup_debug_logging()
+logger = debug_logger
 
 # ============================================================
 # DEBUG WRAPPER FUNCTIONS
@@ -7741,7 +7959,7 @@ def parse_native_slides(lines, warnings):
 
 
 def parse_latex_slides(lines, warnings):
-    """Parse LaTeX format slides with \begin{frame} and \end{frame}"""
+    r"""Parse LaTeX format slides with \begin{frame} and \end{frame}"""
     import re
 
     slides = []

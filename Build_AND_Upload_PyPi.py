@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BSG-IDE Complete Build and Deployment Script with Menu Entry Support
-Version: 10.6.7 (FIX6)
+Version: 10.7.0 (FIX7)
 """
 
 import os
@@ -13,7 +13,7 @@ import platform
 from pathlib import Path
 
 # Configuration
-VERSION = "10.7.7"
+VERSION = "10.7.0"
 PACKAGE_NAME = "bsg_ide"
 PYPI_NAME = "bsg-ide"
 AUTHOR = "Ninan Sajeeth Philip"
