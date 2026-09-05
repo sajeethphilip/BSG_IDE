@@ -8,6 +8,7 @@ Combines GUI editing, syntax highlighting, and presentation generation.
 import os
 import sys
 from pathlib import Path
+import re
 # Add these imports at the top of the file with the other imports
 import json
 import time
@@ -75,53 +76,100 @@ def setup_package_paths():
 PACKAGE_ROOT, RESOURCES_DIR = setup_package_paths()
 
 # Use the canonical local/package BeamerSlideGenerator component.
-try:
-    from BeamerSlideGenerator import (
-        get_beamer_preamble,
-        process_media,
-        generate_latex_code,
-        download_youtube_video,
-        construct_search_query,
-        open_google_image_search,
-        process_input_file,
-        set_terminal_io,
-        convert_media,
-        download_media
-    )
-    print("✓ Successfully imported BeamerSlideGenerator")
-except ImportError as e:
-    print(f"Error importing BeamerSlideGenerator: {e}")
-    print(f"Python path: {sys.path}")
-    print(f"Looking for BeamerSlideGenerator.py in: {PACKAGE_ROOT}")
+# Prefer the GIF-safe development implementation when running from source.
+_BSG_GENERATOR_CANDIDATES = (
+    # Canonical runtime module. Development/version suffixes are deliberately
+    # not used by the IDE at runtime.
+    "BeamerSlideGenerator",
+    "bsg_ide.BeamerSlideGenerator",
+)
 
-    # Try alternative import
+_BEAMER_IMPORT_ERROR = None
+for _module_name in _BSG_GENERATOR_CANDIDATES:
     try:
-        from bsg_ide.BeamerSlideGenerator import (
-            get_beamer_preamble,
-            process_media,
-            generate_latex_code,
-            download_youtube_video,
-            construct_search_query,
-            open_google_image_search,
-            process_input_file,
-            set_terminal_io,
-            convert_media,
-            download_media
-        )
-        print("✓ Successfully imported BeamerSlideGenerator via bsg_ide")
-    except ImportError as e2:
-        print(f"Alternative import also failed: {e2}")
-        print("\n" + "="*60)
-        print("ERROR: BeamerSlideGenerator module not found!")
-        print("="*60)
-        print("\nPlease ensure one of the following:")
-        print("1. BeamerSlideGenerator.py is in the same directory as BSG_IDE.py")
-        print("2. The package is properly installed via: pip install bsg-ide")
-        print("3. Reinstall the package: pip install --force-reinstall bsg-ide")
-        print("\nCurrent Python path:")
-        for p in sys.path:
-            print(f"  {p}")
-        sys.exit(1)
+        if "." in _module_name:
+            _module = __import__(_module_name, fromlist=["*"])
+        else:
+            _module = __import__(_module_name)
+
+        get_beamer_preamble = _module.get_beamer_preamble
+        process_media = _module.process_media
+        generate_latex_code = _module.generate_latex_code
+        download_youtube_video = _module.download_youtube_video
+        construct_search_query = _module.construct_search_query
+        open_google_image_search = _module.open_google_image_search
+        process_input_file = _module.process_input_file
+        set_terminal_io = _module.set_terminal_io
+        convert_media = _module.convert_media
+        download_media = _module.download_media
+        print(f"✓ Successfully imported BeamerSlideGenerator: {_module_name}")
+        break
+    except Exception as exc:
+        _BEAMER_IMPORT_ERROR = exc
+else:
+    print(f"Error importing BeamerSlideGenerator: {_BEAMER_IMPORT_ERROR}")
+    print(f"Python path: {sys.path}")
+    sys.exit(1)
+
+# Presentation import support (PPTX / RTF)
+# Prefer the current GIF-safe development importer when running directly
+# from a source tree. Installed deployments use the canonical module name.
+PRESENTATION_IMPORT_AVAILABLE = False
+convert_presentation_to_text = None
+PRESENTATION_IMPORT_MODULE = None
+PRESENTATION_IMPORT_ERROR = None
+
+_presentation_import_candidates = (
+    # Canonical runtime module only. Versioned development filenames must
+    # never become runtime dependencies.
+    "BSG_Presentation_Import",
+    "bsg_ide.BSG_Presentation_Import",
+)
+
+for _module_name in _presentation_import_candidates:
+    try:
+        if "." in _module_name:
+            _module = __import__(_module_name, fromlist=["convert_presentation_to_text"])
+        else:
+            _module = __import__(_module_name)
+        convert_presentation_to_text = getattr(_module, "convert_presentation_to_text")
+        PRESENTATION_IMPORT_AVAILABLE = True
+        PRESENTATION_IMPORT_MODULE = _module_name
+        print(f"✓ Successfully imported PPTX/RTF presentation importer: {_module_name}")
+        break
+    except ImportError as exc:
+        PRESENTATION_IMPORT_ERROR = exc
+    except Exception as exc:
+        PRESENTATION_IMPORT_ERROR = exc
+
+if not PRESENTATION_IMPORT_AVAILABLE:
+    print("⚠ PPTX/RTF presentation importer unavailable.")
+    if PRESENTATION_IMPORT_ERROR is not None:
+        print(f"  Import failure: {type(PRESENTATION_IMPORT_ERROR).__name__}: {PRESENTATION_IMPORT_ERROR}")
+    print(f"  Python executable: {sys.executable}")
+    print(f"  Python version: {sys.version.split()[0]}")
+    print(f"  sys.path[0]: {sys.path[0] if sys.path else ''}")
+
+# LaTeX -> BSG TXT and BSG TXT -> PPTX interchange support.
+# Runtime imports deliberately use canonical module names; versioned filenames
+# are only installer/development source names.
+LATEX_TO_BSG_AVAILABLE = False
+convert_latex_to_bsg_txt = None
+LATEX_TO_BSG_ERROR = None
+try:
+    from BSG_LaTeX_To_BSG_TXT import convert_latex_to_bsg_txt
+    LATEX_TO_BSG_AVAILABLE = True
+except Exception as exc:
+    LATEX_TO_BSG_ERROR = exc
+
+PPTX_EXPORT_AVAILABLE = False
+export_to_pptx = None
+PPTX_EXPORT_ERROR = None
+try:
+    from BSG_Presentation_Export import export_to_pptx
+    PPTX_EXPORT_AVAILABLE = True
+except Exception as exc:
+    PPTX_EXPORT_ERROR = exc
 
 #------------------------------Check and install ----------------------------------------------
 import os,re
@@ -149,7 +197,12 @@ try:
     from EnhancedCommandDialog import LatexCommandHelper, CommandTooltip
     ENHANCED_FEATURES_AVAILABLE = True
 except ImportError:
-    from Grammarly import LatexCommandHelper
+    # Grammarly.py is a separate integration module and does not provide the
+    # LaTeX command helper.  Fall back to the dedicated LatexHelp module.
+    try:
+        from LatexHelp import LatexCommandHelper
+    except ImportError:
+        LatexCommandHelper = None
     CommandTooltip = None
     ENHANCED_FEATURES_AVAILABLE = False
 import logging
@@ -269,6 +322,7 @@ tk
 
 # Media and web dependencies
 requests
+python-pptx
 yt_dlp
 opencv-python
 screeninfo
@@ -589,6 +643,126 @@ def install_system_dependencies():
         print(f"Error installing system dependencies: {str(e)}")
         return False
 #------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Canonical installation mapping
+# ---------------------------------------------------------------------------
+# Development builds may use versioned filenames, but the installed/runtime
+# module names are deliberately stable.  This single mapping is used by all
+# installer/copy paths in this file.
+CANONICAL_INSTALL_MAP = {
+    "BSG_IDE.py": {
+        "sources": ["BSG_IDE_PPTX_MEDIA_TIKZ_FINAL4.py"],
+        "destinations": ["base", "python_site"],
+    },
+    "BeamerSlideGenerator.py": {
+        "sources": ["BeamerSlideGenerator_PPTX_MEDIA_TIKZ_FINAL4.py"],
+        "destinations": ["base", "python_site"],
+    },
+    "BSG_Presentation_Import.py": {
+        "sources": ["BSG_Presentation_Import_PPTX_MEDIA_TIKZ_FINAL4.py"],
+        "destinations": ["base", "python_site"],
+    },
+    "EnhancedCommandDialog.py": {
+        "sources": ["EnhancedCommandDialog_PPTX_HELP_AUTOFILL_FINAL3.py"],
+        "destinations": ["base", "python_site"],
+    },
+    "BSG_LaTeX_To_BSG_TXT.py": {
+        "sources": ["BSG_LaTeX_To_BSG_TXT_PPTX_MEDIA_TIKZ_FINAL2.py"],
+        "destinations": ["base", "python_site"],
+    },
+    "BSG_Presentation_Export.py": {
+        "sources": ["BSG_Presentation_Export_PPTX_MEDIA_TIKZ_FINAL2.py"],
+        "destinations": ["base", "python_site"],
+    },
+    "requirements.txt": {
+        "sources": ["requirements.txt"],
+        "destinations": ["base"],
+    },
+    "airis4d_logo.png": {
+        "sources": ["airis4d_logo.png"],
+        "destinations": ["base/resources", "resources", "share", "icons"],
+    },
+    "bsg-ide.png": {
+        "sources": ["bsg-ide.png"],
+        "destinations": ["base/resources", "resources", "share", "icons"],
+    },
+}
+
+
+def _resolve_mapped_source(source_dir, source_names):
+    """Return the first existing source file from a prioritized candidate list."""
+    source_dir = Path(source_dir)
+    for name in source_names:
+        candidate = source_dir / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def copy_canonical_install_files(installer, source_dir, *, log=None):
+    """Install all components using stable canonical module names.
+
+    All runtime source files use their canonical names. The installer copies
+    those canonical files to the selected installation destinations; runtime
+    code never depends on versioned development filenames.
+    This is the single copy routine used by the legacy installer paths.
+    """
+    source_dir = Path(source_dir).resolve()
+    copied = []
+    missing = []
+
+    def emit(message, level="info"):
+        if log is not None:
+            log(message, level)
+        elif getattr(installer, "dialog", None):
+            colour = "green" if level == "info" else "yellow"
+            installer.dialog.write(message, colour)
+        else:
+            print(message)
+
+    for canonical_name, config in CANONICAL_INSTALL_MAP.items():
+        src = _resolve_mapped_source(source_dir, config["sources"])
+        if src is None:
+            missing.append(canonical_name)
+            emit(
+                f"! Warning: No source found for canonical file "
+                f"{canonical_name} (tried: {', '.join(config['sources'])})",
+                "warning",
+            )
+            continue
+
+        for dest_type in config["destinations"]:
+            try:
+                # Support the historical "base/resources" destination while
+                # keeping the mapping in one place.
+                if "/" in dest_type:
+                    base_type, subdir = dest_type.split("/", 1)
+                    if base_type not in installer.install_paths:
+                        raise KeyError(f"Unknown install path: {base_type}")
+                    dest_dir = installer.install_paths[base_type] / subdir
+                else:
+                    if dest_type not in installer.install_paths:
+                        raise KeyError(f"Unknown install path: {dest_type}")
+                    dest_dir = installer.install_paths[dest_type]
+
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest_path = dest_dir / canonical_name
+                shutil.copy2(src, dest_path)
+                copied.append(dest_path)
+                emit(
+                    f"✓ Installed {src.name} as {canonical_name} to {dest_path}",
+                    "info",
+                )
+            except Exception as exc:
+                emit(
+                    f"! Warning: Could not install {canonical_name} to "
+                    f"{dest_type}: {exc}",
+                    "warning",
+                )
+
+    return copied, missing
+
+
 def install_bsg_ide(fix_mode=False):
     """Main installation function"""
     try:
@@ -610,36 +784,8 @@ def install_bsg_ide(fix_mode=False):
         # Create directory structure
         installer.create_directory_structure()
 
-        # Copy resources with enhanced PNG handling
-        package_root = Path(__file__).resolve().parent
-        required_files = {
-            'BSG_IDE.py': ['base', 'python_site'],
-            'BeamerSlideGenerator.py': ['base', 'python_site'],
-            'requirements.txt': ['base'],
-            'airis4d_logo.png': ['base/resources', 'resources', 'share', 'icons'],
-            'bsg-ide.png': ['base/resources', 'resources', 'share', 'icons']
-        }
-
-        # Copy each file to its destinations
-        for filename, destinations in required_files.items():
-            source_file = package_root / filename
-            if source_file.exists():
-                for dest_type in destinations:
-                    try:
-                        # Handle nested paths
-                        if '/' in dest_type:
-                            base_type, subdir = dest_type.split('/')
-                            if base_type in installer.install_paths:
-                                dest_dir = installer.install_paths[base_type] / subdir
-                        else:
-                            dest_dir = installer.install_paths[dest_type]
-
-                        dest_dir.mkdir(parents=True, exist_ok=True)
-                        dest_path = dest_dir / filename
-                        shutil.copy2(source_file, dest_path)
-                        print(f"✓ Copied {filename} to {dest_path}")
-                    except Exception as e:
-                        print(f"! Warning: Could not copy {filename} to {dest_type}: {e}")
+        # Install all components through the canonical-name mapping.
+        copy_canonical_install_files(installer, package_root)
 
         # Create launcher
         installer.create_launcher()
@@ -693,6 +839,8 @@ def verify_installation():
         required_files = {
             'BSG_IDE.py': package_root,
             'BeamerSlideGenerator.py': package_root,
+            'BSG_Presentation_Import.py': package_root,
+            'EnhancedCommandDialog.py': package_root,
             'requirements.txt': package_root,
             'airis4d_logo.png': resources_dir,
             'bsg-ide.png': resources_dir
@@ -13354,241 +13502,27 @@ except Exception as e:
 
  #------------------------------------------------------------------------------------
     def copy_resources(self, source_dir):
-        """Copy required resources to installation directories"""
+        """Copy all runtime files using the canonical installation mapping."""
         try:
-            # Define required files and their destinations
-            required_files = {
-                'BSG_IDE.py': ['base', 'python_site'],
-                'BeamerSlideGenerator.py': ['base', 'python_site'],
-                'requirements.txt': ['base'],
-                'airis4d_logo.png': ['base', 'resources', 'share'],  # Added multiple destinations
-                'bsg-ide.png': ['base', 'resources', 'share']
-            }
-
-            # Copy each required file
-            for filename, destinations in required_files.items():
-                source_file = source_dir / filename
-                if source_file.exists():
-                    for dest_type in destinations:
-                        if dest_type in self.install_paths:
-                            # Create destination directory if needed
-                            dest_dir = self.install_paths[dest_type]
-                            dest_dir.mkdir(parents=True, exist_ok=True)
-
-                            # For resources, ensure resources subdirectory exists
-                            if dest_type == 'base':
-                                resources_dir = dest_dir / 'resources'
-                                resources_dir.mkdir(parents=True, exist_ok=True)
-                                dest_path = resources_dir / filename
-                            else:
-                                dest_path = dest_dir / filename
-
-                            try:
-                                shutil.copy2(source_file, dest_path)
-                                if self.dialog:
-                                    self.dialog.write(f"✓ Copied {filename} to {dest_path}", "green")
-                                else:
-                                    print(f"✓ Copied {filename} to {dest_path}")
-                            except Exception as e:
-                                if self.dialog:
-                                    self.dialog.write(f"! Warning: Could not copy {filename} to {dest_path}: {e}", "yellow")
-                                else:
-                                    print(f"! Warning: Could not copy {filename} to {dest_path}: {e}")
-                else:
-                    if self.dialog:
-                        self.dialog.write(f"! Warning: Source file {filename} not found in {source_dir}", "yellow")
-                    else:
-                        print(f"! Warning: Source file {filename} not found in {source_dir}")
-
-            # Create additional resource directories if needed
-            for path_type in ['resources', 'share']:
-                if path_type in self.install_paths:
-                    resource_dir = self.install_paths[path_type] / 'resources'
-                    resource_dir.mkdir(parents=True, exist_ok=True)
-                    if self.dialog:
-                        self.dialog.write(f"✓ Created resource directory: {resource_dir}", "green")
-
-            return True
-
+            copied, missing = copy_canonical_install_files(self, source_dir)
+            return len(missing) == 0
         except Exception as e:
             if self.dialog:
-                self.dialog.write(f"✗ Error copying resources: {str(e)}", "red")
+                self.dialog.write(f"✗ Error copying resources: {e}", "red")
             else:
-                print(f"✗ Error copying resources: {str(e)}")
+                print(f"✗ Error copying resources: {e}")
             return False
-
-
-    def _get_install_paths(self):
-        """Get installation paths based on platform and permissions"""
-        paths = {}
-
-        # Get user's home directory
-        home_dir = Path.home()
-
-        if self.is_admin:
-            # System-wide installation paths
-            if self.system == "Linux":
-                paths.update({
-                    'base': Path('/usr/local/lib/bsg-ide'),
-                    'bin': Path('/usr/local/bin'),
-                    'share': Path('/usr/local/share/bsg-ide'),
-                    'resources': Path('/usr/local/share/bsg-ide/resources'),
-                    'applications': Path('/usr/share/applications'),
-                    'icons': Path('/usr/share/icons/hicolor'),
-                    'python_site': Path(site.getsitepackages()[0]) / 'bsg_ide'
-                })
-            elif self.system == "Windows":
-                program_files = Path(os.environ.get('PROGRAMFILES', 'C:\\Program Files'))
-                paths.update({
-                    'base': program_files / 'BSG-IDE',
-                    'bin': program_files / 'BSG-IDE' / 'bin',
-                    'share': program_files / 'BSG-IDE' / 'share',
-                    'resources': program_files / 'BSG-IDE' / 'resources',
-                    'start_menu': Path(os.environ['PROGRAMDATA']) / 'Microsoft/Windows/Start Menu/Programs',
-                    'python_site': Path(site.getsitepackages()[0]) / 'bsg_ide'
-                })
-            else:  # macOS
-                paths.update({
-                    'base': Path('/Applications/BSG-IDE.app/Contents'),
-                    'share': Path('/Applications/BSG-IDE.app/Contents/Resources'),
-                    'resources': Path('/Applications/BSG-IDE.app/Contents/Resources'),
-                    'bin': Path('/usr/local/bin'),
-                    'python_site': Path(site.getsitepackages()[0]) / 'bsg_ide'
-                })
-        else:
-            # User-specific installation paths
-            if self.system == "Linux":
-                paths.update({
-                    'base': home_dir / '.local/lib/bsg-ide',
-                    'bin': home_dir / '.local/bin',
-                    'share': home_dir / '.local/share/bsg-ide',
-                    'resources': home_dir / '.local/share/bsg-ide/resources',
-                    'applications': home_dir / '.local/share/applications',
-                    'icons': home_dir / '.local/share/icons/hicolor',
-                    'python_site': Path(site.getusersitepackages()) / 'bsg_ide'
-                })
-            elif self.system == "Windows":
-                appdata = Path(os.environ['APPDATA'])
-                paths.update({
-                    'base': appdata / 'BSG-IDE',
-                    'bin': appdata / 'BSG-IDE' / 'bin',
-                    'share': appdata / 'BSG-IDE' / 'share',
-                    'resources': appdata / 'BSG-IDE' / 'resources',
-                    'start_menu': appdata / 'Microsoft/Windows/Start Menu/Programs',
-                    'python_site': Path(site.getusersitepackages()) / 'bsg_ide'
-                })
-            else:  # macOS
-                paths.update({
-                    'base': home_dir / 'Applications/BSG-IDE.app/Contents',
-                    'share': home_dir / 'Library/Application Support/BSG-IDE',
-                    'resources': home_dir / 'Library/Application Support/BSG-IDE/resources',
-                    'bin': home_dir / '.local/bin',
-                    'python_site': Path(site.getusersitepackages()) / 'bsg_ide'
-                })
-
-        return paths
- #-----------------------------------------------------------------------------------
-
-    def create_directory_structure(self):
-        """Create all required directories for installation"""
-        try:
-            # Create all directories from install_paths
-            for path_type, path in self.install_paths.items():
-                try:
-                    # Skip creation of python_site as it's handled by pip
-                    if path_type == 'python_site':
-                        continue
-
-                    path.mkdir(parents=True, exist_ok=True)
-                    if self.dialog:
-                        self.dialog.write(f"✓ Created directory: {path}", "green")
-                    else:
-                        print(f"✓ Created directory: {path}")
-                except Exception as e:
-                    if self.dialog:
-                        self.dialog.write(f"! Warning: Could not create {path}: {e}", "yellow")
-                    else:
-                        print(f"! Warning: Could not create {path}: {e}")
-
-            # Create additional required subdirectories
-            media_dirs = [
-                self.install_paths['base'] / 'media_files',
-                self.install_paths['resources'] / 'templates',
-                self.install_paths['resources'] / 'icons'
-            ]
-
-            for directory in media_dirs:
-                try:
-                    directory.mkdir(parents=True, exist_ok=True)
-                    if self.dialog:
-                        self.dialog.write(f"✓ Created directory: {directory}", "green")
-                    else:
-                        print(f"✓ Created directory: {directory}")
-                except Exception as e:
-                    if self.dialog:
-                        self.dialog.write(f"! Warning: Could not create {directory}: {e}", "yellow")
-                    else:
-                        print(f"! Warning: Could not create {directory}: {e}")
-
-            # Create .keep files in empty directories to ensure they're tracked
-            for directory in self.install_paths.values():
-                if directory.is_dir() and not any(directory.iterdir()):
-                    keep_file = directory / '.keep'
-                    try:
-                        keep_file.touch()
-                    except Exception:
-                        pass
-
-            return True
-
-        except Exception as e:
-            if self.dialog:
-                self.dialog.write(f"✗ Error creating directory structure: {str(e)}", "red")
-            else:
-                print(f"✗ Error creating directory structure: {str(e)}")
-            return False
-
-
-
-    def _verify_python_env(self):
-        """Verify Python environment and dependencies"""
-        required_version = (3, 7)
-        if sys.version_info < required_version:
-            raise RuntimeError(f"Python {required_version[0]}.{required_version[1]} or higher required")
-
-        # Check virtual environment
-        if not hasattr(sys, 'real_prefix') and not hasattr(sys, 'base_prefix') != sys.prefix:
-            self.dialog.write("! Creating virtual environment...")
-            venv_path = os.path.join(os.path.expanduser("~"), "my_python")
-            venv.create(venv_path, with_pip=True)
-            self.dialog.write("✓ Virtual environment created", "green")
-
-    def _create_directories(self):
-        """Create required directories with proper permissions"""
-        for path in self.install_paths.values():
-            path.mkdir(parents=True, exist_ok=True)
-            self.dialog.write(f"✓ Created: {path}", "green")
 
     def _copy_files(self):
-        """Copy required files to installation directories"""
-        package_root = Path(__file__).parent
-        required_files = {
-            'BSG_IDE.py': {'dest': ['base', 'python_site']},
-            'BeamerSlideGenerator.py': {'dest': ['base', 'python_site']},
-            'requirements.txt': {'dest': ['base']},
-            'airis4d_logo.png': {'dest': ['resources']},
-            'bsg-ide.png': {'dest': ['resources']}
-        }
-
-        for filename, config in required_files.items():
-            src = package_root / filename
-            if src.exists():
-                for dest_key in config['dest']:
-                    dest = self.install_paths[dest_key] / filename
-                    shutil.copy2(src, dest)
-                    self.dialog.write(f"✓ Copied {filename} to {dest}", "green")
-            else:
-                self.dialog.write(f"! Warning: {filename} not found", "yellow")
+        """Copy required files through the single canonical mapping routine."""
+        package_root = Path(__file__).resolve().parent
+        copied, missing = copy_canonical_install_files(self, package_root)
+        if missing and self.dialog:
+            self.dialog.write(
+                "! Some installation files were not found: " + ", ".join(missing),
+                "yellow",
+            )
+        return len(missing) == 0
 
     def setup_os_integration(self):
        """Setup OS icons and desktop integration"""
@@ -14762,19 +14696,15 @@ class LaTeXErrorEditor(ctk.CTkToplevel):
     def setup_enhanced_help_system(self):
         """Setup the existing LaTeX help system in the error editor"""
         try:
-            # Import the existing help systems
+            # Use EnhancedCommandDialog as the authoritative help implementation.
+            # Do not import LatexCommandHelper from Grammarly.py: a local file named
+            # Grammarly.py can shadow the package and make the entire error-help
+            # system fail even though the presentation itself is valid.
             from EnhancedCommandDialog import LatexCommandHelper, CommandTooltip
-            from Grammarly import LatexCommandHelper as BasicLatexCommandHelper
 
-            # Try to use enhanced version first
-            try:
-                self.command_helper = LatexCommandHelper()
-                self.use_enhanced_help = True
-                print("✓ Using enhanced LaTeX help system")
-            except:
-                self.command_helper = BasicLatexCommandHelper()
-                self.use_enhanced_help = False
-                print("✓ Using basic LaTeX help system")
+            self.command_helper = LatexCommandHelper()
+            self.use_enhanced_help = True
+            print("✓ Using enhanced LaTeX help system")
 
             # Initialize tooltip manager
             self.tooltip_manager = CommandTooltip(self)
@@ -15311,6 +15241,9 @@ class MenuBar(ctk.CTkFrame):
 
         file_menu.add_separator()
         file_menu.add_command(label="Load TeX File...", command=self.editor.load_tex_file)
+        file_menu.add_command(label="Import PPTX / RTF...", command=self.editor.import_presentation_file)
+        file_menu.add_command(label="Export to PowerPoint (.pptx)...", command=self.editor.export_presentation_to_pptx)
+        file_menu.add_command(label="Convert Beamer TeX directly to PowerPoint...", command=self.editor.convert_tex_and_export_pptx)
         file_menu.add_command(label="Get Source from TeX...", command=self.editor.get_source_from_tex)
         file_menu.add_separator()
         file_menu.add_command(label="Export to Overleaf...", command=self.editor.create_overleaf_zip)
@@ -16591,7 +16524,7 @@ class BeamerSlideEditor(ctk.CTk):
         self.media_entry.bind('<FocusOut>', save_media_state)
 
     def get_default_preamble(self) -> str:
-        """Generate the default preamble without any custom modifications"""
+        """Generate ONLY the default LaTeX preamble, never a title-page frame."""
         try:
             from BeamerSlideGenerator import get_beamer_preamble
 
@@ -16602,21 +16535,27 @@ class BeamerSlideEditor(ctk.CTk):
             short_institute = self.presentation_info.get('short_institute', 'airis4D')
             date = self.presentation_info.get('date', '\\today')
 
-            return get_beamer_preamble(
+            generated = get_beamer_preamble(
                 title, subtitle, author, institution, short_institute, date
             )
+
+            doc_match = re.search(r"\\begin\{document\}", generated)
+            if doc_match:
+                generated = generated[:doc_match.start()]
+            title_match = re.search(r"(?m)^\s*%\s*Title page\s*$", generated)
+            if title_match:
+                generated = generated[:title_match.start()]
+            return generated.rstrip()
         except Exception as e:
             print(f"Error generating default preamble: {e}")
             return r"""\documentclass[aspectratio=169]{beamer}
-    \usepackage{graphicx}
-    \usepackage{xcolor}
-    \usepackage{amsmath}
-    \usepackage{amssymb}
-    \usetheme{Madrid}
-    \title{Presentation}
-    \author{airis4D}
-    \begin{document}
-    """
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usetheme{Madrid}
+\title{Presentation}
+\author{airis4D}"""
 
     def navigate_to_next_slide(self):
         """Navigate to next slide"""
@@ -16822,11 +16761,12 @@ class BeamerSlideEditor(ctk.CTk):
                 self.use_enhanced_latex = True
                 print("✓ Enhanced LaTeX help system loaded from EnhancedCommandDialog.py")
             else:
-                # Fallback to basic implementation
-                from Grammarly import LatexCommandHelper
+                # Fallback to the dedicated basic LaTeX helper.  Do not import
+                # from Grammarly.py; that module does not define this class.
+                from LatexHelp import LatexCommandHelper
                 self.command_helper = LatexCommandHelper()
                 self.use_enhanced_latex = False
-                print("Using basic LaTeX help system")
+                print("Using basic LaTeX help system from LatexHelp.py")
         except ImportError as e:
             print(f"Error setting up LaTeX help: {e}")
             self.setup_basic_latex_help()
@@ -20944,6 +20884,7 @@ Created by {self.__author__}
 
         file_menu.add_separator()
         file_menu.add_command(label="Load TeX File...", command=self.load_tex_file)
+        file_menu.add_command(label="Import PPTX / RTF...", command=self.import_presentation_file)
         file_menu.add_command(label="Get Source from TeX...", command=self.get_source_from_tex)
         file_menu.add_separator()
         file_menu.add_command(label="Export to Overleaf...", command=self.create_overleaf_zip)
@@ -21107,7 +21048,7 @@ Created by {self.__author__}
         menu_buttons = [
             ("Edit Preamble", self.edit_preamble, "Edit LaTeX preamble"),
             ("Presentation Settings", self.show_settings_dialog, "Configure presentation settings"),
-            ("Get Source", self.get_source_from_tex, "Extract source from TEX file"),
+            ("Import PPTX/RTF", self.import_presentation_file, "Import PowerPoint or RTF presentation and convert it to BSG TXT"),
             ("Load TeX File", self.load_tex_file, "Load and convert Beamer TeX file"),
             ("Overwrite TeX+PDF", self.overwrite_tex_and_generate_pdf, "Convert back to TeX and generate PDF"),
         ]
@@ -21399,6 +21340,262 @@ Created by {self.__author__}
                 "You can still launch BSG-IDE from the command line using 'bsg-ide'.")
 
 
+    def import_presentation_file(self) -> None:
+        """Import a PowerPoint (.pptx) or RTF (.rtf) presentation into BSG TXT."""
+        if not PRESENTATION_IMPORT_AVAILABLE or convert_presentation_to_text is None:
+            _detail = ""
+            if PRESENTATION_IMPORT_ERROR is not None:
+                _detail = (
+                    "\n\nActual importer error:\n"
+                    f"{type(PRESENTATION_IMPORT_ERROR).__name__}: "
+                    f"{PRESENTATION_IMPORT_ERROR}"
+                )
+            messagebox.showerror(
+                "PPTX/RTF Importer Error",
+                "The PPTX/RTF importer could not be loaded.\n\n"
+                "This does NOT necessarily mean python-pptx or Pillow is missing."
+                + _detail +
+                f"\n\nPython: {sys.executable}",
+                parent=self,
+            )
+            return
+
+        source_file = DialogManager.askopenfilename(
+            parent=self,
+            filetypes=[
+                ("PowerPoint presentations", "*.pptx"),
+                ("Rich Text Format", "*.rtf"),
+                ("PowerPoint / RTF", "*.pptx *.rtf"),
+                ("All files", "*.*"),
+            ],
+            title="Import PowerPoint or RTF Presentation",
+        )
+
+        if not source_file:
+            return
+
+        try:
+            self.write("\n" + "=" * 60 + "\n", "cyan")
+            self.write(
+                f"📥 Importing presentation: {os.path.basename(source_file)}\n",
+                "cyan",
+            )
+            self.write("=" * 60 + "\n", "cyan")
+
+            # Use the IDE's authoritative default preamble.  The converter
+            # does not derive/reconstruct a preamble from PPTX/RTF.
+            result = convert_presentation_to_text(
+                source_file,
+                default_preamble_provider=self.get_default_preamble,
+            )
+
+            if not result or not result.output_path or not os.path.exists(result.output_path):
+                raise RuntimeError("The converter did not produce a TXT file.")
+
+            # Compatibility guard: older BSG_Presentation_Import.py versions
+            # may not emit the source-presentation marker.  Add it here so the
+            # IDE never manufactures a second title page for an imported PPTX/RTF.
+            try:
+                with open(result.output_path, 'r', encoding='utf-8') as _f:
+                    _imported_txt = _f.read()
+                _marker = '% BSG_SOURCE_PRESENTATION_NO_AUTO_TITLE_PAGE'
+                if _marker not in _imported_txt:
+                    _doc_match = re.search(r'\\begin\{document\}', _imported_txt)
+                    if _doc_match:
+                        _imported_txt = (
+                            _imported_txt[:_doc_match.start()] +
+                            _marker + '\n' +
+                            _imported_txt[_doc_match.start():]
+                        )
+                        with open(result.output_path, 'w', encoding='utf-8') as _f:
+                            _f.write(_imported_txt)
+                        self.write("  ✓ Added source-presentation title-page guard\n", "green")
+            except Exception as _marker_error:
+                self.write(f"  ⚠ Could not add import title-page guard: {_marker_error}\n", "yellow")
+
+            self.write(
+                f"✓ Converted to BSG TXT: {os.path.basename(result.output_path)}\n",
+                "green",
+            )
+            self.write(f"  Imported slides: {result.slide_count}\n", "green")
+
+            if result.warnings:
+                self.write(
+                    f"⚠ Conversion produced {len(result.warnings)} warning(s):\n",
+                    "yellow",
+                )
+                for warning in result.warnings:
+                    self.write(f"   • {warning}\n", "yellow")
+
+            # IMPORTANT: load through the existing IDE path so all normal
+            # TXT parsing, validation, state initialization, and UI updates
+            # remain centralized in load_file().
+            self._preserve_imported_source_preamble = True
+            try:
+                self.load_file(result.output_path)
+            finally:
+                self._preserve_imported_source_preamble = False
+
+            self.write(
+                f"✓ Successfully loaded imported presentation ({len(self.slides)} slides)\n",
+                "green",
+            )
+
+            messagebox.showinfo(
+                "Presentation Imported",
+                f"Presentation imported successfully.\n\n"
+                f"Source: {os.path.basename(source_file)}\n"
+                f"Generated TXT: {os.path.basename(result.output_path)}\n"
+                f"Slides loaded: {len(self.slides)}",
+                parent=self,
+            )
+
+        except Exception as e:
+            self.write(f"✗ Error importing presentation: {e}\n", "red")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror(
+                "Import Error",
+                f"Could not import the presentation:\n\n{e}",
+                parent=self,
+            )
+
+
+    def export_presentation_to_pptx(self) -> None:
+        """Export the current BSG TXT presentation to an editable PPTX."""
+        if not PPTX_EXPORT_AVAILABLE or export_to_pptx is None:
+            detail = f"\n\n{type(PPTX_EXPORT_ERROR).__name__}: {PPTX_EXPORT_ERROR}" if PPTX_EXPORT_ERROR else ""
+            messagebox.showerror(
+                "PPTX Export Error",
+                "The PPTX exporter could not be loaded." + detail,
+                parent=self,
+            )
+            return
+        if not self.current_file or not os.path.exists(self.current_file):
+            messagebox.showwarning(
+                "No Presentation",
+                "Please open or save a BSG TXT presentation first.",
+                parent=self,
+            )
+            return
+        try:
+            default_name = Path(self.current_file).stem + ".pptx"
+            output_file = DialogManager.asksaveasfilename(
+                parent=self,
+                title="Export Presentation to PowerPoint",
+                defaultextension=".pptx",
+                initialfile=default_name,
+                filetypes=[("PowerPoint presentation", "*.pptx"), ("All files", "*.*")],
+            )
+            if not output_file:
+                return
+            self.write("\n" + "=" * 60 + "\n", "cyan")
+            self.write(
+                f"📤 Exporting {os.path.basename(self.current_file)} -> "
+                f"{os.path.basename(output_file)}\n", "cyan"
+            )
+            result = export_to_pptx(
+                self.current_file,
+                output_file,
+                tikz_mode="raster",
+                tikz_resolution=300,
+            )
+            self.write(f"✓ Exported {result.slide_count} slide(s) to PowerPoint\n", "green")
+            self.write(f"  Native objects: {result.native_objects}\n", "green")
+            self.write(f"  Rasterized graphics: {result.rasterized_objects}\n", "green")
+            for warning in result.warnings:
+                self.write(
+                    f"  ⚠ Slide {warning.slide}: {warning.message}\n", "yellow"
+                )
+            messagebox.showinfo(
+                "PPTX Export Complete",
+                "PowerPoint presentation created successfully.\n\n"
+                f"{output_file}\n\n"
+                f"Slides: {result.slide_count}\n"
+                f"Native objects: {result.native_objects}\n"
+                f"Rasterized graphics: {result.rasterized_objects}",
+                parent=self,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror(
+                "PPTX Export Error",
+                f"Could not export presentation:\n\n{exc}",
+                parent=self,
+            )
+
+    def convert_tex_and_export_pptx(self) -> None:
+        """Convert Beamer TeX -> BSG TXT -> editable PPTX."""
+        if not LATEX_TO_BSG_AVAILABLE or convert_latex_to_bsg_txt is None:
+            detail = f"\n\n{type(LATEX_TO_BSG_ERROR).__name__}: {LATEX_TO_BSG_ERROR}" if LATEX_TO_BSG_ERROR else ""
+            messagebox.showerror(
+                "LaTeX Import Error",
+                "The LaTeX-to-BSG converter could not be loaded." + detail,
+                parent=self,
+            )
+            return
+        if not PPTX_EXPORT_AVAILABLE or export_to_pptx is None:
+            messagebox.showerror(
+                "PPTX Export Error",
+                "The PPTX exporter could not be loaded.",
+                parent=self,
+            )
+            return
+        tex_file = DialogManager.askopenfilename(
+            parent=self,
+            title="Convert Beamer TeX directly to PowerPoint",
+            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
+        )
+        if not tex_file:
+            return
+        try:
+            bsg_result = convert_latex_to_bsg_txt(
+                tex_file,
+                tikz_mode="raster",
+                tikz_resolution=300,
+            )
+            default_name = Path(tex_file).stem + ".pptx"
+            output_file = DialogManager.asksaveasfilename(
+                parent=self,
+                title="Save Converted PowerPoint",
+                defaultextension=".pptx",
+                initialfile=default_name,
+                filetypes=[("PowerPoint presentation", "*.pptx"), ("All files", "*.*")],
+            )
+            if not output_file:
+                return
+            result = export_to_pptx(
+                bsg_result.output_path,
+                output_file,
+                tikz_mode="raster",
+                tikz_resolution=300,
+            )
+            self.write(
+                f"✓ TeX -> BSG TXT -> PPTX complete: {output_file}\n", "green"
+            )
+            for warning in bsg_result.warnings:
+                self.write(
+                    f"  ⚠ TeX line {warning.line}: {warning.message}\n", "yellow"
+                )
+            messagebox.showinfo(
+                "TeX → PowerPoint Complete",
+                f"Converted {bsg_result.slide_count} slide(s).\n\n"
+                f"PPTX: {output_file}\n"
+                f"Intermediate BSG TXT: {bsg_result.output_path}\n\n"
+                f"Native objects: {result.native_objects}\n"
+                f"Rasterized graphics: {result.rasterized_objects}",
+                parent=self,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror(
+                "Conversion Error",
+                f"Could not convert TeX to PowerPoint:\n\n{exc}",
+                parent=self,
+            )
+
     def get_source_from_tex(self) -> None:
         """Convert a tex file back to source text format - with proper file dialog"""
         tex_file = DialogManager.askopenfilename(
@@ -21669,6 +21866,7 @@ Created by {self.__author__}
         file_menu.add_command(label="Save", command=self.save_file, accelerator="Ctrl+S")
         file_menu.add_separator()
         file_menu.add_command(label="Load TeX File...", command=self.load_tex_file)
+        file_menu.add_command(label="Import PPTX / RTF...", command=self.import_presentation_file)
         file_menu.add_command(label="Get Source from TeX...", command=self.get_source_from_tex)
         file_menu.add_separator()
         file_menu.add_command(label="Export to Overleaf...", command=self.create_overleaf_zip)
@@ -28939,6 +29137,13 @@ Created by {self.__author__}
             with open(filename, 'r', encoding='utf-8') as f:
                 content = f.read()
 
+            # Imported PPTX/RTF files already contain their own first slide.
+            # Remember this so the generic BSG title-page auto-insertion does
+            # not create a second, unrelated title slide.
+            self._suppress_auto_title_page = (
+                '% BSG_SOURCE_PRESENTATION_NO_AUTO_TITLE_PAGE' in content
+            )
+
             self.slides = []
             self.current_slide_index = -1
 
@@ -28967,7 +29172,8 @@ Created by {self.__author__}
                 # the generated TXT file unchanged.  In particular, do not run
                 # the normal default-preamble merge here, because that changes
                 # the imported source before the user has chosen to modify it.
-                if getattr(self, '_preserve_imported_tex_preamble', False):
+                if (getattr(self, '_preserve_imported_tex_preamble', False) or
+                        getattr(self, '_preserve_imported_source_preamble', False)):
                     self.preamble_origin = 'tex_import'
                     self.custom_preamble = file_preamble
                     self.using_custom_preamble = True
@@ -29288,7 +29494,8 @@ Created by {self.__author__}
             # ============================================================
             # ENSURE TITLE PAGE EXISTS
             # ============================================================
-            if not has_title_page and self.slides:
+            if (not has_title_page and self.slides and
+                    not getattr(self, '_suppress_auto_title_page', False)):
                 for slide in self.slides:
                     content = slide.get('content', [])
                     if any('\\titlepage' in line for line in content):
@@ -29474,8 +29681,8 @@ Created by {self.__author__}
             # so a saved TXT file can never contain duplicate document markers
             # or a title page in the preamble.
             embedded_title_page = ''
-            if '\begin{document}' in preamble:
-                preamble, after_begin = preamble.split('\begin{document}', 1)
+            if r'\begin{document}' in preamble:
+                preamble, after_begin = preamble.split(r'\begin{document}', 1)
                 title_match = re.search(
                     r'\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
                     r'(?:\\titlepage|\\maketitle).*?\end\{frame\}',
@@ -32643,12 +32850,22 @@ Created by {self.__author__}
                         continue
 
                     if not found_media:
-                        found_media = True
+                        # The first Content item is the dedicated BSG Media
+                        # field.  In addition to legacy \file/\play media,
+                        # accept the semantic image-layout directives produced
+                        # by the PPTX importer.
                         media_value = clean_line.strip()
-                        if media_value.startswith('\\file') or media_value.startswith('\\play'):
+                        media_commands = (
+                            r'\file', r'\play', r'\ff', r'\wm', r'\pip',
+                            r'\split', r'\hl', r'\bg', r'\tb', r'\ol',
+                            r'\corner', r'\mosaic'
+                        )
+                        if media_value.startswith(media_commands):
+                            found_media = True
                             media = media_value
                             media_masked = is_masked
                         else:
+                            found_media = True
                             content_lines.append(clean_line.rstrip())
                             if is_masked:
                                 hidden_content_indices.append(content_line_index)
@@ -32948,14 +33165,29 @@ Created by {self.__author__}
 
                 if clean_line.strip() or (is_masked and clean_line):
                     if not found_media:
+                        # First Content line is BSG Media.  Accept both the
+                        # traditional media forms and semantic image layouts.
                         found_media = True
                         media_value = clean_line.strip()
+                        media_commands = (
+                            r'\file', r'\play', r'\ff', r'\wm', r'\pip',
+                            r'\split', r'\hl', r'\bg', r'\tb', r'\ol',
+                            r'\corner', r'\mosaic'
+                        )
                         if media_value == "\\None":
                             media = ""
                             media_masked = is_masked
-                        else:
+                        elif media_value.startswith(media_commands):
                             media = media_value
                             media_masked = is_masked
+                        else:
+                            # Preserve historical behavior for unusual first
+                            # content lines: they are content, not media.
+                            media = ""
+                            content_lines.append(clean_line.rstrip())
+                            if is_masked:
+                                hidden_content_indices.append(content_line_index)
+                            content_line_index += 1
                     else:
                         if clean_line.strip() or (is_masked and clean_line.strip()):
                             content_lines.append(clean_line.rstrip())
@@ -33573,8 +33805,31 @@ Created by {self.__author__}
                 date=date, logo=logo, logo_height=logo_height,
                 auto_fit=self.presentation_info.get('auto_fit', True)
             )
-            marker = '\n% Title page'
-            generated_preamble = generated.split(marker, 1)[0] if marker in generated else generated
+            # get_beamer_preamble() has historically returned the title frame
+            # after the preamble.  Different generator versions use slightly
+            # different whitespace around the "% Title page" marker, so do
+            # not depend on one exact string.  Failing to split here puts a
+            # frame before \begin{document}, which produces:
+            #   LaTeX Error: Missing \begin{document}.
+            title_marker_re = re.compile(
+                r'\n[ \t]*%[ \t]*Title[ \t]+page[ \t]*\n',
+                re.IGNORECASE
+            )
+            title_marker_match = title_marker_re.search(generated)
+            if title_marker_match:
+                generated_preamble = generated[:title_marker_match.start()].rstrip()
+            else:
+                # Fallback for generator variants that omit the comment marker
+                # but retain the characteristic title-page TikZ frame.
+                title_frame_marker = re.search(
+                    r'\n[ \t]*\\begin\{frame\}[ \t]*\n'
+                    r'[ \t]*\\begin\{tikzpicture\}\[overlay,remember picture\]',
+                    generated, re.DOTALL
+                )
+                generated_preamble = (
+                    generated[:title_frame_marker.start()].rstrip()
+                    if title_frame_marker else generated
+                )
 
             begin_match = re.search(r'\\begin\{document\}', content)
             if begin_match:
@@ -33636,8 +33891,12 @@ Created by {self.__author__}
                     body,
                     count=1
                 )
-            else:
+            elif not getattr(self, '_suppress_auto_title_page', False):
                 body = standard_title_page + '\n\n' + body.lstrip()
+            else:
+                # Source presentations such as PPTX already have a first slide;
+                # do not manufacture a BSG title page in front of it.
+                body = body.lstrip()
 
             new_content = (
                 preamble.rstrip() + '\n\n\\begin{document}\n\n'
@@ -41190,19 +41449,22 @@ def update_installation():
             os.makedirs(install_dir, exist_ok=True)
             os.makedirs(paths['bin'], exist_ok=True)
 
-            # Copy current files to installation directory
+            # Copy current components using the same canonical mapping used by
+            # the GUI installer.  This prevents update/install drift.
             current_dir = current_path.parent
-            required_files = [
-                'BSG_IDE.py',
-                'BeamerSlideGenerator.py',
-                'requirements.txt'
-            ]
+            class _UpdateInstallerAdapter:
+                def __init__(self, install_dir, paths):
+                    self.install_paths = {
+                        'base': install_dir,
+                        'python_site': install_dir,
+                        'resources': paths.get('share', install_dir) / 'resources',
+                        'share': paths.get('share', install_dir),
+                        'icons': paths.get('icons', install_dir),
+                    }
+                    self.dialog = None
 
-            for file in required_files:
-                src = current_dir / file
-                if src.exists():
-                    shutil.copy2(src, install_dir)
-                    print(f"Updated {file}")
+            adapter = _UpdateInstallerAdapter(install_dir, paths)
+            copy_canonical_install_files(adapter, current_dir)
 
             # Update version file
             version_file.write_text(current_version)

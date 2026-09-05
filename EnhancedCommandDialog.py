@@ -22,6 +22,56 @@ from datetime import datetime
 from tkinter import messagebox
 from typing import Dict, List, Optional, Tuple
 
+
+# ============================================================================
+# BSG PPTX OBJECT COMMANDS
+# ============================================================================
+# Human-readable LaTeX-style commands used by the PowerPoint importer.
+# These are deliberately key/value based so users can edit imported TXT files
+# without having to remember positional numeric arguments.
+BSG_PPTX_COMMANDS = {
+    r'\PPTXImage': {
+        'syntax': r'\PPTXImage[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight, rotate=<degrees>]{image}',
+        'description': 'Places a PowerPoint image at an exact slide position and size.',
+        'category': 'pptx', 'package': 'BSG PPTX',
+        'example': r'\PPTXImage[x=0.58\paperwidth, y=0.72\paperheight, width=0.21\paperwidth, height=0.26\paperheight, rotate=0]{media/diagram.png}',
+        'usage': 'Use percentage values for intuitive slide-relative positioning. x/y are measured from the top-left corner.',
+        'auto_complete': r'\PPTXImage[x=$1, y=$2, width=$3, height=$4, rotate=$5]{$6}',
+    },
+    r'\PPTXTextBox': {
+        'syntax': r'\PPTXTextBox[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight, font=<font>, size=<size>, color=<hex>, align=<left|center|right>, fit=<none|shape>, wrap=<true|false>]{text}',
+        'description': 'Places a PowerPoint text box independently with its original dimensions and typography.',
+        'category': 'pptx', 'package': 'BSG PPTX',
+        'example': r'\PPTXTextBox[x=0.11\paperwidth, y=0.01\paperheight, width=0.77\paperwidth, height=0.12\paperheight, font=Oswald, size=48pt, color=808080, align=center, fit=shape, wrap=false]{What is Artificial Intelligence?}',
+        'usage': 'Each text box is an independent object. fit=shape preserves PowerPoint text-to-fit behavior.',
+        'auto_complete': r'\PPTXTextBox[x=$1, y=$2, width=$3, height=$4, font=$5, size=$6, color=$7, align=$8, fit=$9, wrap=$10]{$11}',
+    },
+    r'\PPTXFont': {
+        'syntax': r'\PPTXFont{font family}{text}',
+        'description': 'Applies a mapped PowerPoint font family to a text fragment.',
+        'category': 'pptx', 'package': 'BSG PPTX',
+        'example': r'\PPTXFont{Oswald}{Artificial Intelligence}',
+        'usage': 'Normally generated automatically for imported PowerPoint text runs; useful for manual editing.',
+        'auto_complete': r'\PPTXFont{$1}{$2}',
+    },
+    r'\PPTXLine': {
+        'syntax': r'\PPTXLine[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight, color=<hex>, line width=<pt>]',
+        'description': 'Places a PowerPoint line or connector using slide-relative coordinates.',
+        'category': 'pptx', 'package': 'BSG PPTX',
+        'example': r'\PPTXLine[x=0.40\paperwidth, y=0.19\paperheight, width=0.15\paperwidth, height=0.14\paperheight, color=980000, line width=6pt]',
+        'usage': 'Coordinates are relative to the slide; width/height describe the line vector.',
+        'auto_complete': r'\PPTXLine[x=$1, y=$2, width=$3, height=$4, color=$5, line width=$6]',
+    },
+    r'\PPTXMedia': {
+        'syntax': r'\PPTXMedia[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight]{media}{preview}',
+        'description': 'Places imported PowerPoint video or other external media with a preview image.',
+        'category': 'pptx', 'package': 'BSG PPTX',
+        'example': r'\PPTXMedia[x=0.10\paperwidth, y=0.20\paperheight, width=0.80\paperwidth, height=0.45\paperheight]{media/demo.mp4}{media/demo_preview.png}',
+        'usage': 'Used for imported external media; the preview remains visible when interactive playback is unavailable.',
+        'auto_complete': r'\PPTXMedia[x=$1, y=$2, width=$3, height=$4]{$5}{$6}',
+    },
+}
+
 #---------------Enhanced Latex Help Library --------------------------
 class LatexCommandHelper:
     """Enhanced LaTeX command help system with symbols and autocompletion"""
@@ -185,6 +235,9 @@ class LatexCommandHelper:
                 'example': '\\alert{Important!}'
             }
         }
+
+        # Add the human-readable PPTX object commands.
+        self.commands_db.update({k: dict(v) for k, v in BSG_PPTX_COMMANDS.items()})
 
         # Add symbols to commands database
         for symbol, info in self.symbols_db.symbols.items():
@@ -880,6 +933,9 @@ class LatexCommandHelper:
             }
         }
 
+        # Add the human-readable PPTX object commands.
+        self.commands_db.update({k: dict(v) for k, v in BSG_PPTX_COMMANDS.items()})
+
         # Add symbols to commands database
         for symbol, info in self.symbols_db.symbols.items():
             if symbol not in self.commands_db:
@@ -1112,7 +1168,7 @@ class IntelligentAutocomplete:
 
     def build_autocomplete_database(self):
         """Build database for autocomplete suggestions (fallback)"""
-        return {
+        database = {
             '\\begin': {
                 'completion': '\\begin{$1}\n$2\n\\end{$1}',
                 'description': 'Begin environment block',
@@ -1397,6 +1453,18 @@ class IntelligentAutocomplete:
             }
         }
 
+        # BSG PPTX commands are part of the built-in Auto-Fill database so
+        # completion remains available even when LatexHelp.py is unavailable.
+        for command, info in BSG_PPTX_COMMANDS.items():
+            database[command] = {
+                'completion': info.get('auto_complete', command),
+                'description': info.get('description', 'BSG PPTX command'),
+                'type': 'command',
+                'category': 'pptx',
+                'package': 'BSG PPTX',
+            }
+
+        return database
     def setup_autocomplete(self, text_widget):
         """Attach reliable live LaTeX Auto-Fill bindings to a Tk Text widget."""
         if not self.enabled or text_widget is None:
@@ -2455,6 +2523,54 @@ class EnhancedCommandIndexDialog(ctk.CTkToplevel):
                     'usage': 'Standard image inclusion with BSG paths',
                     'is_symbol': False
                 }
+            ],
+
+            'PowerPoint / PPTX Objects': [
+                {
+                    'command': r'\PPTXImage',
+                    'syntax': r'\PPTXImage[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight, rotate=<degrees>]{image}',
+                    'description': 'Place a PowerPoint image as an independently positioned object.',
+                    'example': r'\PPTXImage[x=0.58\paperwidth, y=0.72\paperheight, width=0.21\paperwidth, height=0.26\paperheight, rotate=0]{media/diagram.png}',
+                    'category': 'pptx', 'display_options': ['static'],
+                    'auto_complete': r'\PPTXImage[x=$1, y=$2, width=$3, height=$4, rotate=$5]{$6}',
+                    'usage': 'Coordinates are relative to the slide. Percentage values are recommended for manual editing.', 'is_symbol': False
+                },
+                {
+                    'command': r'\PPTXTextBox',
+                    'syntax': r'\PPTXTextBox[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight, font=<font>, size=<size>, color=<hex>, align=<left|center|right>, fit=<none|shape>, wrap=<true|false>]{text}',
+                    'description': 'Place a PowerPoint text box independently while preserving font, size, dimensions and fit behavior.',
+                    'example': r'\PPTXTextBox[x=0.11\paperwidth, y=0.01\paperheight, width=0.77\paperwidth, height=0.12\paperheight, font=Oswald, size=48pt, color=808080, align=center, fit=shape, wrap=false]{What is Artificial Intelligence?}',
+                    'category': 'pptx', 'display_options': ['static'],
+                    'auto_complete': r'\PPTXTextBox[x=$1, y=$2, width=$3, height=$4, font=$5, size=$6, color=$7, align=$8, fit=$9, wrap=$10]{$11}',
+                    'usage': 'Each imported text box is independent. fit=shape reproduces PowerPoint text-to-fit behavior.', 'is_symbol': False
+                },
+                {
+                    'command': r'\PPTXFont',
+                    'syntax': r'\PPTXFont{font family}{text}',
+                    'description': 'Apply a mapped PowerPoint font family to a text fragment.',
+                    'example': r'\PPTXFont{Oswald}{Artificial Intelligence}',
+                    'category': 'pptx', 'display_options': ['static'],
+                    'auto_complete': r'\PPTXFont{$1}{$2}',
+                    'usage': 'Normally inserted automatically for imported PowerPoint runs.', 'is_symbol': False
+                },
+                {
+                    'command': r'\PPTXLine',
+                    'syntax': r'\PPTXLine[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight, color=<hex>, line width=<pt>]',
+                    'description': 'Place a PowerPoint line or connector with exact slide-relative geometry.',
+                    'example': r'\PPTXLine[x=0.40\paperwidth, y=0.19\paperheight, width=0.15\paperwidth, height=0.14\paperheight, color=980000, line width=6pt]',
+                    'category': 'pptx', 'display_options': ['static'],
+                    'auto_complete': r'\PPTXLine[x=$1, y=$2, width=$3, height=$4, color=$5, line width=$6]',
+                    'usage': 'Width and height describe the line vector from its start point.', 'is_symbol': False
+                },
+                {
+                    'command': r'\PPTXMedia',
+                    'syntax': r'\PPTXMedia[x=<x>\paperwidth, y=<y>\paperheight, width=<width>\paperwidth, height=<height>\paperheight]{media}{preview}',
+                    'description': 'Place imported PowerPoint media with a preview image.',
+                    'example': r'\PPTXMedia[x=0.10\paperwidth, y=0.20\paperheight, width=0.80\paperwidth, height=0.45\paperheight]{media/demo.mp4}{media/demo_preview.png}',
+                    'category': 'pptx', 'display_options': ['static'],
+                    'auto_complete': r'\PPTXMedia[x=$1, y=$2, width=$3, height=$4]{$5}{$6}',
+                    'usage': 'Used by imported external media and provides a visual fallback preview.', 'is_symbol': False
+                },
             ],
 
             'Beamer Text Formatting': [

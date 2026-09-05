@@ -10,6 +10,7 @@ import time
 import requests
 import webbrowser
 from PIL import Image
+PIL_AVAILABLE = True
 import customtkinter as ctk
 from tkinter import messagebox
 import tkinter as tk
@@ -3828,7 +3829,7 @@ def generate_content_items(content, color=None):
         # A) Graphics and media commands
         graphics_commands = [
             '\\includegraphics', '\\movie', '\\animategraphics',
-            '\\sound', '\\hyperlinksound'
+            '\\sound', '\\hyperlinksound', '\\BSGPPTXImage', '\\BSGPPTXText', '\\BSGPPTXLine', '\\BSGPPTXMedia'
         ]
         if any(cmd in item_str for cmd in graphics_commands):
             if in_itemize:
@@ -5115,6 +5116,62 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
 
+        # pdfTeX cannot include GIF files directly.  PPTX imports preserve the
+        # original GIF in ./media, but use a first-frame PNG for PDF rendering.
+        # This generator-side safeguard also makes older TXT files containing
+        # \BSGPPTXImage{...gif} render correctly without requiring re-import.
+        def _gif_render_path(raw_path):
+            raw_path = raw_path.strip()
+            if not raw_path.lower().endswith('.gif'):
+                return raw_path
+
+            source_path = Path(raw_path)
+            if not source_path.is_absolute():
+                source_path = Path(file_path).resolve().parent / source_path
+            source_path = source_path.resolve()
+
+            if not source_path.exists() or not PIL_AVAILABLE:
+                return raw_path
+
+            preview_path = source_path.with_name(source_path.stem + '_preview.png')
+            try:
+                if (not preview_path.exists() or
+                        preview_path.stat().st_mtime < source_path.stat().st_mtime):
+                    with Image.open(source_path) as gif_image:
+                        gif_image.seek(0)
+                        gif_image.convert('RGBA').save(preview_path, format='PNG')
+
+                # Return a path relative to the TXT file, preserving the
+                # original path style where possible.
+                try:
+                    rel = os.path.relpath(
+                        preview_path, Path(file_path).resolve().parent
+                    )
+                    return rel.replace(os.sep, '/')
+                except Exception:
+                    return str(preview_path).replace(os.sep, '/')
+            except Exception as exc:
+                warnings.append(f"Could not create GIF preview for {raw_path}: {exc}")
+                return raw_path
+
+        def _rewrite_gif_graphics(line):
+            # PPTX positional image macro.
+            line = re.sub(
+                r'(\\(?:BSGPPTXImage|PPTXImage)(?:\[[^\]]*\])?\{)([^{}]+)(\})',
+                lambda m: m.group(1) + _gif_render_path(m.group(2)) + m.group(3),
+                line,
+            )
+            # Conventional includegraphics fallback.
+            line = re.sub(
+                r'(\\includegraphics(?:\[[^\]]*\])?\{)([^{}]+\.gif)(\})',
+                lambda m: m.group(1) + _gif_render_path(m.group(2)) + m.group(3),
+                line,
+                flags=re.IGNORECASE,
+            )
+            return line
+
+        lines = [_rewrite_gif_graphics(line) for line in lines]
+
         if not lines:
             errors.append("Input file is empty")
             return 0, 1, errors
@@ -5737,6 +5794,27 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 else:
                     has_document_end = False
 
+                # A title-page frame is document BODY, never preamble.  Older
+                # IDE save paths could leave a generated title frame in the
+                # preamble.  Extract it here and emit it only after the single
+                # \begin{document}.
+                preamble_text = ''.join(preamble_lines)
+                preamble_title_match = re.search(
+                    r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+                    r'(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
+                    preamble_text,
+                    re.DOTALL
+                )
+                if preamble_title_match:
+                    if not generated_title_page:
+                        generated_title_page = preamble_title_match.group(0).strip()
+                    preamble_text = (
+                        preamble_text[:preamble_title_match.start()] +
+                        preamble_text[preamble_title_match.end():]
+                    )
+                    preamble_lines = preamble_text.splitlines(keepends=True)
+                    print("  ✓ Moved title-page frame from preamble into document body")
+
                 while content_lines and not content_lines[0].strip():
                     content_lines.pop(0)
             else:
@@ -5975,6 +6053,9 @@ def fix_latex_errors(line: str) -> str:
     if not line:
         return line
 
+    if re.match(r"^\\(?:BSGPPTX(?:Background|Text|Image|Line|Media)|PPTX(?:Background|TextBox|Image|Line|Media))(?:\[[^]]*\])?\{", line.lstrip()):
+        return line
+
     # Fix double braces
     line = re.sub(r'\{\{', '{', line)
     line = re.sub(r'\}\}', '}', line)
@@ -6206,13 +6287,17 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                         current_slide['media'] = media
                         continue
 
-                if stripped.startswith('\\file'):
+                media_prefixes = (
+                    r'\file', r'\play', r'\ff', r'\wm', r'\pip', r'\split',
+                    r'\hl', r'\bg', r'\tb', r'\ol', r'\corner', r'\mosaic'
+                )
+                if stripped.startswith(media_prefixes):
                     media = stripped
                     found_media = True
                     current_slide['media'] = media
                     continue
 
-                if stripped == '\\None':
+                if stripped == r'\None':
                     found_media = True
                     current_slide['media'] = ''
                     continue
@@ -7675,6 +7760,11 @@ def fix_braces(text):
     """Fix malformed braces in LaTeX content - COMPLETELY PRESERVES tabular and TikZ content"""
     if not text:
         return text
+
+    import re
+    if re.match(r"^\\(?:BSGPPTX(?:Background|Text|Image|Line|Media)|PPTX(?:Background|TextBox|Image|Line|Media))(?:\[[^]]*\])?\{", text.lstrip()):
+        return text
+
     # Log input
     if isinstance(text, str) and ('tabular' in text or '@{}' in text):
         logger.debug(f"fix_braces INPUT: {repr(text)}")
@@ -7924,8 +8014,12 @@ def parse_native_slides(lines, warnings):
         if in_content:
             if stripped and not stripped.startswith('%'):
                 # Check for media directive
-                if not found_media and stripped in ['\\None', '\\file', '\\play'] or stripped.startswith(('\\file', '\\play')):
-                    if stripped != '\\None':
+                media_prefixes = (
+                    r'\file', r'\play', r'\ff', r'\wm', r'\pip', r'\split',
+                    r'\hl', r'\bg', r'\tb', r'\ol', r'\corner', r'\mosaic'
+                )
+                if not found_media and (stripped == r'\None' or stripped.startswith(media_prefixes)):
+                    if stripped != r'\None':
                         media = stripped
                     found_media = True
                     current_slide['media'] = media
@@ -8036,20 +8130,40 @@ def write_slide(outfile, slide, warnings):
     outfile.write(f"\\frametitle{{{clean_title}}}\n")
     outfile.write("\n")
 
-    # Add media if present
-    if media and media != "\\None":
-        if media.startswith('\\file'):
-            file_path = media.replace('\\file', '').strip()
+    # Add Media.  Semantic layout directives are handled here rather than
+    # being flattened into ordinary Content.  The existing BSG layout macros
+    # provide the intended semantics for split/PIP/highlight/etc.
+    semantic_media = media.strip() if isinstance(media, str) else ''
+    semantic_layouts = (
+        r'\ff', r'\wm', r'\pip', r'\split', r'\hl', r'\bg',
+        r'\tb', r'\ol', r'\corner', r'\mosaic'
+    )
+    if semantic_media and semantic_media != r"\None":
+        if semantic_media.startswith(r'\file'):
+            file_path = semantic_media[len(r'\file'):].strip()
             outfile.write("\\begin{center}\n")
             outfile.write(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}\n")
             outfile.write("\\end{center}\n")
-        elif media.startswith('\\play'):
-            play_content = media.replace('\\play', '').strip()
-            if play_content.startswith('\\file'):
-                file_path = play_content.replace('\\file', '').strip()
+        elif semantic_media.startswith(r'\play'):
+            play_content = semantic_media[len(r'\play'):].strip()
+            if play_content.startswith(r'\file'):
+                file_path = play_content[len(r'\file'):].strip()
                 outfile.write("\\begin{center}\n")
                 outfile.write(f"    \\movie[externalviewer]{{\\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{file_path}}}}}{{{file_path}}}\n")
                 outfile.write("\\end{center}\n")
+        elif any(semantic_media.startswith(x) for x in semantic_layouts):
+            # Layout commands with a content argument are emitted after the
+            # content is available below.  Store them on the slide object for
+            # a small second-stage replacement rather than changing the public
+            # parser contract.
+            pass
+
+    # Semantic layouts that do not require a content argument can be emitted
+    # immediately.  Layouts requiring content are handled in the content block.
+    media_is_two_arg_layout = any(semantic_media.startswith(x) for x in (r'\pip', r'\split', r'\hl', r'\tb', r'\corner'))
+    media_is_one_arg_layout = any(semantic_media.startswith(x) for x in (r'\ff', r'\wm', r'\bg', r'\ol'))
+    if semantic_media and semantic_media != r"\None" and media_is_one_arg_layout:
+        outfile.write(semantic_media + "\n")
 
     # Add content
     if content:
@@ -8071,12 +8185,35 @@ def write_slide(outfile, slide, warnings):
             frame_lines.append(processed_content)
 
 
-        for line in content:
-            if line and line.strip():
-                # Fix braces and write
-                clean_line = fix_braces(line)
-                if clean_line:
-                    outfile.write(f"{clean_line}\n")
+        if semantic_media and semantic_media != r"\None" and media_is_two_arg_layout:
+            # Extract the image argument from the semantic Media directive.
+            # For mosaic this path is handled separately below.
+            if semantic_media.startswith((r'\pip', r'\split', r'\hl', r'\tb', r'\corner')):
+                mm = re.match(r'^\\(?:pip|split|hl|tb|corner)\s*\{(.*)\}\s*$', semantic_media, re.DOTALL)
+                if mm:
+                    image_path = mm.group(1).strip()
+                    processed = process_content_with_features(content)
+                    layout_cmd = semantic_media.split('{', 1)[0]
+                    outfile.write(f"{layout_cmd}{{{image_path}}}{{{processed}}}\n")
+                else:
+                    for line in content:
+                        if line and line.strip():
+                            clean_line = fix_braces(line)
+                            if clean_line:
+                                outfile.write(f"{clean_line}\n")
+            else:
+                for line in content:
+                    if line and line.strip():
+                        clean_line = fix_braces(line)
+                        if clean_line:
+                            outfile.write(f"{clean_line}\n")
+        else:
+            for line in content:
+                if line and line.strip():
+                    # Fix braces and write
+                    clean_line = fix_braces(line)
+                    if clean_line:
+                        outfile.write(f"{clean_line}\n")
 
     # Add notes
     if notes:
@@ -8183,8 +8320,13 @@ def _parse_native_format(content: str) -> list:
                     current_slide['media'] = ""
                 continue
 
-            # Check if this is a media directive
-            if stripped.startswith(('\\file', '\\play')):
+            # Check if this is a media directive.  BSG's Media field accepts
+            # both legacy media forms and semantic image layouts.
+            media_prefixes = (
+                r'\file', r'\play', r'\ff', r'\wm', r'\pip', r'\split',
+                r'\hl', r'\bg', r'\tb', r'\ol', r'\corner', r'\mosaic'
+            )
+            if stripped.startswith(media_prefixes):
                 current_slide['media'] = stripped
                 continue
 
