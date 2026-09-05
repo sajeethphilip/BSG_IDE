@@ -13,7 +13,7 @@ import platform
 from pathlib import Path
 
 # Configuration
-VERSION = "10.7.0"
+VERSION = "14.2.1"
 PACKAGE_NAME = "bsg_ide"
 PYPI_NAME = "bsg-ide"
 AUTHOR = "Ninan Sajeeth Philip"
