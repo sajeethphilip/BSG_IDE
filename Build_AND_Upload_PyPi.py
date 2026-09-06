@@ -11,9 +11,12 @@ import subprocess
 import argparse
 import platform
 from pathlib import Path
+import hashlib
+import zipfile
+import tarfile
 
 # Configuration
-VERSION = "14.2.1"
+VERSION = "14.7.1"
 PACKAGE_NAME = "bsg_ide"
 PYPI_NAME = "bsg-ide"
 AUTHOR = "Ninan Sajeeth Philip"
@@ -91,12 +94,18 @@ class BSGIDEBuildDeploy:
         """Copy source files"""
         print_color("\n📋 Copying source files...", Colors.BOLD)
 
+        # These are the ONLY canonical runtime source files.
+        # Development snapshot names (FINAL*, FIX*, etc.) are deliberately
+        # not used by the release builder.
         source_files = [
-            "BeamerSlideGenerator.py",
             "BSG_IDE.py",
+            "BeamerSlideGenerator.py",
+            "BSG_Presentation_Import.py",
+            "BSG_Presentation_Export.py",
+            "BSG_LaTeX_To_BSG_TXT.py",
+            "EnhancedCommandDialog.py",
             "InteractiveTerminal.py",
             "Grammarly.py",
-            "EnhancedCommandDialog.py",
             "LatexHelp.py",
         ]
 
@@ -107,7 +116,8 @@ class BSGIDEBuildDeploy:
                 shutil.copy2(src, dst)
                 print(f"  ✓ Copied: {file}")
             else:
-                print_color(f"  ⚠ Warning: {file} not found", Colors.YELLOW)
+                print_color(f"  ✗ Required canonical module not found: {file}", Colors.RED)
+                return False
 
         # Copy resources
         for res in ["airis4d_logo.png", "bsg-ide.png"]:
@@ -116,6 +126,21 @@ class BSGIDEBuildDeploy:
             if src.exists():
                 shutil.copy2(src, dst)
                 print(f"  ✓ Copied: {res}")
+
+        # Bundle the complete beginner tutorial when present.
+        tutorial_candidates = [
+            self.project_root / "BSG_IDE_Complete_Tutorial_Photosynthesis.pptx",
+            self.project_root / "tutorials" / "BSG_IDE_Complete_Tutorial_Photosynthesis.pptx",
+            self.project_root / "docs" / "BSG_IDE_Complete_Tutorial_Photosynthesis.pptx",
+        ]
+        tutorial_src = next((p for p in tutorial_candidates if p.is_file()), None)
+        if tutorial_src is not None:
+            tutorial_dst = self.package_dir / "resources" / "tutorials" / tutorial_src.name
+            tutorial_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(tutorial_src, tutorial_dst)
+            print(f"  ✓ Copied tutorial: {tutorial_src}")
+        else:
+            print("  ⚠ Tutorial PPTX not found; continuing without it", Colors.YELLOW)
 
         return True
 
@@ -754,19 +779,37 @@ class BSGIDEBuildDeploy:
                         shutil.copy2(f, self.dist_dir / f.name)
                         print(f"  ✓ Copied: {f.name}")
 
-                    # Also create source distribution
-                    subprocess.run(
-                        [sys.executable, "setup.py", "sdist"],
+                    # Create the source distribution explicitly.
+                    # IMPORTANT: Path.suffix for a filename such as
+                    # ``bsg_ide-14.2.1.tar.gz`` is ``.gz``, not ``.tar.gz``.
+                    # The previous implementation therefore silently built the
+                    # sdist but never copied it to the release dist/ directory.
+                    sdist_result = subprocess.run(
+                        [sys.executable, "setup.py", "sdist", "--dist-dir", str(src_dist)],
                         capture_output=True,
                         text=True
                     )
 
-                    for f in src_dist.glob("*"):
-                        if f.suffix in ['.tar.gz', '.zip']:
-                            shutil.copy2(f, self.dist_dir / f.name)
-                            print(f"  ✓ Copied: {f.name}")
+                    if sdist_result.returncode != 0:
+                        print_color("✗ Source distribution build failed", Colors.RED)
+                        if sdist_result.stdout:
+                            print(sdist_result.stdout)
+                        if sdist_result.stderr:
+                            print(sdist_result.stderr)
+                        return False
 
-                    return True
+                    sdists = list(src_dist.glob("*.tar.gz"))
+                    if not sdists:
+                        print_color("✗ setup.py sdist completed but produced no .tar.gz file", Colors.RED)
+                        if sdist_result.stdout:
+                            print(sdist_result.stdout)
+                        return False
+
+                    for f in sdists:
+                        shutil.copy2(f, self.dist_dir / f.name)
+                        print(f"  ✓ Copied: {f.name}")
+
+                    return self.validate_built_artifacts()
             else:
                 print_color(f"Build failed: {result.stderr}", Colors.RED)
                 return False
@@ -775,6 +818,89 @@ class BSGIDEBuildDeploy:
             os.chdir(original_dir)
 
         return False
+
+    def validate_built_artifacts(self):
+        """Validate the ACTUAL wheel/sdist contents.
+
+        This intentionally does not look for development-version markers such
+        as FINAL8 or FIX7.  The release contract is the canonical filename and
+        the bytes copied from that file.  In particular, backslashes in the
+        Python source are not interpreted as LaTeX here; we compare the wheel
+        member byte-for-byte with the staged canonical source.
+        """
+        print_color("\n🔍 Validating built artifacts...", Colors.BOLD)
+
+        wheels = list(self.dist_dir.glob("*.whl"))
+        sdists = list(self.dist_dir.glob("*.tar.gz"))
+        if len(wheels) != 1:
+            print_color(f"✗ Expected exactly one wheel; found {len(wheels)}", Colors.RED)
+            return False
+        if len(sdists) != 1:
+            print_color(f"✗ Expected exactly one source distribution; found {len(sdists)}", Colors.RED)
+            return False
+
+        wheel = wheels[0]
+        required = [
+            "BSG_IDE.py", "BeamerSlideGenerator.py",
+            "BSG_Presentation_Import.py", "BSG_Presentation_Export.py",
+            "BSG_LaTeX_To_BSG_TXT.py", "EnhancedCommandDialog.py",
+            "InteractiveTerminal.py", "Grammarly.py", "LatexHelp.py",
+        ]
+
+        def sha_bytes(data):
+            return hashlib.sha256(data).hexdigest()
+
+        with zipfile.ZipFile(wheel, "r") as zf:
+            names = set(zf.namelist())
+            for name in required:
+                member = f"{PACKAGE_NAME}/{name}"
+                if member not in names:
+                    print_color(f"✗ Wheel missing canonical module: {member}", Colors.RED)
+                    return False
+
+            # The most important check: no build backend transformation or
+            # accidental stale source is allowed for the generator.
+            canonical = self.project_root / "BeamerSlideGenerator.py"
+            staged = self.package_dir / "BeamerSlideGenerator.py"
+            wheel_bytes = zf.read(f"{PACKAGE_NAME}/BeamerSlideGenerator.py")
+            canonical_bytes = canonical.read_bytes()
+            staged_bytes = staged.read_bytes()
+
+            canonical_hash = sha_bytes(canonical_bytes)
+            staged_hash = sha_bytes(staged_bytes)
+            wheel_hash = sha_bytes(wheel_bytes)
+
+            print(f"  canonical BeamerSlideGenerator.py: {canonical_hash}")
+            print(f"  staged    BeamerSlideGenerator.py: {staged_hash}")
+            print(f"  wheel     BeamerSlideGenerator.py: {wheel_hash}")
+
+            if canonical_bytes != staged_bytes:
+                print_color("✗ Canonical generator differs from staged generator", Colors.RED)
+                return False
+            if canonical_bytes != wheel_bytes:
+                print_color("✗ Wheel generator differs from canonical generator", Colors.RED)
+                print_color("  This is a real packaging/source-selection error, not a marker-validation issue.", Colors.YELLOW)
+                return False
+            print("  ✓ BeamerSlideGenerator.py is byte-for-byte identical: source → staging → wheel")
+
+            tutorial_member = f"{PACKAGE_NAME}/resources/tutorials/BSG_IDE_Complete_Tutorial_Photosynthesis.pptx"
+            if tutorial_member in names:
+                print("  ✓ Tutorial PPTX present in wheel")
+            else:
+                print("  ⚠ Tutorial PPTX not present in wheel")
+
+        with tarfile.open(sdists[0], "r:gz") as tf:
+            names = tf.getnames()
+            for name in required:
+                if not any(n.endswith(f"/{PACKAGE_NAME}/{name}") for n in names):
+                    print_color(f"✗ Source distribution missing canonical module: {name}", Colors.RED)
+                    return False
+            tutorial_suffix = f"/{PACKAGE_NAME}/resources/tutorials/BSG_IDE_Complete_Tutorial_Photosynthesis.pptx"
+            if any(n.endswith(tutorial_suffix) for n in names):
+                print("  ✓ Tutorial PPTX present in sdist")
+
+        print_color("✓ Built artifact contents validated", Colors.GREEN)
+        return True
 
     def test_local_install(self):
         """Test local installation"""

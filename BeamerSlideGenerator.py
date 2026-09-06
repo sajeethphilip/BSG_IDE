@@ -1196,6 +1196,53 @@ DEFAULT_FOOTER_LOGO_HEIGHT = "2.2ex"
 # ============================================================
 # ENHANCED: CLEANER DEFAULT PREAMBLE WITH FULL FEATURE SUPPORT
 # ============================================================
+
+
+# ============================================================
+# PPTX TEXT-BOX RENDERING FIX
+# ============================================================
+PPTX_RENDER_FIX_MACRO = '\\makeatletter\n\\long\\def\\PPTXTextBox{\\@ifnextchar[{\\PPTXTextBox@opt}{\\PPTXTextBox@noopt}}\n\\long\\def\\PPTXTextBox@opt[#1]#2{\\PPTXTextBox@render{#1}{#2}}\n\\long\\def\\PPTXTextBox@noopt#1{\\PPTXTextBox@render{}{#1}}\n\\long\\def\\PPTXTextBox@render#1#2{%\n  \\pgfkeys{/bsg/pptx/text/.cd,x=0pt,y=0pt,width=0pt,height=0pt,font=Arial,size=12pt,color=000000,align=left,fit=none,wrap=true,#1}%\n  \\definecolor{PPTXBoxColor}{HTML}{\\PPTXTextColorHex}%\n  \\begin{textblock*}{\\PPTXTextW}(\\PPTXTextX,\\PPTXTextY)%\n    \\def\\PPTXFitShape{shape}%\n    \\def\\PPTXAlignCenter{center}%\n    \\def\\PPTXAlignRight{right}%\n    \\def\\PPTXWrapFalse{false}%\n    \\ifx\\PPTXTextFit\\PPTXFitShape\n      \\ifx\\PPTXTextWrap\\PPTXWrapFalse\n        \\makebox[\\PPTXTextW][\\ifx\\PPTXTextAlign\\PPTXAlignCenter c\\else\\ifx\\PPTXTextAlign\\PPTXAlignRight r\\else l\\fi\\fi]{%\n          \\adjustbox{max width=\\PPTXTextW,max height=\\PPTXTextH,keepaspectratio}{%\n            \\hbox{\\color{PPTXBoxColor}\\PPTXFont{\\PPTXTextFont}{\\fontsize{\\PPTXTextSize}{1.15\\baselineskip}\\selectfont #2}}}%\n        }\n      \\else\n        \\adjustbox{max width=\\PPTXTextW,max height=\\PPTXTextH,keepaspectratio}{%\n          \\parbox[t]{\\PPTXTextW}{%\n            \\ifx\\PPTXTextAlign\\PPTXAlignCenter\\centering\\else\\ifx\\PPTXTextAlign\\PPTXAlignRight\\raggedleft\\else\\raggedright\\fi\\fi\n            \\color{PPTXBoxColor}\\PPTXFont{\\PPTXTextFont}{\\fontsize{\\PPTXTextSize}{1.15\\baselineskip}\\selectfont #2}}}%\n      \\fi\n    \\else\n      % fit=none: direct positioned parbox; importantly no adjustbox wrapper.\n      \\parbox[t]{\\PPTXTextW}{%\n        \\ifx\\PPTXTextAlign\\PPTXAlignCenter\\centering\\else\\ifx\\PPTXTextAlign\\PPTXAlignRight\\raggedleft\\else\\raggedright\\fi\\fi\n        \\color{PPTXBoxColor}\\PPTXFont{\\PPTXTextFont}{\\fontsize{\\PPTXTextSize}{1.15\\baselineskip}\\selectfont #2}}%\n    \\fi\n  \\end{textblock*}%\n}\n\\makeatother'
+
+def _inject_pptx_textbox_render_fix(preamble_lines, file_content):
+    """Install the PPTXTextBox renderer before the preamble is written.
+
+    Imported PPTX TXT files may already contain an older renderer.  Replace
+    that definition instead of appending a second \\PPTXTextBox definition.
+    """
+    if r'\PPTXTextBox' not in file_content:
+        return preamble_lines
+
+    text = ''.join(preamble_lines)
+
+    if r'\usepackage[absolute,overlay]{textpos}' not in text and r'\usepackage{textpos}' not in text:
+        text += r'\usepackage[absolute,overlay]{textpos}' + '\n'
+
+    # Remove the existing PPTXTextBox command from an imported preamble.
+    # Its normal location is immediately before the line-family pgfkeys.
+    # IMPORTANT: every LaTeX backslash must be escaped for the Python regex
+    # engine.  A pattern such as r"\PPTXTextBox" is parsed by re as an
+    # invalid escape (\P), which is the source of the:
+    #   re.PatternError: bad escape \P
+    # seen during TXT -> TeX conversion.
+    pattern = re.compile(
+        r'\\newcommand\{\\PPTXTextBox\}\[2\]\[\]\{%.*?\n\}\s*\n(?=\\pgfkeys\{\/bsg\/pptx\/line)',
+        re.DOTALL,
+    )
+    text, _ = pattern.subn('', text, count=1)
+
+    # Remove a previous FINAL7 block if the helper is invoked twice.
+    text = re.sub(
+        r'% ====== BSG PPTX TEXT-BOX RENDER FIX FINAL8 ======.*?% ==================================================\n',
+        '', text, flags=re.DOTALL)
+
+    block = (
+        '% ====== BSG PPTX TEXT-BOX RENDER FIX FINAL8 ======\n'
+        + PPTX_RENDER_FIX_MACRO
+        + '\n% ==================================================\n'
+    )
+    text = text.rstrip() + '\n\n' + block
+    return text.splitlines(keepends=True)
+
 def get_beamer_preamble(title, subtitle, author, institution, short_institute, date, logo="", logo_height="2.2", auto_fit=True):
     """
     Returns complete Beamer preamble with intelligent auto-scaling and frame mode support.
@@ -5442,6 +5489,8 @@ def process_input_file_Old(file_path, output_filename='movie.tex', presentation_
             print(f"  ✓ Applied {final_tikz_fix_count} additional TikZ fixes")
 
         # ========== WRITE OUTPUT ==========
+        # Install/replace the PPTX renderer BEFORE writing the preamble.
+        preamble_lines = _inject_pptx_textbox_render_fix(preamble_lines, file_content)
         with open(output_filename, 'w', encoding='utf-8') as outfile:
             # Write preamble
             if preamble_lines:
@@ -5942,6 +5991,8 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             print("  ⏭ Skipping final TikZ fixes (level 3 - preserve everything)")
 
         # ========== WRITE OUTPUT ==========
+        # Install/replace the PPTX renderer BEFORE writing the preamble.
+        preamble_lines = _inject_pptx_textbox_render_fix(preamble_lines, file_content)
         with open(output_filename, 'w', encoding='utf-8') as outfile:
             # Write preamble
             if preamble_lines:
