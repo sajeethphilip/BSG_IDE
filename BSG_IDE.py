@@ -17809,9 +17809,13 @@ class BeamerSlideEditor(ctk.CTk):
     # FIX: Improved load_tex_file with better error handling
     # ============================================================
 
-
     def load_tex_file(self) -> None:
-        """Load and convert a Beamer .tex file to IDE format - with proper file dialog"""
+        """Load and convert a Beamer .tex file to IDE format - with proper file dialog.
+
+        The converted TXT file is always named `<tex_stem>_converted.txt` so
+        that a later "Generate PDF" or "Convert to TeX" step cannot overwrite
+        the user's original .tex file.
+        """
         tex_file = DialogManager.askopenfilename(
             parent=self,
             filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
@@ -17846,6 +17850,35 @@ class BeamerSlideEditor(ctk.CTk):
                 messagebox.showerror("Error", f"{error_msg}\n\nPlease check the terminal for details.", parent=self)
                 return
 
+            # ------------------------------------------------------------------
+            # SAFETY: never let the converted TXT file sit next to its source
+            # TeX file with the same stem.  If an older converter produced
+            # `<stem>.txt` (or a future caller returns such a path), rename it
+            # to `<stem>_converted.txt` before proceeding so a later
+            # "Convert to TeX" cannot clobber the user's original .tex file.
+            # ------------------------------------------------------------------
+            text_path = Path(text_file)
+            tex_path = Path(tex_file)
+            if (text_path.suffix.lower() == '.txt'
+                    and text_path.stem == tex_path.stem
+                    and not text_path.stem.endswith('_converted')):
+                renamed_path = text_path.parent / f"{text_path.stem}_converted.txt"
+                try:
+                    if renamed_path.exists():
+                        renamed_path.unlink()
+                    text_path.rename(renamed_path)
+                    text_file = str(renamed_path)
+                    self.write(
+                        f"  ✓ Renamed converted file to avoid overwriting "
+                        f"{tex_path.name}: {renamed_path.name}\n",
+                        "green"
+                    )
+                except OSError as rename_err:
+                    self.write(
+                        f"  ⚠ Could not rename {text_path.name}: {rename_err}\n",
+                        "yellow"
+                    )
+
             # IMPORTANT: When importing a real Beamer TeX file, the TXT source
             # must inherit the COMPLETE original preamble verbatim by default.
             # load_file() normally merges a genuine preamble with the BSG default;
@@ -17860,6 +17893,7 @@ class BeamerSlideEditor(ctk.CTk):
 
             self.write(f"✓ Successfully loaded and converted: {os.path.basename(tex_file)}\n", "green")
             self.write(f"  Loaded {len(self.slides)} slides\n", "green")
+            self.write(f"  Working file: {os.path.basename(text_file)}\n", "cyan")
 
             if errors:
                 self.write(f"\n⚠ Found {len(errors)} issue(s) during conversion:\n", "yellow")
@@ -17873,6 +17907,8 @@ class BeamerSlideEditor(ctk.CTk):
                 "Success",
                 f"TeX file converted successfully!\n\n"
                 f"Loaded {len(self.slides)} slides.\n\n"
+                f"Working file: {os.path.basename(text_file)}\n"
+                f"(The original .tex file is not modified.)\n\n"
                 "Would you like to generate PDF now?",
                 parent=self
             ):
@@ -23970,7 +24006,13 @@ Created by {self.__author__}
     # Modify the convert_to_tex method to validate before processing
 
     def convert_to_tex(self):
-        """Convert text to TeX with validation before processing"""
+        """Convert text to TeX with validation before processing.
+
+        SAFETY: If the current TXT file ends with `_converted` (i.e., it was
+        produced by importing a TeX file), the generated TeX is never written
+        back to the original source `.tex` file.  In that case, a
+        `<stem>_generated.tex` file is produced instead.
+        """
         if not self.current_file:
             messagebox.showwarning("Warning", "Please save your file first!")
             return False
@@ -23999,6 +24041,33 @@ Created by {self.__author__}
             base_filename = os.path.splitext(self.current_file)[0]
             tex_file = base_filename + '.tex'
             txt_file = self.current_file
+
+            # ------------------------------------------------------------------
+            # SAFETY: If the current TXT file came from importing a TeX file
+            # (its name ends with _converted), never overwrite the original
+            # source .tex file.  Write the generated TeX under a distinct
+            # _generated name instead.
+            # ------------------------------------------------------------------
+            if os.path.basename(base_filename).lower().endswith('_converted'):
+                source_stem = os.path.basename(base_filename)[:-len('_converted')]
+                source_tex = os.path.join(
+                    os.path.dirname(self.current_file) or '.',
+                    source_stem + '.tex'
+                )
+                if os.path.abspath(tex_file) == os.path.abspath(source_tex):
+                    self.write(
+                        "⚠ Refusing to overwrite the original source TeX file.\n",
+                        "yellow"
+                    )
+                    self.write(
+                        f"  Source .tex: {os.path.basename(source_tex)}\n",
+                        "cyan"
+                    )
+                    tex_file = base_filename + '_generated.tex'
+                    self.write(
+                        f"  → Writing generated TeX to: {os.path.basename(tex_file)}\n",
+                        "cyan"
+                    )
 
             self.clear_terminal()
             self.write("="*60 + "\n", "cyan")
@@ -30027,7 +30096,7 @@ Created by {self.__author__}
                                "Are you sure?"):
             default_preamble = self.get_default_preamble()
 
-            # Keep the 	itle/uthor/etc. metadata in the preamble, but remove
+            # Keep the  itle/uthor/etc. metadata in the preamble, but remove
             # any embedded title-page FRAME.  The slide model generates the
             # authoritative title-page slide, so retaining both would create a
             # duplicate title page after reset.
@@ -31320,9 +31389,45 @@ Created by {self.__author__}
 
     @staticmethod
     def convert_beamer_tex_to_simple_text(tex_file_path):
-        """
-        Convert Beamer .tex file to simple text format with proper error handling.
-        PRESERVES AND MERGES all preamble definitions (packages, colors, commands, themes, etc.)
+        r"""
+        Convert a Beamer .tex file to the native BSG TEXT format (clean version).
+
+        FIXES APPLIED
+        -------------
+        1. Math-safe title cleaning:
+           `$\neq$` and `$\rightarrow$` are no longer collapsed into `$$`.
+           Math-mode spans are protected before command stripping and restored
+           afterwards.  The same protection is applied to every title that is
+           subsequently laundered by BeamerSlideGenerator.clean_title(), so the
+           round trip TeX -> TEXT -> TeX is stable.
+
+        2. Title-page frame is emitted as a NATIVE BSG slide:
+               \title Title Page
+               \begin{Content}
+               \titlepage
+               \end{Content}
+               \begin{Notes}
+               % No notes for this slide
+               \end{Notes}
+           The previous code skipped the frame entirely and re-added a raw
+           LaTeX frame from the writer, which is not a first-class BSG slide.
+
+        3. Table row separator is not merged with a following table rule:
+               Stage & Emphasis & Grades\\\midrule
+           becomes
+               Stage & Emphasis & Grades\\
+               \midrule
+           so the native parser and the downstream LaTeX writer both see a
+           well-formed row boundary.
+
+        4. The original TeX preamble is copied byte-for-byte (unchanged
+           behaviour), and \begin{document} is written exactly once.
+
+        5. OUTPUT FILENAME SAFETY:
+           The converted TXT file is written as `<tex_stem>_converted.txt`
+           instead of `<tex_stem>.txt`.  This guarantees that a later
+           "Generate PDF" / "Convert to TeX" step cannot silently overwrite
+           the user's original .tex file.
         """
         import re
         from pathlib import Path
@@ -31346,58 +31451,107 @@ Created by {self.__author__}
             })
             print(f"  ℹ Line {line_num}: {warning_msg}")
 
+        # ============================================================
+        # MATH-SAFE TITLE CLEANING  (Defect 1)
+        # ============================================================
         def clean_latex_title(title):
+            r"""
+            Clean a LaTeX frame title without corrupting math mode.
+
+            The previous implementation did:
+                title = re.sub(r'\\[a-zA-Z]+\s*', '', title)
+            which turned `$\neq$` into `$$` and `$\rightarrow$` into `$$`.
+            Math-mode spans are now protected before stripping and restored
+            after stripping, so `$...$` survives intact.
+            """
             if not title:
                 return "Untitled"
+
+            title = str(title)
+
+            # -------- protect math mode --------
+            math_placeholders = {}
+
+            def _protect_math(match):
+                key = f"@@BSGMATH{len(math_placeholders)}@@"
+                math_placeholders[key] = match.group(0)
+                return key
+
+            # Inline math: $...$
+            title = re.sub(r'\$[^$]+\$', _protect_math, title)
+            # Display math: \[...\]
+            title = re.sub(r'\\\[.*?\\\]', _protect_math, title, flags=re.DOTALL)
+            # Quote-bracket math: '[...]' and "[...]"
+            title = re.sub(r'[\'"]\[.*?[\'"]\]', _protect_math, title, flags=re.DOTALL)
+
+            # -------- strip only known formatting commands --------
             title = re.sub(r'\\textbf\{([^}]*)\}', r'\1', title)
             title = re.sub(r'\\textit\{([^}]*)\}', r'\1', title)
+            title = re.sub(r'\\emph\{([^}]*)\}', r'\1', title)
             title = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', title)
             title = re.sub(r'\\Large\s*', '', title)
             title = re.sub(r'\\large\s*', '', title)
-            title = re.sub(r'\\Huge\s*', '', title)
+            title = re.sub(r'\\LARGE\s*', '', title)
             title = re.sub(r'\\huge\s*', '', title)
-            title = re.sub(r'\\[a-zA-Z]+\s*', '', title)
-            title = title.replace('&', '\\&')
-            title = title.replace('%', '\\%')
-            title = title.replace('#', '\\#')
-            title = title.replace('_', '\\_')
-            title = title.replace('$', '\\$')
+            title = re.sub(r'\\Huge\s*', '', title)
+            title = re.sub(r'\\normalsize\s*', '', title)
+            title = re.sub(r'\\small\s*', '', title)
+            title = re.sub(r'\\tiny\s*', '', title)
+            title = re.sub(r'\\footnotesize\s*', '', title)
+
+            # -------- restore math mode --------
+            for key, value in math_placeholders.items():
+                title = title.replace(key, value)
+
+            # -------- escape special characters OUTSIDE math mode --------
+            # We do a second pass that walks the string and only escapes when
+            # we are not inside a $...$ span.
+            out = []
+            in_math = False
+            i = 0
+            while i < len(title):
+                ch = title[i]
+                if ch == '$' and (i == 0 or title[i - 1] != '\\'):
+                    in_math = not in_math
+                    out.append(ch)
+                    i += 1
+                    continue
+                if in_math:
+                    out.append(ch)
+                else:
+                    if ch in '&%#_':
+                        out.append('\\' + ch)
+                    else:
+                        out.append(ch)
+                i += 1
+
+            title = ''.join(out)
             title = re.sub(r'\s+', ' ', title).strip()
             return title or "Untitled"
 
-        def fix_malformed_title_entries(text):
-            """Fix malformed \title entries in the document body."""
-            import re
+        # ============================================================
+        # TABLE RULE SPLITTING  (Defect 3)
+        # ============================================================
+        def split_table_rules(line):
+            r"""
+            Split `...\\\midrule` into `...\\` + newline + `\midrule`.
 
-            # Pattern 1: \title {Title\n with Content block
-            pattern1 = r'\\title\s*\{\s*([^}\n]*?)\s*\n\s*(\\begin\{Content\})'
-            def fix1(match):
-                title_text = match.group(1).strip()
-                if not title_text:
-                    title_text = "Untitled"
-                title_text = title_text.rstrip('{').rstrip()
-                return f"\\title {title_text}\n{match.group(2)}"
-            text = re.sub(pattern1, fix1, text, flags=re.DOTALL)
+            The previous converter preserved `Grades\\\midrule` as a single
+            token, which the native parser then mis-parsed.  After this
+            transformation, each table rule is on its own line.
+            """
+            # \\\midrule, \\\toprule, \\\bottomrule, \\\hline, \\\cmidrule
+            line = re.sub(
+                r'\\\\(?=\\(?:mid|top|bottom|h|cmid)rule)',
+                '\\\\\\\\\n',
+                line
+            )
+            return line
 
-            # Pattern 2: \title \n\begin{Content} (empty title)
-            pattern2 = r'\\title\s*\n\s*(\\begin\{Content\})'
-            def fix2(match):
-                return f"\\title Untitled\n{match.group(1)}"
-            text = re.sub(pattern2, fix2, text)
-
-            # Pattern 3: \title {Title} \n\begin{Content}
-            pattern3 = r'\\title\s*\{([^}]*)\}\s*\n\s*(\\begin\{Content\})'
-            def fix3(match):
-                title_text = match.group(1).strip()
-                if not title_text:
-                    title_text = "Untitled"
-                return f"\\title {title_text}\n{match.group(2)}"
-            text = re.sub(pattern3, fix3, text, flags=re.DOTALL)
-
-            return text
-
+        # ============================================================
+        # READ FILE
+        # ============================================================
         try:
-            # ========== READ FILE ==========
             try:
                 with open(tex_file_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
@@ -31417,106 +31571,118 @@ Created by {self.__author__}
                 add_error(1, "File is empty", "")
                 return None, errors
 
-            # Create output path
             tex_path = Path(tex_file_path)
+
+            # ------------------------------------------------------------------
+            # SAFETY: never write the converted file next to the source TeX file
+            # using the same stem.  Otherwise a later "Convert to TeX" step
+            # would overwrite the user's original .tex file.
+            # ------------------------------------------------------------------
             output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
 
-            # ========== EXTRACT PREAMBLE ==========
+            # ============================================================
+            # EXTRACT PREAMBLE AND DOCUMENT BODY
+            # ============================================================
             doc_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
 
             if doc_match:
-                # IMPORTANT: keep the imported preamble as a separate, immutable
-                # source string.  The TXT file must receive the COMPLETE original
-                # TeX preamble, not a reconstructed/merged/normalized version.
-                # In particular, do not run _tex_preamble_to_bsg_text() here: that
-                # changes macro bodies (e.g. #1 -> ##1) and therefore is not a
-                # verbatim copy of the source preamble.
+                # The original TeX preamble is copied byte-for-byte.  No
+                # reconstruction, merging or normalisation is performed.
                 original_preamble = doc_match.group(1)
                 preamble = original_preamble
                 document_body = tex_content[doc_match.end():]
                 has_begin_document = True
                 print(f"✓ Extracted original preamble ({len(original_preamble)} chars)")
 
-                # ============================================================
-                # Remove ALL \begin{document} from document body
-                # ============================================================
+                # Strip document wrappers from the body.
                 document_body = re.sub(r'\\begin\{document\}\s*', '', document_body)
                 document_body = re.sub(r'\\end\{document\}\s*', '', document_body)
 
-                # ============================================================
-                # Fix malformed \title entries in document body
-                # ============================================================
-                print("\n🔧 Fixing malformed \\title entries...")
-                document_body = fix_malformed_title_entries(document_body)
-                print("  ✓ Fixed malformed \\title entries")
-
-                # ============================================================
-                # Remove the \maketitle command if present
-                # ============================================================
+                # Remove \maketitle at top level; title pages are handled as
+                # first-class slides below.
                 document_body = re.sub(r'\\maketitle\s*', '', document_body)
-
-                # ============================================================
-                # Remove corrupted \title Untitled slides
-                # ============================================================
-                document_body = re.sub(
-                    r'\\title\s+Untitled\s*\\begin\{Content\}\s*\\None\s*\\begin\{tikzpicture\}.*?\\end\{tikzpicture\}\s*\\end\{Content\}\s*\\begin\{Notes\}.*?\\end\{Notes\}\s*',
-                    '',
-                    document_body,
-                    flags=re.DOTALL
-                )
-
-                # ============================================================
-                # Remove empty \title with no content
-                # ============================================================
-                document_body = re.sub(
-                    r'\\title\s*\n\s*\\begin\{Content\}\s*\\None\s*% No content for this slide\s*\\end\{Content\}\s*\\begin\{Notes\}.*?\\end\{Notes\}\s*',
-                    '',
-                    document_body,
-                    flags=re.DOTALL
-                )
-
             else:
                 print("⚠ No preamble found in TeX file")
-                preamble = r"""\documentclass[aspectratio=169]{beamer}
-            \usepackage{graphicx}
-            \usepackage{xcolor}
-            \usepackage{amsmath}
-            \usepackage{amssymb}
-            \usetheme{Madrid}
-            """
+                preamble = (
+                    r"""\documentclass[aspectratio=169]{beamer}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usetheme{Madrid}
+"""
+                )
                 document_body = tex_content
                 has_begin_document = False
                 add_warning(1, "No preamble found, using default", "")
 
             # ============================================================
-            # Keep the original imported preamble untouched.
-            # The regex above already stopped immediately before the first
-            # \begin{document}, so there is nothing to remove here.
+            # BRACE-MATCHING HELPERS
             # ============================================================
-            if doc_match:
-                preamble = original_preamble
+            def _find_matching_brace(text, open_idx):
+                """Return index of matching '}' for '{' at open_idx, or -1."""
+                if open_idx >= len(text) or text[open_idx] != '{':
+                    return -1
+                depth = 0
+                escaped = False
+                for j in range(open_idx, len(text)):
+                    ch = text[j]
+                    if escaped:
+                        escaped = False
+                        continue
+                    if ch == '\\':
+                        escaped = True
+                        continue
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            return j
+                return -1
 
             # ============================================================
-            # IMPORTANT: DO NOT RECONSTRUCT OR MERGE THE IMPORTED PREAMBLE
+            # TRAILING \note{...} COLLECTION  (post-\end{frame} notes)
             # ============================================================
-            # The complete original TeX preamble is the authoritative source
-            # during TEX -> TEXT import.  The definition-extraction/merge path
-            # used elsewhere in the IDE is intentionally NOT used here because
-            # it can silently omit arbitrary LaTeX constructs that the parser
-            # does not understand (custom macros, environments, hooks, comments,
-            # package-specific settings, conditionals, etc.).
-            #
-            # Parsing may inspect the preamble for metadata elsewhere, but the
-            # bytes written to the TXT must come directly from original_preamble.
-            imported_defs = {}
-            merged_preamble = original_preamble if has_begin_document else preamble
-            print(f"✓ Using complete original preamble unchanged ({len(merged_preamble)} chars)")
+            _NOTE_OPEN_RE = re.compile(
+                r'\\note\s*(?:<[^>]*>)?\s*(?:\[[^\]]*\])?\s*\{'
+            )
 
-            # ========== FIND FRAMES ==========
-            # Do not use a single regex for complete frame parsing.  Frame bodies
-            # routinely contain nested braces (TikZ, textcolor, notes, etc.).
-            # We only need the frame delimiter here; command bodies are parsed
-            # separately with balanced-brace logic below.
+            def _collect_trailing_notes(body, start_pos):
+                collected = []
+                cursor = start_pos
+                while True:
+                    probe = cursor
+                    while probe < len(body):
+                        ch = body[probe]
+                        if ch.isspace():
+                            probe += 1
+                        elif ch == '%':
+                            nl = body.find('\n', probe)
+                            if nl < 0:
+                                probe = len(body)
+                                break
+                            probe = nl + 1
+                        else:
+                            break
+
+                    m = _NOTE_OPEN_RE.match(body, probe)
+                    if not m:
+                        break
+                    brace_open = m.end() - 1
+                    close = _find_matching_brace(body, brace_open)
+                    if close < 0:
+                        return collected, brace_open + 1
+                    collected.append(body[brace_open + 1:close])
+                    cursor = close + 1
+
+                if not collected:
+                    return [], start_pos
+                return collected, cursor
+
+            # ============================================================
+            # FRAME EXTRACTION
+            # ============================================================
             def extract_frames_from_document(body):
                 frames = []
                 pos = 0
@@ -31549,24 +31715,7 @@ Created by {self.__author__}
                         i += 1
                     if i < len(body) and body[i] == '{':
                         open_pos = i
-                        depth = 0
-                        escaped = False
-                        close_pos = -1
-                        for j in range(i, len(body)):
-                            ch = body[j]
-                            if escaped:
-                                escaped = False
-                                continue
-                            if ch == '\\':
-                                escaped = True
-                                continue
-                            if ch == '{':
-                                depth += 1
-                            elif ch == '}':
-                                depth -= 1
-                                if depth == 0:
-                                    close_pos = j
-                                    break
+                        close_pos = _find_matching_brace(body, open_pos)
                         if close_pos < 0:
                             break
                         frame_title = body[open_pos + 1:close_pos]
@@ -31578,54 +31727,47 @@ Created by {self.__author__}
                         break
                     body_end = body_start + end_match.start()
                     end_pos = body_start + end_match.end()
+
+                    # Consume \note{...} that sit after \end{frame}.
+                    trailing_notes, after_notes_pos = _collect_trailing_notes(
+                        body, end_pos
+                    )
+
                     frames.append({
                         'title': frame_title,
                         'content': body[body_start:body_end],
-                        'raw': body[start:end_pos]
+                        'raw': body[start:end_pos],
+                        'trailing_notes': trailing_notes,
                     })
-                    pos = end_pos
+
+                    pos = max(after_notes_pos, end_pos)
+
                 return frames
 
+            # ============================================================
+            # BALANCED BRACE COMMAND EXTRACTION
+            # ============================================================
             def extract_balanced_commands(text, command):
-                """Return (text_without_commands, complete command bodies)."""
                 extracted = []
                 pieces = []
                 pos = 0
                 last = 0
-                pattern = re.compile(r'\\' + re.escape(command) + r'(?:\s*<[^>]*>)?\s*\{')
+                pattern = re.compile(
+                    r'\\' + re.escape(command) +
+                    r'(?:\s*<[^>]*>)?\s*(?:\[[^\]]*\])?\s*\{'
+                )
 
                 while True:
                     m = pattern.search(text, pos)
                     if not m:
                         pieces.append(text[last:])
                         break
-
                     start = m.start()
                     brace_open = m.end() - 1
-                    depth = 0
-                    escaped = False
-                    close = -1
-                    for j in range(brace_open, len(text)):
-                        ch = text[j]
-                        if escaped:
-                            escaped = False
-                            continue
-                        if ch == '\\':
-                            escaped = True
-                            continue
-                        if ch == '{':
-                            depth += 1
-                        elif ch == '}':
-                            depth -= 1
-                            if depth == 0:
-                                close = j
-                                break
-
+                    close = _find_matching_brace(text, brace_open)
                     if close < 0:
-                        # Malformed command: leave it visible rather than lose it.
                         pieces.append(text[last:])
                         break
-
                     pieces.append(text[last:start])
                     extracted.append(text[brace_open + 1:close])
                     pos = close + 1
@@ -31633,8 +31775,10 @@ Created by {self.__author__}
 
                 return ''.join(pieces), extracted
 
+            # ============================================================
+            # MEDIA EXTRACTION
+            # ============================================================
             def extract_media_directive(frame_content):
-                """Extract the first image/movie directive without damaging other content."""
                 media = ''
 
                 image = re.search(
@@ -31645,8 +31789,6 @@ Created by {self.__author__}
                 if image:
                     media = f"\\file {image.group(1).strip()}"
                     cleaned = frame_content[:image.start()] + frame_content[image.end():]
-                    # If the image was the only thing in a center environment,
-                    # remove that now-empty wrapper.  Otherwise preserve the wrapper.
                     cleaned = re.sub(
                         r'\\begin\{center\}\s*\\end\{center\}',
                         '', cleaned, flags=re.DOTALL
@@ -31665,24 +31807,33 @@ Created by {self.__author__}
 
                 return frame_content, media
 
+            # ============================================================
+            # BUILD NATIVE SLIDES
+            # ============================================================
             frames = extract_frames_from_document(document_body)
             print(f"✓ Found {len(frames)} frames")
 
             slides = []
             slide_count = 0
+
             for frame in frames:
                 slide_count += 1
                 title = frame['title'].strip()
                 frame_content = frame['content']
 
-                # Standard titlepage frame belongs to the presentation metadata,
-                # not to the native BSG slide stream.  The preamble already carries
-                # \title/\author/\institute/\date.
+                # ---------- TITLE PAGE  (Defect 2) ----------
                 if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
-                    print(f"  ℹ Skipping title-page frame {slide_count} during TEX → TEXT import")
+                    print(f"  ✓ Converting title-page frame {slide_count} to native BSG slide")
+                    slides.append({
+                        'title': 'Title Page',
+                        'content': ['\\titlepage'],
+                        'notes': [],
+                        'media': '',
+                        'is_title_page': True,
+                    })
                     continue
 
-                # Extract frametitle with balanced braces, then remove it from content.
+                # ---------- TITLE ----------
                 frame_content_no_title, frame_titles = extract_balanced_commands(
                     frame_content, 'frametitle'
                 )
@@ -31692,36 +31843,26 @@ Created by {self.__author__}
                         title = ft
                 frame_content = frame_content_no_title
 
-                if 'rametitle' in frame_content:
-                    # Only repair an actually damaged command, never normal text.
-                    frame_content = frame_content.replace('rametitle', '\\frametitle')
-
-                # Extract and REMOVE every note before content processing.
-                # This is the key fix: a note can contain nested braces and must
-                # never remain in the Content block.
-                frame_content, note_bodies = extract_balanced_commands(
+                # ---------- NOTES ----------
+                frame_content, inline_notes = extract_balanced_commands(
                     frame_content, 'note'
                 )
+                all_note_bodies = list(inline_notes) + list(frame.get('trailing_notes', []))
 
                 notes = []
-                for note_body in note_bodies:
+                for note_body in all_note_bodies:
                     note_body = note_body.strip()
                     if not note_body:
                         continue
 
-                    # process_slide_with_features() wraps bullet notes in an
-                    # outer itemize environment when producing TeX.  Reverse
-                    # that wrapper here so TEX -> TEXT returns the native BSG
-                    # note representation rather than introducing a second
-                    # itemize level.  A genuinely nested itemize is preserved.
+                    # Reverse the synthetic outer itemize added by the
+                    # downstream slide writer when notes contain bullet lists.
                     note_lines = note_body.splitlines()
                     if (len(note_lines) >= 2 and
                             note_lines[0].strip() == '\\begin{itemize}' and
                             note_lines[-1].strip() == '\\end{itemize}'):
                         inner = [ln.strip() for ln in note_lines[1:-1]]
                         if any('\\begin{itemize}' in ln for ln in inner):
-                            # The outer wrapper is synthetic; retain the inner
-                            # itemize that belonged to the original BSG TEXT.
                             note_body = '\n'.join(inner)
                             note_body = re.sub(
                                 r'(?m)^\\item\s+(\\begin\{itemize\}|\\end\{itemize\})\s*$',
@@ -31729,7 +31870,6 @@ Created by {self.__author__}
                                 note_body
                             )
                         else:
-                            # Synthetic wrapper only: restore native '-' bullets.
                             restored = []
                             for ln in inner:
                                 if ln.startswith('\\item '):
@@ -31740,67 +31880,94 @@ Created by {self.__author__}
                                     restored.append(ln)
                             note_body = '\n'.join(restored)
 
-                    note_body = BeamerSlideEditor.fix_special_characters(note_body)
                     notes.append(note_body)
 
-                # Convert the first media object to BSG's native media directive.
+                # ---------- MEDIA ----------
                 frame_content, media = extract_media_directive(frame_content)
 
-                # Build native BSG TEXT content -- deliberately NO frame wrapper.
+                # ---------- CONTENT LINES  (Defect 3) ----------
                 content_lines = []
-                for line in frame_content.splitlines():
-                    line = line.strip()
+                for raw_line in frame_content.splitlines():
+                    line = raw_line.strip()
                     if not line or line == '\\f':
                         continue
+                    if line == r'\None':
+                        continue
+                    # Split \\\midrule etc. onto separate lines.
+                    line = split_table_rules(line)
                     line = BeamerSlideEditor.fix_special_characters(line)
-                    content_lines.append(line)
+                    for sub in line.split('\n'):
+                        sub = sub.strip()
+                        if sub:
+                            content_lines.append(sub)
 
-                # A frame containing only a removed image can legitimately have no
-                # content apart from its media directive.
                 if not content_lines:
                     content_lines = ['% No content for this slide']
 
+                # ---------- TITLE (math-safe) ----------
+                title_out = clean_latex_title(title) if title else f'Slide {len(slides) + 1}'
+
                 slides.append({
-                    'title': BeamerSlideEditor.fix_special_characters(title) or f'Slide {len(slides) + 1}',
+                    'title': title_out,
                     'content': content_lines,
                     'notes': notes,
                     'media': media,
                 })
 
-            # ========== FINAL TITLE-PAGE DEDUPLICATION ==========
-            # Different frame regex variants can occasionally identify the same
-            # title-page frame more than once. Keep the first and discard all
-            # later title-page slides before writing the BSG TEXT file.
+            # ============================================================
+            # DE-DUPLICATE TITLE PAGES
+            # ============================================================
             deduped_slides = []
             title_page_written = False
             for slide in slides:
-                is_title_page = '\\titlepage' in ''.join(slide.get('content', [])) or \
-                    '\\maketitle' in ''.join(slide.get('content', []))
+                is_title_page = slide.get('is_title_page', False)
                 if is_title_page:
                     if title_page_written:
-                        print("  ℹ Removed duplicate title page during final normalization")
+                        print("  ℹ Removed duplicate title page")
                         continue
                     title_page_written = True
                 deduped_slides.append(slide)
             slides = deduped_slides
 
-            # ========== WRITE TO OUTPUT FILE ==========
-            # IMPORTANT: the original TeX preamble is copied byte-for-byte as
-            # the prefix of the TXT file.  The blank separator added before
-            # \begin{document} is NOT part of the preamble and is therefore
-            # deliberately excluded from the integrity comparison below.
+            # ============================================================
+            # WRITE OUTPUT  (native BSG TEXT)
+            # ============================================================
             output_preamble = original_preamble if has_begin_document else preamble
+
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(output_preamble)
                 f.write("\n\n")
                 f.write("\\begin{document}\n\n")
 
                 for slide in slides:
+                    # -------- title page --------
+                    if slide.get('is_title_page', False):
+                        f.write("\\title Title Page\n")
+                        f.write("\\begin{Content}\n")
+                        f.write("\\titlepage\n")
+                        f.write("\\end{Content}\n\n")
+                        f.write("\\begin{Notes}\n")
+                        f.write("% No notes for this slide\n")
+                        f.write("\\end{Notes}\n\n")
+                        continue
+
+                    # -------- normal slide --------
+                    raw_media = slide.get('media') or ''
+                    if isinstance(raw_media, str) and raw_media.strip() == r'\None':
+                        raw_media = ''
+                    slide['media'] = raw_media
+
                     f.write(f"\\title {slide['title']}\n")
                     f.write("\\begin{Content}\n")
-                    if slide.get('media'):
+
+                    if slide['media']:
                         f.write(f"{slide['media']}\n")
+                    # Absence of a media line is the correct encoding for
+                    # "no media".  Never write the \None sentinel.
+
                     for line in slide['content']:
+                        if isinstance(line, str) and line.strip() == r'\None':
+                            continue
                         f.write(f"{line}\n")
                     f.write("\\end{Content}\n\n")
 
@@ -31818,11 +31985,7 @@ Created by {self.__author__}
                 f.write("\\end{document}\n")
 
             # ============================================================
-            # CRITICAL VALIDATION: verify that the TXT begins with the
-            # ORIGINAL TEX PREAMBLE exactly.  Do NOT extract it with
-            # '(.*?)\\begin{document}' and compare that whole substring,
-            # because the TXT writer intentionally adds a separator newline
-            # before \begin{document}.
+            # PREAMBLE INTEGRITY CHECK
             # ============================================================
             if has_begin_document:
                 with open(output_path, 'r', encoding='utf-8') as vf:
@@ -31842,15 +32005,12 @@ Created by {self.__author__}
                         "the original TeX preamble was not copied intact to the TXT file"
                     )
 
-                # The only permitted bytes between the exact original preamble
-                # and \begin{document} are the separator newlines added by the
-                # TXT container format.
                 separator = written_preamble[len(original_preamble):]
                 if separator.strip():
                     raise RuntimeError(
                         "TEX import preamble integrity check failed: "
                         "unexpected content was inserted between the original "
-                        "preamble and \begin{document}"
+                        "preamble and \\begin{document}"
                     )
 
                 print(
@@ -31860,7 +32020,9 @@ Created by {self.__author__}
 
             print(f"\n✓ Converted {len(slides)} slides from {tex_file_path}")
             print(f"✓ Complete original TeX preamble copied to output file")
-            print(f"✓ \\begin{{document}} included" + (" (from original)" if has_begin_document else " (added)"))
+            print(f"✓ Output written as: {output_path.name}")
+            print(f"✓ \\begin{{document}} included" +
+                  (" (from original)" if has_begin_document else " (added)"))
 
             if errors:
                 print(f"\n⚠ Found {len(errors)} issue(s) during conversion:")
@@ -31872,14 +32034,15 @@ Created by {self.__author__}
                 for warn in warnings:
                     print(f"   Line {warn['line']}: {warn['message']}")
 
-            return output_path, errors
+            return str(output_path), errors
 
         except Exception as e:
             error_msg = f"Error converting TeX file: {str(e)}"
             print(error_msg)
             import traceback
             traceback.print_exc()
-            return None, [{"line": 1, "message": error_msg, "context": traceback.format_exc()}]
+            return None, [{"line": 1, "message": error_msg,
+                           "context": traceback.format_exc()}]
 
     # ============================================================
     # SIMPLE FALLBACK CONVERTER (add to BeamerSlideGenerator.py)
@@ -31890,6 +32053,9 @@ Created by {self.__author__}
         A simpler, more robust converter for TeX files.
         Handles malformed files better and extracts slides more reliably.
         Returns (output_path, errors_list)
+
+        SAFETY: writes to `<tex_stem>_converted.txt` so the original TeX
+        file can never be overwritten by a subsequent regeneration step.
         """
         import re
         from pathlib import Path
@@ -31910,7 +32076,11 @@ Created by {self.__author__}
                 errors.append({"line": 1, "message": "File is empty", "context": ""})
                 return None, errors
 
-            output_path = Path(tex_file_path).with_suffix('.txt')
+            # ------------------------------------------------------------------
+            # SAFETY: write to `<tex_stem>_converted.txt` instead of `<tex_stem>.txt`
+            # ------------------------------------------------------------------
+            tex_path = Path(tex_file_path)
+            output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
 
             # Extract preamble if exists
             preamble_match = re.search(r'(.*?)\\begin{document}', content, re.DOTALL)
@@ -31985,7 +32155,7 @@ Created by {self.__author__}
                 f.write("\\end{document}\n")
 
             print(f"✓ Simple conversion completed: {output_path}")
-            return output_path, errors
+            return str(output_path), errors
 
         except Exception as e:
             import traceback
@@ -32738,36 +32908,34 @@ Created by {self.__author__}
         return fixed_slides
 
     def _clean_latex_title(self, title: str) -> str:
-        """Clean LaTeX title for display in IDE"""
+        """Clean LaTeX title for display in IDE while PRESERVING math and formatting."""
         if not title:
             return "Untitled"
 
         import re
 
-        # ============================================================
-        # CRITICAL FIX: Fix special characters in title
-        # ============================================================
-        title = self.fix_special_characters(title)
+        # PROTECT math expressions first
+        protected = {}
+        counter = [0]
 
-        # Remove common LaTeX formatting commands
-        title = re.sub(r'\\textbf{([^}]*)}', r'\1', title)
-        title = re.sub(r'\\textit{([^}]*)}', r'\1', title)
-        title = re.sub(r'\\textcolor{[^}]*}{([^}]*)}', r'\1', title)
-        title = re.sub(r'\\Large\s*', '', title)
-        title = re.sub(r'\\large\s*', '', title)
-        title = re.sub(r'\\normalsize\s*', '', title)
-        title = re.sub(r'\\small\s*', '', title)
-        title = re.sub(r'\\tiny\s*', '', title)
-        title = re.sub(r'\\Huge\s*', '', title)
-        title = re.sub(r'\\huge\s*', '', title)
+        def protect_math(match):
+            key = f"@@@MATH_{counter[0]}@@@"
+            protected[key] = match.group(0)
+            counter[0] += 1
+            return key
 
-        # Clean up extra whitespace
-        title = re.sub(r'\s+', ' ', title).strip()
+        # Protect all math expressions
+        title = re.sub(r'\$[^\$]+\$', protect_math, title)
+        title = re.sub(r'\\\[.*?\\\]', protect_math, title, flags=re.DOTALL)
 
-        # Remove remaining backslashes
-        title = re.sub(r'\\[a-zA-Z]+\s*', '', title)
+        # NOW it's safe to clean formatting commands if needed
+        # But actually, we should PRESERVE them too for round-trip fidelity
 
-        return title
+        # Restore math
+        for key, value in protected.items():
+            title = title.replace(key, value)
+
+        return title.strip()
 
     def _process_old_format_slide_enhanced(self, slide_data: dict, slide_idx: int) -> dict:
         """Enhanced processing of old format slides with proper content extraction"""
@@ -35658,21 +35826,94 @@ Created by {self.__author__}
         return text
 
     def clean_frame_title_for_latex(self, title: str) -> str:
-        """Clean frame title to prevent LaTeX compilation errors"""
+        """Clean frame title to prevent LaTeX compilation errors.
+
+        IMPORTANT: This method must preserve LaTeX math commands ($...$,
+        \(\), \[\]), text formatting commands (\textbf{}, \textit{}, etc.),
+        and other valid LaTeX constructs. Only escape characters that would
+        actually cause compilation errors when used literally in text mode.
+        """
         if not title:
             return "Untitled"
 
-        # Remove all braces from titles (they cause issues)
         title = str(title)
-        title = title.replace('\\{', '').replace('\\}', '')
-        title = title.replace('{', '').replace('}', '')
 
-        # Escape special characters
-        title = title.replace('&', '\\&')
-        title = title.replace('%', '\\%')
-        title = title.replace('#', '\\#')
-        title = title.replace('_', '\\_')
-        title = title.replace('$', '\\$')
+        # ============================================================
+        # STEP 1: Protect LaTeX math expressions and commands
+        # ============================================================
+        import re
+
+        # Store protected content with placeholders
+        protected = {}
+        counter = [0]
+
+        def protect(match):
+            key = f"@@@PROTECTED_{counter[0]}@@@"
+            protected[key] = match.group(0)
+            counter[0] += 1
+            return key
+
+        # Protect display math \[...\]
+        title = re.sub(r'\\\[.*?\\\]', protect, title, flags=re.DOTALL)
+
+        # Protect inline math $...$
+        title = re.sub(r'\$[^\$]+\$', protect, title)
+
+        # Protect \(...\)
+        title = re.sub(r'\\\(.*?\\\)', protect, title, flags=re.DOTALL)
+
+        # Protect common LaTeX text commands with their content
+        # \textbf{...}, \textit{...}, \emph{...}, \textcolor{...}{...}, etc.
+        title = re.sub(r'\\textbf\{[^}]*\}', protect, title)
+        title = re.sub(r'\\textit\{[^}]*\}', protect, title)
+        title = re.sub(r'\\emph\{[^}]*\}', protect, title)
+        title = re.sub(r'\\textcolor\{[^}]*\}\{[^}]*\}', protect, title)
+        title = re.sub(r'\\alert\{[^}]*\}', protect, title)
+        title = re.sub(r'\\textsuperscript\{[^}]*\}', protect, title)
+        title = re.sub(r'\\textsubscript\{[^}]*\}', protect, title)
+
+        # Protect font size commands
+        for cmd in ['\\tiny', '\\scriptsize', '\\footnotesize', '\\small',
+                    '\\normalsize', '\\large', '\\Large', '\\LARGE', '\\huge', '\\Huge']:
+            title = title.replace(cmd, f"@@@{cmd}@@@")
+
+        # ============================================================
+        # STEP 2: Now escape ONLY the dangerous characters
+        # ============================================================
+        # These are characters that cause compilation errors when used
+        # literally in text mode. We do NOT touch backslash-commands.
+
+        # Escape & (alignment tab) - but NOT \& which is already escaped
+        title = re.sub(r'(?<!\\)&', r'\\&', title)
+
+        # Escape % (comment) - but NOT \% which is already escaped
+        title = re.sub(r'(?<!\\)%', r'\\%', title)
+
+        # Escape # (macro parameter) - but NOT \# which is already escaped
+        title = re.sub(r'(?<!\\)#', r'\\#', title)
+
+        # Escape _ (subscript) - but NOT \_ which is already escaped
+        # and NOT inside math mode (which is protected)
+        title = re.sub(r'(?<!\\)_', r'\\_', title)
+
+        # ============================================================
+        # STEP 3: Restore protected LaTeX content
+        # ============================================================
+        for key, value in protected.items():
+            title = title.replace(key, value)
+
+        # Restore font size commands
+        for cmd in ['\\tiny', '\\scriptsize', '\\footnotesize', '\\small',
+                    '\\normalsize', '\\large', '\\Large', '\\LARGE', '\\huge', '\\Huge']:
+            title = title.replace(f"@@@{cmd}@@@", cmd)
+
+        # ============================================================
+        # STEP 4: Clean up any double braces that might have been created
+        # ============================================================
+        title = title.replace('{{', '{').replace('}}', '}')
+
+        # Remove any stray placeholder remnants
+        title = re.sub(r'@@@[^@]*@@@', '', title)
 
         return title.strip() or "Untitled"
 
