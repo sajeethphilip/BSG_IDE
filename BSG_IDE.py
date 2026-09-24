@@ -13694,7 +13694,199 @@ class SimpleRedirector:
 
     def flush(self):
         pass
+# ============================================================================
+# BSG-TXT -> LaTeX DIRECTIVE TRANSLATION (used by the TXT->TeX writer)
+# ============================================================================
+# BSG-TXT uses space-delimited directives:
+#     \title Foo            \author Bar            \date September 2026
+# LaTeX uses brace-delimited forms:
+#     \title{Foo}           \author{Bar}           \date{September 2026}
+# The writer must never emit the BSG-TXT form into a .tex file.
+# ============================================================================
 
+_BSG_TITLE_DIRECTIVES = (
+    'title', 'subtitle', 'author', 'institute', 'date',
+)
+
+
+def bsg_title_directive_to_latex(line: str) -> str:
+    r"""
+    Convert a BSG-TXT space-delimited title directive to LaTeX braced form.
+
+        \title Foo                 ->  \title{Foo}
+        \title{Foo}                ->  \title{Foo}      (unchanged)
+        \title                     ->  \title{}          (safe)
+        \subtitle Foo              ->  \subtitle{Foo}
+        \author Foo                ->  \author{Foo}
+        \institute Foo             ->  \institute{Foo}
+        \date September 2026       ->  \date{September 2026}
+
+    Any other line is returned unchanged.
+    """
+    import re as _re
+    m = _re.match(
+        r'^(\s*)\\(title|subtitle|author|institute|date)\b(.*)$',
+        line.rstrip('\n')
+    )
+    if not m:
+        return line
+    indent, cmd, rest = m.group(1), m.group(2), m.group(3).strip()
+    if rest.startswith('{') and rest.endswith('}'):
+        return line
+    return f'{indent}\\{cmd}{{{rest}}}\n'
+
+
+def is_bsg_none_sentinel(line: str) -> bool:
+    r"""
+    True if the line is exactly the BSG-TXT 'no media' sentinel,
+    optionally surrounded by whitespace.  These lines must never reach
+    a .tex file — they are not LaTeX.
+    """
+    return line.strip() == r'\None'
+
+# Commands whose argument is space-delimited in BSG-TXT (not brace-delimited).
+# The space after such a command must be preserved so the argument stays put.
+_SPACE_DELIMITED_BSG_COMMANDS = frozenset({
+    'title', 'subtitle', 'author', 'institute', 'date',
+})
+
+# ============================================================================
+# STRUCTURAL LaTeX COMMAND LINE NORMALIZER
+# ----------------------------------------------------------------------------
+# Split before a structural command only when ALL of the following hold:
+#   - the command name is in _SPLIT_BEFORE_COMMANDS,
+#   - it appears at brace depth 0 on this line,
+#   - it is not inside a math span ($...$, \[...\], \(...\)),
+#   - it is not inside a tikzpicture environment,
+#   - it is glued to a preceding non-whitespace character.
+#
+# Everything else — macro arguments, inline formatting, math, TikZ bodies,
+# \title <text> BSG-TXT directives, \None sentinels, unknown commands — is
+# left exactly as it is.  The list is deliberately small.
+# ============================================================================
+
+_SPLIT_BEFORE_COMMANDS = frozenset({
+    'begin', 'end',
+    'frametitle', 'framesubtitle',
+    'section', 'subsection',
+    'note', 'item',
+    'centering', 'raggedright', 'raggedleft',
+    'vspace', 'hspace',
+})
+
+
+def normalize_latex_line(line):
+    r"""
+    Streaming, state-free normalizer for one physical line.
+    See module docstring above for the exact rule.
+    Idempotent.
+    """
+    if not line or '\\' not in line:
+        return line
+
+    # Detach trailing newline so we can rebuild cleanly.
+    if line.endswith('\r\n'):
+        body, eol = line[:-2], '\r\n'
+    elif line.endswith('\n'):
+        body, eol = line[:-1], '\n'
+    else:
+        body, eol = line, ''
+
+    if '\\' not in body:
+        return line
+
+    n = len(body)
+    out = []
+    cursor = 0
+    depth = 0
+    in_math = False
+    in_tikz = False
+    in_comment = False
+
+    i = 0
+    while i < n:
+        ch = body[i]
+
+        if in_comment:
+            i += 1
+            continue
+        if ch == '%' and (i == 0 or body[i - 1] != '\\'):
+            in_comment = True
+            i += 1
+            continue
+
+        if ch == '{' and (i == 0 or body[i - 1] != '\\'):
+            depth += 1
+            i += 1
+            continue
+        if ch == '}' and (i == 0 or body[i - 1] != '\\'):
+            if depth > 0:
+                depth -= 1
+            i += 1
+            continue
+
+        if ch == '$' and (i == 0 or body[i - 1] != '\\'):
+            in_math = not in_math
+            i += 1
+            continue
+
+        if ch == '\\' and i + 1 < n:
+            nxt = body[i + 1]
+
+            if nxt in '[]()':
+                in_math = not in_math
+                i += 2
+                continue
+            if not (nxt.isalpha() or nxt == '@'):
+                i += 2
+                continue
+
+            j = i + 1
+            while j < n and (body[j].isalpha() or body[j] == '@'):
+                j += 1
+            cmd = body[i + 1:j]
+
+            if cmd == 'begin':
+                k = j
+                while k < n and body[k].isspace():
+                    k += 1
+                if k < n and body[k] == '{':
+                    m = k + 1
+                    while m < n and body[m] != '}':
+                        m += 1
+                    if body[k + 1:m].strip() == 'tikzpicture':
+                        in_tikz = True
+            elif cmd == 'end':
+                k = j
+                while k < n and body[k].isspace():
+                    k += 1
+                if k < n and body[k] == '{':
+                    m = k + 1
+                    while m < n and body[m] != '}':
+                        m += 1
+                    if body[k + 1:m].strip() == 'tikzpicture':
+                        in_tikz = False
+
+            if (cmd in _SPLIT_BEFORE_COMMANDS
+                    and depth == 0
+                    and not in_math
+                    and not in_tikz
+                    and i > 0
+                    and not body[i - 1].isspace()):
+                out.append(body[cursor:i])
+                out.append('\n')
+                cursor = i
+
+            i = j
+            continue
+
+        i += 1
+
+    out.append(body[cursor:])
+    result = ''.join(out)
+    result = re.sub(r'[ \t]+\n', '\n', result)
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    return result + eol
 
 #------------------------------------------------------------------------------------------
 class BeamerSyntaxHighlighter:
@@ -24004,6 +24196,23 @@ Created by {self.__author__}
         return line
 
     # Modify the convert_to_tex method to validate before processing
+    def _emit_tex_line(self, fh, line: str) -> None:
+        """Write one physical line to an open .tex file, translating BSG-TXT
+        directives into real LaTeX and dropping the \\None sentinel.
+
+        - Lines that are exactly the BSG-TXT "no media" sentinel are dropped.
+        - Lines of the form ``\\title Foo`` (space-delimited argument) are
+          rewritten as ``\\title{Foo}``.  The same applies to subtitle,
+          author, institute and date.
+        - All other lines are written unchanged.
+        """
+        if not line.endswith('\n'):
+            line = line + '\n'
+
+        if is_bsg_none_sentinel(line):
+            return
+
+        fh.write(bsg_title_directive_to_latex(line))
 
     def convert_to_tex(self):
         """Convert text to TeX with validation before processing.
@@ -24089,7 +24298,21 @@ Created by {self.__author__}
             processed, failed, errors = process_input_file(txt_file, tex_file)
 
             if processed > 0:
+                # Post-process the generated .tex file so that no BSG-TXT
+                # directive survives into LaTeX: drop bare \None sentinels
+                # and translate `\title <text>` into `\title{<text>}`.
+                try:
+                    with open(tex_file, 'r', encoding='utf-8') as fh:
+                        tex_lines = fh.readlines()
+                    with open(tex_file, 'w', encoding='utf-8') as fh:
+                        for raw in tex_lines:
+                            self._emit_tex_line(fh, raw)
+                    self.write("  ✓ Sanitised generated TeX (no BSG-TXT directives left)\n", "green")
+                except Exception as post_err:
+                    self.write(f"  ⚠ Could not post-process TeX: {post_err}\n", "yellow")
+
                 self.write(f"\n✓ TeX file generated: {tex_file}\n", "green")
+
                 self.write(f"  Processed {processed} slides, {failed} failed\n", "green")
 
                 if errors:
@@ -24229,17 +24452,21 @@ Created by {self.__author__}
 
     # In the section where slides are written to the TXT file
     def _generate_slide_content_only(self) -> str:
-        """Generate only the slide content (without preamble) for the TXT file."""
+        """Generate only the slide content (without preamble) for the TXT file.
+
+        Blank ``\\None`` sentinels are never written: their absence already
+        means "no media" in BSG-TXT.  Title pages are written exactly once.
+        """
         content_lines = []
         content_lines.append("\\begin{document}\n")
 
         for idx, slide in enumerate(self.slides):
-            # Check if this is a title page
+            # Detect title page
             content = slide.get('content', [])
-            is_title_page = any('\\titlepage' in line for line in content) or any('\\begin{frame}[plain]' in line for line in content)
+            is_title_page = any('\\titlepage' in line for line in content) or \
+                            any('\\begin{frame}[plain]' in line for line in content)
 
             if is_title_page:
-                # Write title page as a proper frame
                 content_lines.append("% --- Title Page Slide ---")
                 for line in content:
                     content_lines.append(line)
@@ -24265,18 +24492,18 @@ Created by {self.__author__}
             clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
             content_lines.append(f"\\title {clean_title}")
 
-            # Content block
             content_lines.append("\\begin{Content}")
 
-            # Media
+            # Media — never write the \None sentinel.
             media = slide.get('media', '')
             media_masked = slide.get('_media_masked', False)
             if media_masked:
-                content_lines.append(f"% {media}" if media else "% \\None")
+                if media and media != "\\None":
+                    content_lines.append(f"% {media}")
+                # else: masked empty media — emit nothing at all
             elif media and media != "\\None":
                 content_lines.append(media)
-            else:
-                content_lines.append("\\None")
+            # else: no media — emit nothing at all
 
             # Content items
             hidden_indices = set(slide.get('_hidden_content_indices', []))
@@ -25129,7 +25356,8 @@ Created by {self.__author__}
             # Debug output
             debug_file = "debug_output.tex"
             with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write(full_tex)
+                for line in full_tex.splitlines(keepends=True):
+                    self._emit_tex_line(f, line)
             self.write(f"  📝 Debug TeX saved to: {debug_file}\n", "cyan")
 
             self.write(f"\n📊 TeX Generation Statistics:\n", "cyan")
@@ -31428,6 +31656,15 @@ Created by {self.__author__}
            instead of `<tex_stem>.txt`.  This guarantees that a later
            "Generate PDF" / "Convert to TeX" step cannot silently overwrite
            the user's original .tex file.
+
+        6. LaTeX COMMAND LINE NORMALIZATION (streaming):
+           Every physical line written to the TXT file passes through
+           `normalize_latex_line()`, which splits a block-level LaTeX command
+           that is glued to preceding text onto its own line.  The pass is
+           one-line-at-a-time (no whole-file buffering) and never touches
+           escapes (\\%, \\&, \\_, ...), line breaks (\\\\), math delimiters
+           (\\[, \\], \\(, \\)), or accents (\\', \\").  See the classifier
+           table and the transform function immediately above this method.
         """
         import re
         from pathlib import Path
@@ -31548,6 +31785,8 @@ Created by {self.__author__}
             )
             return line
 
+
+
         # ============================================================
         # READ FILE
         # ============================================================
@@ -31605,12 +31844,12 @@ Created by {self.__author__}
                 print("⚠ No preamble found in TeX file")
                 preamble = (
                     r"""\documentclass[aspectratio=169]{beamer}
-\usepackage{graphicx}
-\usepackage{xcolor}
-\usepackage{amsmath}
-\usepackage{amssymb}
-\usetheme{Madrid}
-"""
+    \usepackage{graphicx}
+    \usepackage{xcolor}
+    \usepackage{amsmath}
+    \usepackage{amssymb}
+    \usetheme{Madrid}
+    """
                 )
                 document_body = tex_content
                 has_begin_document = False
@@ -31932,23 +32171,38 @@ Created by {self.__author__}
             # ============================================================
             # WRITE OUTPUT  (native BSG TEXT)
             # ============================================================
+            # === NEW: single normalized writer. Every physical line the
+            # === converter emits passes through normalize_latex_line().
             output_preamble = original_preamble if has_begin_document else preamble
 
+            def emit(fh, line):
+                """Write one physical line, normalized, and always newline-terminated."""
+                if not line.endswith('\n'):
+                    line = line + '\n'
+                fh.write(normalize_latex_line(line))
+
             with open(output_path, 'w', encoding='utf-8') as f:
+                # Preamble is copied VERBATIM.  Do NOT normalize it — it is
+                # the user's own TeX and must remain byte-identical for the
+                # integrity check below to pass.
                 f.write(output_preamble)
                 f.write("\n\n")
-                f.write("\\begin{document}\n\n")
+
+                emit(f, "\\begin{document}")
+                emit(f, "")
 
                 for slide in slides:
                     # -------- title page --------
                     if slide.get('is_title_page', False):
-                        f.write("\\title Title Page\n")
-                        f.write("\\begin{Content}\n")
-                        f.write("\\titlepage\n")
-                        f.write("\\end{Content}\n\n")
-                        f.write("\\begin{Notes}\n")
-                        f.write("% No notes for this slide\n")
-                        f.write("\\end{Notes}\n\n")
+                        emit(f, "\\title Title Page")
+                        emit(f, "\\begin{Content}")
+                        emit(f, "\\titlepage")
+                        emit(f, "\\end{Content}")
+                        emit(f, "")
+                        emit(f, "\\begin{Notes}")
+                        emit(f, "% No notes for this slide")
+                        emit(f, "\\end{Notes}")
+                        emit(f, "")
                         continue
 
                     # -------- normal slide --------
@@ -31957,32 +32211,33 @@ Created by {self.__author__}
                         raw_media = ''
                     slide['media'] = raw_media
 
-                    f.write(f"\\title {slide['title']}\n")
-                    f.write("\\begin{Content}\n")
+                    emit(f, f"\\title {slide['title']}")
+                    emit(f, "\\begin{Content}")
 
                     if slide['media']:
-                        f.write(f"{slide['media']}\n")
+                        emit(f, slide['media'])
                     # Absence of a media line is the correct encoding for
                     # "no media".  Never write the \None sentinel.
 
                     for line in slide['content']:
                         if isinstance(line, str) and line.strip() == r'\None':
                             continue
-                        f.write(f"{line}\n")
-                    f.write("\\end{Content}\n\n")
+                        emit(f, line)
+                    emit(f, "\\end{Content}")
+                    emit(f, "")
 
                     if slide['notes']:
-                        f.write("\\begin{Notes}\n")
+                        emit(f, "\\begin{Notes}")
                         for note in slide['notes']:
-                            f.write(f"{note}\n")
-                        f.write("\\end{Notes}\n")
+                            emit(f, note)
+                        emit(f, "\\end{Notes}")
                     else:
-                        f.write("\\begin{Notes}\n")
-                        f.write("% No notes for this slide\n")
-                        f.write("\\end{Notes}\n")
-                    f.write("\n")
+                        emit(f, "\\begin{Notes}")
+                        emit(f, "% No notes for this slide")
+                        emit(f, "\\end{Notes}")
+                    emit(f, "")
 
-                f.write("\\end{document}\n")
+                emit(f, "\\end{document}")
 
             # ============================================================
             # PREAMBLE INTEGRITY CHECK
