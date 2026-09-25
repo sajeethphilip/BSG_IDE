@@ -1247,7 +1247,765 @@ def _inject_pptx_textbox_render_fix(preamble_lines, file_content):
     text = text.rstrip() + '\n\n' + block
     return text.splitlines(keepends=True)
 
-def get_beamer_preamble(title, subtitle, author, institution, short_institute, date, logo="", logo_height="2.2", auto_fit=True):
+# ============================================================
+# BACKGROUND TEMPLATE BUILDER
+# ============================================================
+def _build_background_templates(title_bg_image, title_bg_opacity,
+                                frame_bg_image, frame_bg_opacity):
+    r"""
+    Emit Beamer background templates for the title page and for all
+    subsequent frames separately.
+
+    The Beamer template is evaluated at *shipout* time, so we use
+    \insertframenumber to decide which image to show.  Frame 1 is the
+    title page (Beamer numbers it 1).
+
+    Returns a LaTeX snippet (possibly empty).
+    """
+    import os as _os
+
+    def _normalise(path):
+        if not path:
+            return ""
+        p = _os.path.abspath(_os.path.expanduser(str(path)))
+        p = p.replace("\\", "/")
+        return (p.replace("#", r"\#").replace("%", r"\%")
+                 .replace("{", r"\{").replace("}", r"\}"))
+
+    title_img = _normalise(title_bg_image)
+    frame_img = _normalise(frame_bg_image)
+
+    if not title_img and not frame_img:
+        return ""
+
+    lines = []
+    lines.append("% ============================================================")
+    lines.append("% BSG BACKGROUND TEMPLATES (title page vs. content pages)")
+    lines.append("% ============================================================")
+    lines.append(r"\makeatletter")
+    lines.append(r"\setbeamertemplate{background}{%")
+    lines.append(r"  \ifnum\insertframenumber=1\relax")
+
+    if title_img:
+        try:
+            t_op = max(0.0, min(1.0, float(title_bg_opacity)))
+        except (TypeError, ValueError):
+            t_op = 0.30
+        lines.append(r"    \IfFileExists{" + title_img + r"}{%")
+        lines.append(r"      \begin{tikzpicture}[remember picture,overlay]")
+        lines.append(r"        \node[opacity=" + f"{t_op:.3f}" +
+                     r"] at (current page.center) {%")
+        lines.append(r"          \includegraphics[width=\paperwidth,height=\paperheight,"
+                     r"keepaspectratio]{" + title_img + r"}%")
+        lines.append(r"        };")
+        lines.append(r"      \end{tikzpicture}%")
+        lines.append(r"    }{}%")
+
+    lines.append(r"  \else")
+
+    if frame_img:
+        try:
+            f_op = max(0.0, min(1.0, float(frame_bg_opacity)))
+        except (TypeError, ValueError):
+            f_op = 0.15
+        lines.append(r"    \IfFileExists{" + frame_img + r"}{%")
+        lines.append(r"      \begin{tikzpicture}[remember picture,overlay]")
+        lines.append(r"        \node[opacity=" + f"{f_op:.3f}" +
+                     r"] at (current page.center) {%")
+        lines.append(r"          \includegraphics[width=\paperwidth,height=\paperheight,"
+                     r"keepaspectratio]{" + frame_img + r"}%")
+        lines.append(r"        };")
+        lines.append(r"      \end{tikzpicture}%")
+        lines.append(r"    }{}%")
+
+    lines.append(r"  \fi")
+    lines.append(r"}")
+    lines.append(r"\makeatother")
+    lines.append("% ============================================================")
+
+    # Also emit plain \def macros so BSG-IDE can round-trip the values
+    # when the generated .tex file is opened again.
+    def _esc(p):
+        if not p:
+            return ""
+        return (str(p).replace("#", r"\#").replace("%", r"\%")
+                       .replace("{", r"\{").replace("}", r"\}"))
+
+    lines.append(f"\\def\\BSGBgTitleImage{{{_esc(title_bg_image)}}}")
+    lines.append(f"\\def\\BSGBgTitleOpacity{{{float(title_bg_opacity):.3f}}}")
+    lines.append(f"\\def\\BSGBgFrameImage{{{_esc(frame_bg_image)}}}")
+    lines.append(f"\\def\\BSGBgFrameOpacity{{{float(frame_bg_opacity):.3f}}}")
+
+    return "\n".join(lines) + "\n"
+
+
+## ============================================================
+# TITLE PAGE BUILDER
+# ============================================================
+def _build_title_page(title, subtitle, author, institution,
+                      short_institute, date, logo, logo_height,
+                      title_page_config):
+    r"""
+    Build the title page.
+
+    When title_page_config['enabled'] is True, the Front Title Page
+    Designer controls the front slide: background colour/gradient,
+    title-only background image, per-element fonts and colours, optional
+    logo, and any extra TikZ supplied by the user.
+    Otherwise, the historical default title page is emitted verbatim.
+
+    Background rendering rules
+    --------------------------
+    The following inputs are honoured:
+
+        bg_image           : path to a title-only background image
+        bg_image_opacity   : alpha of the image layer      (0.0 .. 1.0)
+        bg_color           : solid colour name / hex
+        bg_color_opacity   : alpha of the colour layer     (0.0 .. 1.0)
+        bg_gradient_top    : optional top colour of a vertical gradient
+        bg_gradient_bottom : optional bottom colour of that gradient
+
+    Layering
+    --------
+    The colour (or gradient) is drawn FIRST as the base layer.  The
+    background image is then drawn on top of it at its own opacity.
+    This produces a composite where the colour shows through wherever
+    the image is translucent, so the two layers are visually mixed
+    rather than one replacing the other.
+
+    Hex colour handling
+    -------------------
+    A raw "#RRGGBB" string cannot be used directly inside a TikZ option
+    such as \\fill[...].  Any hex value supplied here is registered with
+    \\definecolor{<name>}{HTML}{<rrggbb>} and the corresponding name is
+    substituted in the \\fill option.
+    """
+    import os as _os
+    import re as _re
+
+    cfg = title_page_config or {}
+    if not cfg.get('enabled'):
+        # -------- default title page (unchanged behaviour) --------
+        return (
+            "% Title page\n"
+            "\\begin{frame}\n"
+            "   \\begin{tikzpicture}[overlay,remember picture]\n"
+            "       \\fill[top color=white,bottom color=white]\n"
+            "       (current page.south west) rectangle (current page.north east);\n"
+            "       \\node[align=center] at (current page.center) {\n"
+            f"           {{\\Huge\\textcolor{{primary}}{{\\textbf{{{title}}}}}}}\n"
+            + (f"           \\\\[0.8em]{{\\large\\textcolor{{secondary}}{{{subtitle}}}}}\n"
+               if subtitle else "")
+            + "           \\\\[1.5em]\n"
+            f"           {{\\large\\textcolor{{black}}{{{author}}}}}\n"
+            f"           \\\\[0.3em]\n"
+            f"           \\textcolor{{gray}}{{\\small {institution}}}\n"
+            + (f"           \\\\[0.3em]\n"
+               f"           \\textcolor{{gray}}{{\\scriptsize {short_institute}}}\n"
+               if short_institute else "")
+            + "           \\\\[0.8em]\n"
+            f"           \\textcolor{{gray}}{{\\small {date}}}\n"
+            "       };\n"
+            "   \\end{tikzpicture}\n"
+            "\\end{frame}"
+        )
+
+    # -------- Front Title Page Designer path --------
+    def _safe_len(value, default="0em"):
+        v = str(value or "").strip()
+        if _re.fullmatch(
+                r"-?[0-9]+(?:\.[0-9]+)?(?:em|ex|pt|cm|mm|in)", v) or v == "0em":
+            return v
+        return default
+
+    def _esc_path(p):
+        if not p:
+            return ""
+        p = _os.path.abspath(_os.path.expanduser(str(p))).replace("\\", "/")
+        return (p.replace("#", r"\#").replace("%", r"\%")
+                 .replace("{", r"\{").replace("}", r"\}"))
+
+    _KNOWN_LATEX_COLORS = {
+        'white', 'black', 'red', 'green', 'blue', 'cyan', 'magenta',
+        'yellow', 'gray', 'lightgray', 'darkgray', 'brown', 'lime',
+        'olive', 'orange', 'pink', 'purple', 'teal', 'violet',
+    }
+
+    # ------------------------------------------------------------------
+    # Colour normalisation
+    # ------------------------------------------------------------------
+    _color_definitions = []
+
+    def _register_hex_color(hex_str, name):
+        """
+        Register a #RRGGBB colour under a fixed LaTeX colour name.
+        Returns the registered name, or '' if the value is not usable.
+        """
+        if not hex_str:
+            return ''
+        s = str(hex_str).strip()
+        # Tolerate a stray writer-side escape (\#RRGGBB) if the unescape
+        # step did not run for this code path.
+        s = s.replace(r'\#', '#')
+        if not s.startswith('#'):
+            return ''
+        body = s.lstrip('#')
+        if not _re.fullmatch(r'[0-9a-fA-F]{6}', body):
+            return ''
+        _color_definitions.append(
+            r"\definecolor{" + name + r"}{HTML}{" + body + r"}"
+        )
+        return name
+
+    def _safe_color(c, fallback_name=None):
+        """
+        Normalise a colour specification for use inside \\fill[...]
+        or \\textcolor{...}.
+
+        * Hex values (#RRGGBB) are registered via \\definecolor under
+          ``fallback_name`` and the registered name is returned.
+          A hex value with no ``fallback_name`` cannot be safely used
+          inside a LaTeX colour option, so it is rejected.
+        * Names already known to LaTeX are returned unchanged.
+        * Everything else is rejected.
+        """
+        c = (c or '').strip()
+        if not c:
+            return ''
+        # Never accept LaTeX markup as a colour.
+        if c.startswith('\\'):
+            return ''
+        # Hex colour - register under a fixed LaTeX name.
+        if c.startswith('#'):
+            if not fallback_name:
+                return ''
+            return _register_hex_color(c, fallback_name)
+        # Named colour that LaTeX already knows.
+        if c.lower() in _KNOWN_LATEX_COLORS:
+            return c
+        # Anything else is silently discarded.
+        return ''
+
+    # -------- inputs --------
+    bg_color = _safe_color(cfg.get('bg_color'),
+                           fallback_name='bsgTitleBg')
+    grad_top = _safe_color(cfg.get('bg_gradient_top'),
+                           fallback_name='bsgTitleGradTop')
+    grad_bottom = _safe_color(cfg.get('bg_gradient_bottom'),
+                              fallback_name='bsgTitleGradBottom')
+    bg_img = _esc_path(cfg.get('bg_image'))
+
+    try:
+        bg_img_op = max(0.0, min(1.0, float(cfg.get('bg_image_opacity', 0.30))))
+    except (TypeError, ValueError):
+        bg_img_op = 0.30
+
+    try:
+        bg_color_op = float(cfg.get('bg_color_opacity', 0.0) or 0.0)
+    except (TypeError, ValueError):
+        bg_color_op = 0.0
+    bg_color_op = max(0.0, min(1.0, bg_color_op))
+
+    title_font = (cfg.get('title_font') or r'\Huge').strip()
+    title_color = (
+        _safe_color(cfg.get('title_color'),
+                    fallback_name='bsgTitleColor')
+        or 'primary'
+    )
+    title_bold = bool(cfg.get('title_bold', True))
+    title_y_off = _safe_len(cfg.get('title_y_offset', '0em'))
+
+    subtitle_font = (cfg.get('subtitle_font') or r'\large').strip()
+    subtitle_color = (
+        _safe_color(cfg.get('subtitle_color'),
+                    fallback_name='bsgSubtitleColor')
+        or 'secondary'
+    )
+
+    author_font = (cfg.get('author_font') or r'\large').strip()
+    author_color = (
+        _safe_color(cfg.get('author_color'),
+                    fallback_name='bsgAuthorColor')
+        or 'black'
+    )
+
+    inst_font = (cfg.get('institute_font') or r'\small').strip()
+    inst_color = (
+        _safe_color(cfg.get('institute_color'),
+                    fallback_name='bsgInstituteColor')
+        or 'gray'
+    )
+
+    date_font = (cfg.get('date_font') or r'\small').strip()
+    date_color = (
+        _safe_color(cfg.get('date_color'),
+                    fallback_name='bsgDateColor')
+        or 'gray'
+    )
+
+    show_logo = bool(cfg.get('show_logo', False))
+    logo_path = _esc_path(cfg.get('logo_path') or logo)
+    logo_h = (cfg.get('logo_height') or '1.6cm').strip()
+    if not _re.fullmatch(
+            r"[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)", logo_h):
+        logo_h = '1.6cm'
+
+    extra_tex = (cfg.get('title_extra_tex') or '').strip()
+
+    def _wrap_bold(text, bold):
+        return r"\textbf{" + text + "}" if bold else text
+
+    # ------------------------------------------------------------------
+    # Colour / gradient overlay
+    # ------------------------------------------------------------------
+    # Composition rules
+    # -----------------
+    #  * Colour only (no image)          -> colour drawn opaque.
+    #  * Image + colour                  -> colour drawn first at
+    #                                       bg_color_opacity; image drawn
+    #                                       on top at bg_img_opacity.  The
+    #                                       two compose.  bg_color_opacity
+    #                                       = 0 produces a transparent
+    #                                       colour layer, so the image
+    #                                       shows through unchanged.
+    #  * Image only (no colour)          -> image drawn on top of a white
+    #                                       base, so the background is not
+    #                                       Beamer's default canvas colour.
+    #  * Neither                         -> historical white fill.
+    # ------------------------------------------------------------------
+    bg_fill_lines = []
+
+    def _emit_colour_fill(colour_spec):
+        """Return the \\fill[...] line for a colour or gradient."""
+        if not colour_spec:
+            return None
+        if isinstance(colour_spec, tuple):
+            top, bottom = colour_spec
+            if bg_img:
+                return (
+                    r"\fill[top color=" + top
+                    + r",bottom color=" + bottom
+                    + r",opacity=" + f"{bg_color_op:.3f}" + r"]"
+                )
+            return (
+                r"\fill[top color=" + top
+                + r",bottom color=" + bottom + r"]"
+            )
+        # Solid colour
+        if bg_img:
+            return (
+                r"\fill[" + colour_spec
+                + r",opacity=" + f"{bg_color_op:.3f}" + r"]"
+            )
+        return r"\fill[" + colour_spec + r"]"
+
+    # 1) Choose the colour layer, if any.
+    if grad_top and grad_bottom:
+        fill = _emit_colour_fill((grad_top, grad_bottom))
+        if fill:
+            bg_fill_lines.append(fill)
+    elif bg_color:
+        fill = _emit_colour_fill(bg_color)
+        if fill:
+            bg_fill_lines.append(fill)
+    elif not bg_img:
+        # Neither colour nor image: keep the historical white fill.
+        bg_fill_lines.append(
+            r"\fill[top color=white,bottom color=white]"
+        )
+    elif bg_img:
+        # Image present, no colour: draw a white base so the background
+        # does not fall through to Beamer's default canvas colour.
+        bg_fill_lines.append(r"\fill[white]")
+
+    if bg_fill_lines:
+        bg_fill_lines.append(
+            r"(current page.south west) rectangle (current page.north east);"
+        )
+
+    # -------- content stack --------
+    content = []
+    content.append(
+        "{" + title_font + "\\textcolor{" + title_color + "}{"
+        + _wrap_bold(title, title_bold) + "}}")
+    if subtitle:
+        content.append(
+            "\\\\[0.8em]{" + subtitle_font + "\\textcolor{" + subtitle_color
+            + "}{" + subtitle + "}}")
+    if author:
+        content.append(
+            "\\\\[1.5em]{" + author_font + "\\textcolor{" + author_color
+            + "}{" + author + "}}")
+    if institution:
+        content.append(
+            "\\\\[0.3em]{" + inst_font + "\\textcolor{" + inst_color
+            + "}{" + institution + "}}")
+    if date:
+        content.append(
+            "\\\\[0.8em]{" + date_font + "\\textcolor{" + date_color
+            + "}{" + date + "}}")
+
+    logo_line = ""
+    if show_logo and logo_path:
+        logo_line = (
+            "\\\\[0.8em]\\IfFileExists{" + logo_path + "}{%"
+            "\\includegraphics[height=" + logo_h + "]{"
+            + logo_path + "}}{}")
+
+    node_options = "align=center"
+    if title_y_off and title_y_off != "0em":
+        node_options += ",yshift=" + title_y_off
+
+    body = "\n".join(content)
+    if logo_line:
+        body += "\n" + logo_line
+
+    # -------- assemble the frame --------
+    lines = [
+        "% Title page (custom design)",
+    ]
+    if _color_definitions:
+        lines.extend(_color_definitions)
+    lines.extend([
+        r"\begin{frame}[plain]",
+        r"  \begin{tikzpicture}[overlay,remember picture]",
+    ])
+
+    # 1) Draw the colour / gradient fill FIRST (base layer).
+    if bg_fill_lines:
+        lines.append("    " + "\n    ".join(bg_fill_lines))
+
+    # 2) Draw the background image ON TOP of the colour, at its own
+    #    opacity, so the two layers compose visually.
+    if bg_img:
+        lines.append(
+            r"    \node[opacity=" + f"{bg_img_op:.3f}"
+            + r"] at (current page.center) {%"
+        )
+        lines.append(
+            r"      \includegraphics[width=\paperwidth,height=\paperheight,"
+            r"keepaspectratio]{" + bg_img + r"}%"
+        )
+        lines.append(r"    };")
+
+    # 3) Draw the title text node.
+    lines.extend([
+        r"    \node[" + node_options + r"] at (current page.center) {",
+        "      " + body,
+        r"    };",
+    ])
+
+    if extra_tex:
+        lines.append("    " + extra_tex)
+
+    lines.extend([
+        r"  \end{tikzpicture}",
+        r"\end{frame}",
+    ])
+    return "\n".join(lines)
+
+# ============================================================
+# FRONT TITLE PAGE DESIGNER — CONFIG READER
+# ============================================================
+# ============================================================
+# FRONT TITLE PAGE DESIGNER — CONFIG READER
+# ============================================================
+def _read_bsg_title_page_config(preamble_text: str) -> dict:
+    r"""
+    Extract the Front Title Page Designer configuration from a Beamer
+    preamble.
+
+    This version bridges the two title-page background mechanisms:
+
+        BSGTitlePageConfig["bg_image"]
+                    |
+                    v
+        BSGTitlePageConfig["bg_image_opacity"]
+                    |
+                    v
+        title-page background renderer
+
+    The important point is that older/newer generated files may store the
+    title-page image in either of these forms:
+
+        1. Inside \BSGTitlePageConfig JSON:
+               "bg_image": "/path/to/image.png"
+
+        2. As explicit TeX definitions:
+               \def\BSGBgTitleImage{/path/to/image.png}
+               \def\BSGBgTitleOpacity{0.30}
+
+    The explicit TeX definitions take precedence, but if they are absent,
+    the image and opacity stored in the JSON configuration are promoted
+    into the returned configuration.
+
+    This makes an existing .tex/.txt presentation round-trip correctly
+    without requiring the file itself to contain \BSGBgTitleImage.
+
+    Escaping contract
+    -----------------
+    The writers in BSG_IDE.py encode the JSON with
+    ``_bsg_json_escape_for_def`` before embedding it, which means:
+
+        * every literal ``#`` is written as ``\#``
+        * every newline is written as ``~``
+
+    Both transformations are reversed here before ``json.loads`` is
+    called.  Without the ``\#`` reversal, hex colour values such as
+    ``#01040e`` would arrive as ``\#01040e`` and ``json.loads`` would
+    raise on the invalid escape sequence ``\#``.
+    """
+
+    import json as _json
+    import re as _re
+
+    # ------------------------------------------------------------
+    # Defaults
+    # ------------------------------------------------------------
+    defaults = {
+        'enabled': False,
+
+        # General title-page appearance
+        'bg_color': '',
+        'bg_gradient_top': '',
+        'bg_gradient_bottom': '',
+
+        # Title-page background image
+        'bg_image': '',
+        'bg_image_opacity': 0.30,
+
+        # Typography
+        'title_font': r'\Huge',
+        'title_color': 'primary',
+        'title_bold': True,
+        'title_y_offset': '0em',
+
+        'subtitle_font': r'\large',
+        'subtitle_color': 'secondary',
+
+        'author_font': r'\large',
+        'author_color': 'black',
+
+        'institute_font': r'\small',
+        'institute_color': 'gray',
+
+        'date_font': r'\small',
+        'date_color': 'gray',
+
+        # Logo
+        'show_logo': False,
+        'logo_path': '',
+        'logo_height': '1.6cm',
+
+        # Additional TeX
+        'title_extra_tex': '',
+    }
+
+    # No preamble: simply return defaults.
+    if not preamble_text:
+        return defaults.copy()
+
+    # ------------------------------------------------------------
+    # Helper: extract a simple \def\NAME{VALUE}
+    # ------------------------------------------------------------
+    def _read_def(name: str, default='') -> str:
+        r"""
+        Read:
+
+            \def\NAME{VALUE}
+
+        from the preamble.  The value is read conservatively because
+        paths may contain TeX-escaped characters.
+        """
+        pattern = r'\\def\\' + _re.escape(name) + r'\{([^}]*)\}'
+        match = _re.search(pattern, preamble_text)
+        if match:
+            return match.group(1).strip()
+        return default
+
+    # ------------------------------------------------------------
+    # Helper: reverse the JSON escaping applied on the writer side.
+    #
+    # Writers call _bsg_json_escape_for_def(), which produces:
+    #     '\n'  ->  '~'
+    #     '#'   ->  '\#'
+    # We must reverse both, in the opposite order, before parsing.
+    # ------------------------------------------------------------
+    def _unescape_json_for_read(raw: str) -> str:
+        if not raw:
+            return raw
+        # Reverse the '#' escape first (order does not actually matter
+        # here, because '\#' contains no '~', and '~' contains no '\#',
+        # but writing them in the same order as the writer's inverse
+        # makes the intent obvious).
+        raw = raw.replace(r'\#', '#')
+        raw = raw.replace('~', '\n')
+        return raw
+
+    # ------------------------------------------------------------
+    # Start from defaults.
+    # ------------------------------------------------------------
+    cfg = defaults.copy()
+
+    # ------------------------------------------------------------
+    # Locate \def\BSGTitlePageConfig{ ... }
+    #
+    # The JSON contains nested braces, so a naive regex is not reliable.
+    # Instead, walk the braces to find the matching closing brace.
+    #
+    # The generator stores the JSON as:
+    #     \def\BSGTitlePageConfig{{"enabled": true, ...}}
+    # i.e. with an extra outer pair of braces, and newlines encoded
+    # as "~".  Both variants are handled.
+    # ------------------------------------------------------------
+    marker = r'\def\BSGTitlePageConfig'
+    marker_index = preamble_text.find(marker)
+
+    if marker_index >= 0:
+        brace_open = preamble_text.find(
+            '{', marker_index + len(marker))
+
+        if brace_open >= 0:
+            depth = 0
+            escaped = False
+            brace_close = -1
+            for i in range(brace_open, len(preamble_text)):
+                ch = preamble_text[i]
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\':
+                    escaped = True
+                    continue
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        brace_close = i
+                        break
+
+            if brace_close >= 0:
+                raw = preamble_text[brace_open + 1:brace_close]
+
+                # Reverse the writer-side escaping: '\#' -> '#'
+                # and '~' -> newline.  See _unescape_json_for_read().
+                raw = _unescape_json_for_read(raw).strip()
+
+                # If the generator wrapped the JSON in one extra pair of
+                # braces (\def\X{{...}}), strip them so json.loads sees
+                # the object directly.
+                while (len(raw) >= 2
+                       and raw.startswith('{')
+                       and raw.endswith('}')):
+                    try:
+                        parsed = _json.loads(raw)
+                        break
+                    except Exception:
+                        raw = raw[1:-1].strip()
+                else:
+                    parsed = None
+
+                if isinstance(parsed, dict):
+                    cfg.update(parsed)
+                else:
+                    try:
+                        parsed = _json.loads(raw)
+                        if isinstance(parsed, dict):
+                            cfg.update(parsed)
+                    except Exception as exc:
+                        print(
+                            "  ⚠ BSGTitlePageConfig parse error: "
+                            f"{exc}")
+
+    # ------------------------------------------------------------
+    # Read explicit title-page background definitions.
+    #
+    # These are the definitions consumed by the background renderer.
+    #
+    # The values were escaped by _esc_path() on the writer side, which
+    # converts '#' to '\#'.  We reverse that here so the returned
+    # dictionary contains a usable file path.
+    # ------------------------------------------------------------
+    def _unescape_path(path: str) -> str:
+        if not path:
+            return path
+        return (path
+                .replace(r'\#', '#')
+                .replace(r'\%', '%')
+                .replace(r'\{', '{')
+                .replace(r'\}', '}'))
+
+    explicit_title_image = _unescape_path(
+        _read_def('BSGBgTitleImage', ''))
+    explicit_title_opacity = _read_def('BSGBgTitleOpacity', '')
+
+    # Explicit TeX definitions take precedence.
+    if explicit_title_image:
+        cfg['bg_image'] = explicit_title_image
+    elif cfg.get('bg_image'):
+        cfg['bg_image'] = str(cfg.get('bg_image')).strip()
+
+    if explicit_title_opacity:
+        try:
+            cfg['bg_image_opacity'] = float(explicit_title_opacity)
+        except (TypeError, ValueError):
+            pass
+    else:
+        try:
+            cfg['bg_image_opacity'] = float(
+                cfg.get('bg_image_opacity',
+                        defaults['bg_image_opacity']))
+        except (TypeError, ValueError):
+            cfg['bg_image_opacity'] = defaults['bg_image_opacity']
+
+    # ------------------------------------------------------------
+    # Also expose the normalized values under the names used by the
+    # background-generation code.
+    # ------------------------------------------------------------
+    cfg['title_bg_image'] = cfg.get('bg_image', '')
+    cfg['title_bg_opacity'] = cfg.get(
+        'bg_image_opacity', defaults['bg_image_opacity'])
+
+    # ------------------------------------------------------------
+    # Normalize the enabled flag.
+    # ------------------------------------------------------------
+    if isinstance(cfg.get('enabled'), str):
+        cfg['enabled'] = (
+            cfg['enabled'].strip().lower()
+            in ('1', 'true', 'yes', 'on'))
+    else:
+        cfg['enabled'] = bool(cfg.get('enabled', False))
+
+    # ------------------------------------------------------------
+    # Normalize the logo flag.
+    # ------------------------------------------------------------
+    if isinstance(cfg.get('show_logo'), str):
+        cfg['show_logo'] = (
+            cfg['show_logo'].strip().lower()
+            in ('1', 'true', 'yes', 'on'))
+    else:
+        cfg['show_logo'] = bool(cfg.get('show_logo', False))
+
+    # ------------------------------------------------------------
+    # Diagnostic information.
+    # ------------------------------------------------------------
+    if cfg.get('bg_image'):
+        print("  ✓ Title-page background image: "
+              f"{cfg['bg_image']}")
+        print("  ✓ Title-page background opacity: "
+              f"{cfg['bg_image_opacity']}")
+    elif cfg.get('enabled'):
+        print("  ℹ Title-page designer enabled, "
+              "but no background image is configured.")
+
+    return cfg
+
+def get_beamer_preamble(title, subtitle, author, institution, short_institute, date,
+                        logo="", logo_height="2.2", auto_fit=True,
+                        title_bg_image="", title_bg_opacity=0.30,
+                        frame_bg_image="", frame_bg_opacity=0.15,
+                        title_page_config=None):
     """
     Returns complete Beamer preamble with intelligent auto-scaling and frame mode support.
     PRESERVES user-defined colors and doesn't override them with defaults.
@@ -1294,12 +2052,30 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     short_author = clean_text(author.split(',')[0] if ',' in author else author[:30] if len(author) > 30 else author)
     short_title = clean_text(title[:40] if len(title) > 40 else title)
 
-    # Logo path is a filename, so do not apply normal text escaping to it.
+    # ------------------------------------------------------------------
+    # Logo path handling
+    # ------------------------------------------------------------------
+    # The Presentation Settings dialog stores the logo as a filesystem
+    # path.  The footline renders it at the bottom-right of every slide.
+    # We therefore:
+    #   1. Resolve the path to an absolute one and normalise separators
+    #      so the same value is used everywhere.
+    #   2. Escape only the characters that would break a TeX macro
+    #      argument: # % { }.  Do NOT escape backslashes or forward
+    #      slashes.
+    #   3. Emit the escaped value as \def\BSGPresentationLogo{...}
+    #      and drive both the footline and any downstream consumer
+    #      from that macro.
+    # ------------------------------------------------------------------
     logo_path = (logo or "").strip()
     if logo_path:
         logo_path = os.path.abspath(os.path.expanduser(logo_path))
     logo_path = logo_path.replace("\\", "/")
-    logo_path = logo_path.replace("#", r"\#").replace("%", r"\%").replace("{", r"\{").replace("}", r"\}")
+    logo_path = (logo_path
+                 .replace("#", r"\#")
+                 .replace("%", r"\%")
+                 .replace("{", r"\{")
+                 .replace("}", r"\}"))
 
     # ============================================================
     # COMPLETE PREAMBLE - With Dynamic Color Inversion
@@ -1522,9 +2298,9 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 \newcommand{\glowtext}[2][myblue]{%
    \begin{tikzpicture}[baseline]
        \node[circle, inner sep=1pt,
-             blur shadow={shadow blur steps=10,shadow xshift=0pt,
-             shadow yshift=0pt,shadow blur radius=5pt,
-             shadow opacity=0.5,shadow color=#1},
+             blur shadow={shadow blur steps=10, shadow xshift=0pt,
+             shadow yshift=0pt, shadow blur radius=5pt,
+             shadow opacity=0.5, shadow color=#1},
              text=white] {#2};
    \end{tikzpicture}%
 }
@@ -1992,54 +2768,91 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
 }
 \fi"""
 
-    # Title page with compact layout
-    title_page = (
-       "% Title page\n"
-       "\\begin{frame}\n"
-       "   \\begin{tikzpicture}[overlay,remember picture]\n"
-       "       \\fill[top color=white,bottom color=white]\n"
-       "       (current page.south west) rectangle (current page.north east);\n"
-       "       \\node[align=center] at (current page.center) {\n"
-       f"           {{\\Huge\\textcolor{{primary}}{{\\textbf{{{title}}}}}}}\n"
-       + (f"           \\\\[0.8em]{{\\large\\textcolor{{secondary}}{{{subtitle}}}}}\n" if subtitle else "") +
-       f"           \\\\[1.5em]\n"
-       f"           {{\\large\\textcolor{{black}}{{{author}}}}}\n"
-       f"           \\\\[0.3em]\n"
-       f"           \\textcolor{{gray}}{{\\small {institution}}}\n"
-       + (f"           \\\\[0.3em]\n"
-          f"           \\textcolor{{gray}}{{\\scriptsize {short_institute}}}\n" if short_institute else "") +
-       f"           \\\\[0.8em]\n"
-       f"           \\textcolor{{gray}}{{\\small {date}}}\n"
-       "       };\n"
-       "   \\end{tikzpicture}\n"
-       "\\end{frame}"
+    # ============================================================
+    # BACKGROUND TEMPLATES
+    # ------------------------------------------------------------
+    # Two independent background templates are emitted:
+    #   * title-bg  : shown only on frame number 1 (the title page)
+    #   * frame-bg  : shown on every other frame
+    # Both are optional.  If neither is supplied, no template is
+    # emitted and the theme's default background is preserved.
+    # ============================================================
+    # --- Single source of truth for the title-only background image ---
+    # When the Front Title Page Designer is enabled, its own bg_image
+    # overrides the plain title_bg_image (they mean the same thing).
+    tp_cfg = title_page_config or {}
+    if tp_cfg.get('enabled') and tp_cfg.get('bg_image'):
+        title_bg_image = tp_cfg['bg_image']
+        try:
+            title_bg_opacity = float(tp_cfg.get('bg_image_opacity', title_bg_opacity))
+        except (TypeError, ValueError):
+            pass
+
+    background_block = _build_background_templates(
+        title_bg_image, title_bg_opacity,
+        frame_bg_image, frame_bg_opacity
+    )
+
+    # ============================================================
+    # TITLE PAGE — custom designer takes priority over the theme
+    # ============================================================
+    title_page = _build_title_page(
+        title=title, subtitle=subtitle, author=author,
+        institution=institution, short_institute=short_institute,
+        date=date, logo=logo, logo_height=logo_height,
+        title_page_config=title_page_config
     )
 
     metadata_values = [short_institute, short_author, short_title, title, subtitle, author, institution, date]
     for value in metadata_values:
         core_preamble = core_preamble.replace("%s", value, 1)
 
+    # ============================================================
+    # FOOTER LOGO — single source of truth
+    # ------------------------------------------------------------
+    # The logo path is emitted as \def\BSGPresentationLogo{...} and
+    # the footline consumes it through that macro.  This is the same
+    # convention used by _save_presentation_settings_to_file(), so
+    # the two writers agree and a logo configured once will keep
+    # rendering on every subsequent rebuild.
+    #
+    # The \IfFileExists guard is evaluated at footline-expansion time
+    # (i.e. once per slide).  When the file is present, the logo is
+    # typeset at height \BSGLogoHeight; otherwise the frame counter
+    # is used, so the footline is never broken.
+    # ============================================================
     if logo_path:
         logo_footer = (
-            f"\\IfFileExists{{{logo_path}}}{{"
-            f"\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_height}]{{{logo_path}}}}}"
-            f"}}{{\\insertframenumber{{}} / \\inserttotalframenumber}}\\hspace*{{1ex}}%"
+            "\\IfFileExists{\\BSGPresentationLogo}{%"
+            f"\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_height}]"
+            "{\\BSGPresentationLogo}}%"
+            "}{%"
+            "\\insertframenumber{} / \\inserttotalframenumber%"
+            "}\\hspace*{1ex}%"
         )
     else:
-        logo_footer = "\\insertframenumber{} / \\inserttotalframenumber\\hspace*{1ex}%"
+        logo_footer = (
+            "\\insertframenumber{} / \\inserttotalframenumber"
+            "\\hspace*{1ex}%"
+        )
     core_preamble = core_preamble.replace("%LOGOFOOTER%", logo_footer, 1)
 
-    # Persist the logo path in generated TeX as well.  This lets BSG-IDE
-    # recover the Presentation Settings logo when the generated file is
-    # loaded again, instead of relying on a theme-specific \logo command.
-    # Persist feature settings in generated TeX so the IDE can round-trip them.
-    core_preamble += f"\n\\def\\BSGAutoFitEnabled{{{1 if AUTO_FIT_ENABLED else 0}}}"
+    # ============================================================
+    # PERSIST FEATURE FLAGS AND LOGO DEFINITION
+    # ------------------------------------------------------------
+    # These macros let BSG-IDE recover the Presentation Settings
+    # when the generated file is loaded again, and give the footline
+    # a single, well-known name to consume.
+    # ============================================================
+    core_preamble += (
+        f"\n\\def\\BSGAutoFitEnabled{{{1 if AUTO_FIT_ENABLED else 0}}}"
+    )
     core_preamble += f"\n\\def\\BSGLogoHeight{{{logo_height}}}"
     if logo_path:
         core_preamble += f"\n\\def\\BSGPresentationLogo{{{logo_path}}}"
     core_preamble += "\n"
 
-    return core_preamble + "\n" + title_page
+    return core_preamble + "\n" + background_block + "\n" + title_page
 
 def fix_tikz_node_line_breaks(tikz_content: str) -> str:
     """
@@ -5287,458 +6100,6 @@ def sanitize_latex_content(content_line):
 
 import re  # Add this at the top of BeamerSlideGenerator.py if not already there
 
-def process_input_file_Old(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
-    r"""
-    Comprehensive input file processor for BeamerSlideGenerator.
-    Handles ALL features: mosaic, YouTube, layouts, media, TikZ, effects, etc.
-    """
-    import re
-    from collections import deque
-
-    processed = 0
-    failed = 0
-    errors = []
-    warnings = []
-
-    try:
-        # Presentation Settings control generated standard slide fitting.
-        # Set this before any slide generation, including when a genuine user
-        # preamble is preserved and get_beamer_preamble() is not called.
-        global AUTO_FIT_ENABLED
-        if presentation_info is not None:
-            AUTO_FIT_ENABLED = bool(presentation_info.get('auto_fit', True))
-
-        # ========== READ INPUT FILE ==========
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-
-        # pdfTeX cannot include GIF files directly.  PPTX imports preserve the
-        # original GIF in ./media, but use a first-frame PNG for PDF rendering.
-        # This generator-side safeguard also makes older TXT files containing
-        # \BSGPPTXImage{...gif} render correctly without requiring re-import.
-        def _gif_render_path(raw_path):
-            raw_path = raw_path.strip()
-            if not raw_path.lower().endswith('.gif'):
-                return raw_path
-
-            source_path = Path(raw_path)
-            if not source_path.is_absolute():
-                source_path = Path(file_path).resolve().parent / source_path
-            source_path = source_path.resolve()
-
-            if not source_path.exists() or not PIL_AVAILABLE:
-                return raw_path
-
-            preview_path = source_path.with_name(source_path.stem + '_preview.png')
-            try:
-                if (not preview_path.exists() or
-                        preview_path.stat().st_mtime < source_path.stat().st_mtime):
-                    with Image.open(source_path) as gif_image:
-                        gif_image.seek(0)
-                        gif_image.convert('RGBA').save(preview_path, format='PNG')
-
-                # Return a path relative to the TXT file, preserving the
-                # original path style where possible.
-                try:
-                    rel = os.path.relpath(
-                        preview_path, Path(file_path).resolve().parent
-                    )
-                    return rel.replace(os.sep, '/')
-                except Exception:
-                    return str(preview_path).replace(os.sep, '/')
-            except Exception as exc:
-                warnings.append(f"Could not create GIF preview for {raw_path}: {exc}")
-                return raw_path
-
-        def _rewrite_gif_graphics(line):
-            # PPTX positional image macro.
-            line = re.sub(
-                r'(\\(?:BSGPPTXImage|PPTXImage)(?:\[[^\]]*\])?\{)([^{}]+)(\})',
-                lambda m: m.group(1) + _gif_render_path(m.group(2)) + m.group(3),
-                line,
-            )
-            # Conventional includegraphics fallback.
-            line = re.sub(
-                r'(\\includegraphics(?:\[[^\]]*\])?\{)([^{}]+\.gif)(\})',
-                lambda m: m.group(1) + _gif_render_path(m.group(2)) + m.group(3),
-                line,
-                flags=re.IGNORECASE,
-            )
-            return line
-
-        lines = [_rewrite_gif_graphics(line) for line in lines]
-
-        if not lines:
-            errors.append("Input file is empty")
-            return 0, 1, errors
-
-        # ========== FIX TIKZ CONTENT GLOBALLY ==========
-        print("\n🔧 Fixing TikZ content...")
-        fixed_lines = []
-        in_tikz = False
-        tikz_buffer = []
-        tikz_fix_count = 0
-        tikz_block_count = 0
-
-        for line in lines:
-            stripped = line.strip()
-
-            # Check for tikzpicture start
-            if '\\begin{tikzpicture}' in stripped:
-                in_tikz = True
-                tikz_buffer = [line]
-                tikz_block_count += 1
-                continue
-
-            if in_tikz:
-                tikz_buffer.append(line)
-                if '\\end{tikzpicture}' in stripped:
-                    in_tikz = False
-                    # Process the entire TikZ block
-                    tikz_content = '\n'.join(tikz_buffer)
-
-                    # Check if it needs fixing (has line breaks with potential issues)
-                    needs_fix = False
-                    if '\\\\' in tikz_content:
-                        # Check if it has nodes with line breaks that lack proper handling
-                        if 'minimum height' not in tikz_content and 'minipage' not in tikz_content:
-                            needs_fix = True
-                        # Also check for nodes with line breaks
-                        node_pattern = r'\\node.*?\{[^}]*\\\\[^}]*\}'
-                        if re.search(node_pattern, tikz_content):
-                            needs_fix = True
-
-                    if needs_fix:
-                        try:
-                            fixed_tikz = fix_tikz_node_line_breaks(tikz_content)
-                            if fixed_tikz is None:
-                                fixed_tikz = tikz_content
-                            # Ensure we don't lose the tikzpicture environment
-                            if '\\begin{tikzpicture}' in fixed_tikz and '\\end{tikzpicture}' in fixed_tikz:
-                                fixed_lines.extend(fixed_tikz.split('\n'))
-                                tikz_fix_count += 1
-                                print(f"  ✓ Fixed TikZ block {tikz_fix_count}")
-                            else:
-                                # If fix broke the environment, use original
-                                fixed_lines.extend(tikz_buffer)
-                                print(f"  ⚠ TikZ block {tikz_block_count} fix failed (environment broken), using original")
-                        except Exception as e:
-                            print(f"  ⚠ TikZ block {tikz_block_count} fix error: {str(e)[:50]}, using original")
-                            fixed_lines.extend(tikz_buffer)
-                    else:
-                        fixed_lines.extend(tikz_buffer)
-                        if '\\\\' in tikz_content:
-                            print(f"  ℹ TikZ block {tikz_block_count} already has minimum height or minipage")
-                    tikz_buffer = []
-                continue
-
-            # If we're not in a TikZ block, just add the line
-            fixed_lines.append(line)
-
-        # If we were still in a TikZ block at EOF, add it
-        if in_tikz and tikz_buffer:
-            fixed_lines.extend(tikz_buffer)
-            print(f"  ⚠ Incomplete TikZ block at end of file")
-
-        if tikz_fix_count > 0:
-            print(f"  ✓ Applied fixes to {tikz_fix_count} TikZ block(s)")
-            lines = fixed_lines
-        else:
-            # Even if no blocks were fixed, use the fixed lines if any changes were made
-            if fixed_lines != lines:
-                lines = fixed_lines
-
-        # ========== DETECT FILE FORMAT ==========
-        file_content = ''.join(lines)
-        has_document_begin = '\\begin{document}' in file_content
-        has_document_end = '\\end{document}' in file_content
-        has_native_titles = bool(re.search(r'^\\title\s+[^{]', file_content, re.MULTILINE))
-        has_latex_frames = '\\begin{frame}' in file_content
-        has_content_blocks = '\\begin{Content}' in file_content
-        has_notes_blocks = '\\begin{Notes}' in file_content
-
-        file_type = 'native'
-        if has_latex_frames and has_document_begin:
-            file_type = 'latex'
-        elif has_native_titles and has_content_blocks:
-            file_type = 'native'
-        elif has_document_begin and (has_native_titles or has_content_blocks):
-            file_type = 'hybrid'
-        elif has_latex_frames and not has_document_begin:
-            file_type = 'latex_standalone'
-
-        print(f"File type detected: {file_type}")
-        print(f"has_document_begin: {has_document_begin}")
-        print(f"has_native_titles: {has_native_titles}")
-        print(f"has_latex_frames: {has_latex_frames}")
-        print(f"has_content_blocks: {has_content_blocks}")
-
-        # ========== EXTRACT PREAMBLE AND CONTENT ==========
-        preamble_lines = []
-        content_lines = []
-        preamble_found = False
-        preamble_generated = False
-        generated_title_page = ""
-
-        # Find ALL \begin{document} positions
-        doc_positions = [i for i, line in enumerate(lines) if '\\begin{document}' in line]
-        if doc_positions:
-            doc_pos = doc_positions[-1]
-            before_document = ''.join(lines[:doc_pos])
-            has_real_preamble = bool(re.search(
-                r'\\documentclass(?:\[[^]]*\])?\{beamer\}',
-                before_document
-            ))
-
-            if has_real_preamble:
-                # Preserve a genuine user-supplied preamble, but keep the document
-                # environment delimiter out of preamble_lines.
-                preamble_lines = lines[:doc_pos]
-                content_lines = lines[doc_pos + 1:]
-                preamble_found = True
-
-                # Remove the original document terminator from content; the
-                # generator writes exactly one \end{document} at the end.
-                end_doc_positions = [i for i, line in enumerate(content_lines) if '\\end{document}' in line]
-                if end_doc_positions:
-                    end_doc_pos = end_doc_positions[0]
-                    content_lines = content_lines[:end_doc_pos]
-                    has_document_end = True
-                else:
-                    has_document_end = False
-
-                while content_lines and not content_lines[0].strip():
-                    content_lines.pop(0)
-            else:
-                # A bare \begin{document} is only an IDE wrapper.  Generate the
-                # complete BeamerSlideGenerator preamble instead.
-                preamble_lines = []
-                content_lines = lines[doc_pos + 1:]
-                preamble_found = False
-        else:
-            content_lines = lines
-            preamble_lines = []
-            preamble_found = False
-
-        # If no preamble found, generate one
-        if not preamble_found and presentation_info:
-            from BeamerSlideGenerator import get_beamer_preamble
-            preamble_text = get_beamer_preamble(
-                title=presentation_info.get('title', 'Presentation'),
-                subtitle=presentation_info.get('subtitle', ''),
-                author=presentation_info.get('author', 'Author'),
-                institution=presentation_info.get('institution', ''),
-                short_institute=presentation_info.get('short_institute', ''),
-                date=presentation_info.get('date', r'\today'),
-                logo=presentation_info.get('logo', ''),
-                logo_height=presentation_info.get('logo_size', '2.2'),
-                auto_fit=presentation_info.get('auto_fit', True)
-            )
-
-            # get_beamer_preamble historically returns the title frame together
-            # with the preamble. Keep the title frame out of the preamble: it
-            # must be emitted after exactly one \begin{document}.
-            title_marker = '\n% Title page'
-            if title_marker in preamble_text:
-                preamble_text, generated_title_page = preamble_text.split(title_marker, 1)
-                generated_title_page = '% Title page' + generated_title_page
-
-            preamble_lines = preamble_text.split('\n')
-            preamble_generated = True
-            warnings.append("Generated full BSG preamble (no user preamble found in file)")
-
-        # ========== PRESERVE EXPLICIT TITLE PAGE FROM INPUT ==========
-        # Native parsing intentionally starts at \title and therefore ignores
-        # standalone LaTeX frames that appear before the first native slide.
-        # A titlepage frame is presentation content, not preamble, so extract it
-        # here and emit it explicitly before the parsed slides.
-        input_title_page = ""
-        title_frame_pattern = re.compile(
-            r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?'
-            r'.*?(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
-            re.DOTALL
-        )
-        title_frame_match = title_frame_pattern.search(''.join(content_lines))
-        if title_frame_match:
-            input_title_page = title_frame_match.group(0).strip()
-            # An explicit title-page frame in the TXT file is authoritative.
-            # It must not be lost merely because the native parser starts at
-            # the first \title command.  For a standard \titlepage frame,
-            # Beamer will use the Presentation Settings metadata from the
-            # generated/updated preamble.
-            generated_title_page = re.sub(r'\\begin\{frame\}\[plain\]', r'\\begin{frame}', input_title_page)
-
-            content_without_title = (
-                ''.join(content_lines)[:title_frame_match.start()] +
-                ''.join(content_lines)[title_frame_match.end():]
-            )
-            content_lines = content_without_title.splitlines(keepends=True)
-
-        # ========== DEBUG: Print first 20 content lines ==========
-        print("\nFirst 20 content lines:")
-        for i, line in enumerate(content_lines[:20]):
-            print(f"  {i}: {line.rstrip()}")
-
-        # ========== PARSE SLIDES ==========
-        slides = []
-
-        # Try different parsers
-        print("\nTrying native parser...")
-        native_slides = parse_native_slides_full(content_lines, warnings)
-        if native_slides:
-            slides = native_slides
-            print(f"✓ Native parser found {len(slides)} slides")
-        else:
-            print("✗ Native parser found no slides")
-
-            print("\nTrying hybrid parser...")
-            hybrid_slides = parse_hybrid_slides(content_lines, warnings)
-            if hybrid_slides:
-                slides = hybrid_slides
-                print(f"✓ Hybrid parser found {len(slides)} slides")
-            else:
-                print("✗ Hybrid parser found no slides")
-
-                print("\nTrying LaTeX parser...")
-                latex_slides = parse_latex_slides_full(content_lines, warnings)
-                if latex_slides:
-                    slides = latex_slides
-                    print(f"✓ LaTeX parser found {len(slides)} slides")
-                else:
-                    print("✗ LaTeX parser found no slides")
-
-        if not slides:
-            errors.append("No slides were found in the input file")
-            return 0, 1, errors
-
-        # ========== POST-PROCESS SLIDES TO ENSURE TIKZ FIXES ==========
-        # Apply additional TikZ fixes to any remaining problematic content
-        print("\n🔧 Applying final TikZ fixes to slides...")
-        final_tikz_fix_count = 0
-
-        for slide in slides:
-            if slide.get('content'):
-                fixed_content = []
-                for line in slide['content']:
-                    if isinstance(line, str) and '\\begin{tikzpicture}' in line:
-                        try:
-                            # Fix any remaining TikZ content
-                            fixed_line = fix_tikz_node_line_breaks(line)
-                            if fixed_line is not None and fixed_line != line:
-                                final_tikz_fix_count += 1
-                            fixed_content.append(fixed_line if fixed_line is not None else line)
-                        except Exception as e:
-                            print(f"  ⚠ Slide TikZ fix error: {str(e)[:50]}, keeping original")
-                            fixed_content.append(line)
-                    else:
-                        fixed_content.append(line)
-                slide['content'] = fixed_content
-
-        if final_tikz_fix_count > 0:
-            print(f"  ✓ Applied {final_tikz_fix_count} additional TikZ fixes")
-
-        # ========== WRITE OUTPUT ==========
-        # Install/replace the PPTX renderer BEFORE writing the preamble.
-        preamble_lines = _inject_pptx_textbox_render_fix(preamble_lines, file_content)
-        with open(output_filename, 'w', encoding='utf-8') as outfile:
-            # Write preamble
-            if preamble_lines:
-                for line in preamble_lines:
-                    if line.strip() or line == '\n':
-                        outfile.write(line if line.endswith('\n') else line + '\n')
-                outfile.write('\n')
-
-                outfile.write("% ====== CRITICAL FIXES ======\n")
-                outfile.write("\\overfullrule=0pt\n")
-                outfile.write("\\sloppy\n")
-                outfile.write("\\tolerance=9999\n")
-                outfile.write("\\emergencystretch=3em\n")
-                outfile.write("\\hfuzz=2pt\n")
-                outfile.write("\\raggedright\n")
-                outfile.write("% ===========================\n\n")
-
-            # Always write exactly one document begin.
-            outfile.write("\\begin{document}\n")
-
-            # Generated title page belongs inside the document environment.
-            if generated_title_page:
-                outfile.write(generated_title_page.rstrip() + "\n\n")
-
-            # Write maketitle if needed
-            if (not preamble_generated and
-                    '\\maketitle' not in file_content and
-                    '\\titlepage' not in file_content):
-                outfile.write("\\maketitle\n\n")
-
-            # Process each slide
-            for slide in slides:
-                # Protect TikZ content before any processing
-                if slide.get('content'):
-                    protected_content = []
-                    for line in slide['content']:
-                        try:
-                            protected_line = protect_tikz_content(line)
-                            protected_content.append(protected_line)
-                        except Exception as e:
-                            print(f"  ⚠ Protect TikZ error: {str(e)[:50]}, using original")
-                            protected_content.append(line)
-                    slide['content'] = protected_content
-
-                try:
-                    processed_slide = process_slide_with_features(slide, outfile, warnings)
-                    if processed_slide:
-                        outfile.write(processed_slide)
-                        outfile.write('\n')
-                        processed += 1
-                    else:
-                        failed += 1
-                except Exception as e:
-                    print(f"  ⚠ Slide processing error: {str(e)[:50]}, skipping")
-                    failed += 1
-                    errors.append(f"Slide {processed + 1}: {str(e)}")
-
-            # After processing all slides, add \end{document} if not present
-            if not has_document_end:
-                outfile.write("\n\\end{document}\n")
-            else:
-                # If it was present in the original, make sure it's at the end
-                outfile.write("\n\\end{document}\n")
-
-        # ========== APPLY TIKZ FIXES TO THE GENERATED TEX FILE ==========
-        print("\n🔧 Applying final TikZ fixes to TeX output...")
-        if cleaning_level < 3:
-            try:
-                with open(output_filename, 'r', encoding='utf-8') as f:
-                    tex_content = f.read()
-
-                # Apply TikZ fixes to the entire TeX content
-                fixed_tex_content = fix_tikz_in_tex_content(tex_content)
-
-                if fixed_tex_content != tex_content:
-                    with open(output_filename, 'w', encoding='utf-8') as f:
-                        f.write(fixed_tex_content)
-                    print("  ✓ Applied TikZ fixes to TeX output")
-                else:
-                    print("  ℹ No additional TikZ fixes needed")
-            except Exception as e:
-                print(f"  ⚠ Failed to apply TikZ fixes to TeX output: {str(e)[:50]}")
-        else:
-            print("  ⏭ Skipping final whole-file TikZ rewrite (level 3 - preserve everything)")
-
-        print(f"\nProcessed {processed} slides, {failed} failed")
-
-        if processed == 0:
-            errors.append("No slides were processed")
-            return 0, 1, errors
-
-        return processed, failed, errors
-
-    except Exception as e:
-        error_msg = f"Error processing file: {str(e)}"
-        errors.append(error_msg)
-        import traceback
-        traceback.print_exc()
-        return processed, failed, errors
 #========================================================
 # Cleaning on request only START
 #========================================================
@@ -5760,11 +6121,154 @@ CLEANING_LEVELS = {
 
 DEFAULT_CLEANING_LEVEL = 3  # None by default - preserves everything
 
+def _inject_presentation_settings_footer(preamble_text: str,
+                                         presentation_info: dict) -> str:
+    r"""
+    Ensure the preserved user preamble contains the BSGPresentationLogo
+    definition and a footline that renders it.
+
+    This is the piece that lets a Presentation-Settings logo survive
+    a round trip through a user-authored preamble.  Without it, the
+    default Beamer footline (frame number only) is used, and the
+    configured logo silently disappears.
+    """
+    import re as _re
+
+    if not presentation_info:
+        return preamble_text
+
+    logo = (presentation_info.get('logo') or '').strip()
+    logo_height = (presentation_info.get('logo_size') or '2.2ex').strip() or '2.2ex'
+    if _re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', logo_height):
+        logo_height += 'ex'
+    elif not _re.fullmatch(
+            r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)',
+            logo_height):
+        logo_height = '2.2ex'
+
+    # Normalise the logo path exactly the way _save_presentation_settings_to_file
+    # does so that the two paths agree.
+    logo_tex = ''
+    if logo:
+        logo_abs = os.path.abspath(os.path.expanduser(logo))
+        logo_tex = (logo_abs.replace('\\', '/')
+                    .replace('#', r'\#').replace('%', r'\%')
+                    .replace('{', r'\{').replace('}', r'\}'))
+
+    # ---------------------------------------------------------------
+    # Strip any previously managed footer block so we do not accumulate.
+    # ---------------------------------------------------------------
+    def _strip_block(text, start_marker, end_marker):
+        while True:
+            s = text.find(start_marker)
+            if s < 0:
+                break
+            e = text.find(end_marker, s + len(start_marker))
+            if e < 0:
+                break
+            text = text[:s] + text[e + len(end_marker):]
+        return text
+
+    preamble_text = _strip_block(
+        preamble_text,
+        '% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings',
+        '% ============================================================'
+    )
+
+    # Remove any standalone logo definition.
+    preamble_text = _re.sub(
+        r'(?m)^\\def\\BSGPresentationLogo\{[^}]*\}\s*\n?',
+        '',
+        preamble_text
+    )
+    preamble_text = _re.sub(
+        r'(?m)^\\def\\BSGLogoHeight\{[^}]*\}\s*\n?',
+        '',
+        preamble_text
+    )
+
+    # Remove any old footline template that would conflict.
+    marker = r'\setbeamertemplate{footline}{'
+    while True:
+        start = preamble_text.find(marker)
+        if start < 0:
+            break
+        depth = 0
+        i = start + len(marker) - 1
+        while i < len(preamble_text):
+            ch = preamble_text[i]
+            if ch == '{' and (i == 0 or preamble_text[i - 1] != '\\'):
+                depth += 1
+            elif ch == '}' and (i == 0 or preamble_text[i - 1] != '\\'):
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+        preamble_text = preamble_text[:start] + preamble_text[i:]
+
+    # ---------------------------------------------------------------
+    # Build the managed footer block.
+    # ---------------------------------------------------------------
+    if logo_tex:
+        right_footer = (
+            "\\IfFileExists{\\BSGPresentationLogo}{%"
+            f"\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_height}]"
+            "{\\BSGPresentationLogo}}%"
+            "}{%"
+            "\\insertframenumber{} / \\inserttotalframenumber%"
+            "}\\hspace*{1ex}%"
+        )
+    else:
+        right_footer = (
+            "\\insertframenumber{} / \\inserttotalframenumber"
+            "\\hspace*{1ex}%"
+        )
+
+    logo_definition = (
+        f"\\def\\BSGPresentationLogo{{{logo_tex}}}\n"
+        if logo_tex else ""
+    )
+
+    block = (
+        "% ============================================================\n"
+        "% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings\n"
+        "% ============================================================\n"
+        f"{logo_definition}"
+        f"\\def\\BSGLogoHeight{{{logo_height}}}\n"
+        "\\makeatletter\n"
+        "\\setbeamertemplate{footline}{%\n"
+        "  \\leavevmode%\n"
+        "  \\hbox{%\n"
+        "    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]"
+        "{author in head/foot}%\n"
+        "      \\usebeamerfont{author in head/foot}"
+        "\\insertshortauthor{} (\\insertshortinstitute)%\n"
+        "    \\end{beamercolorbox}%\n"
+        "    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]"
+        "{title in head/foot}%\n"
+        "      \\usebeamerfont{title in head/foot}\\insertshorttitle%\n"
+        "    \\end{beamercolorbox}%\n"
+        "    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,right]"
+        "{date in head/foot}%\n"
+        "      \\usebeamerfont{date in head/foot}"
+        "\\insertshortdate{}\\hspace*{1.5em}%\n"
+        "      " + right_footer + "\n"
+        "    \\end{beamercolorbox}%\n"
+        "  }%\n"
+        "  \\vskip0pt%\n"
+        "}\n"
+        "\\makeatother\n"
+        "% ============================================================\n"
+    )
+
+    return preamble_text.rstrip() + "\n\n" + block + "\n"
 
 # ============================================================
 # COMPLETE UPDATED process_input_file FUNCTION
 # ============================================================
-def process_input_file(file_path, output_filename='movie.tex', presentation_info=None, ide_callback=None):
+def process_input_file(file_path, output_filename='movie.tex',
+                       presentation_info=None, ide_callback=None):
     r"""
     Comprehensive input file processor for BeamerSlideGenerator.
     Handles ALL features: mosaic, YouTube, layouts, media, TikZ, effects, etc.
@@ -5772,13 +6276,26 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
     Cleaning Level Control:
     - Level 0: Clean only typos and LaTeX errors
     - Level 1: Clean slides only
-    - Level 2: Clean both slides and lepreamble
+    - Level 2: Clean both slides and preamble
     - Level 3: None (preserve everything) - DEFAULT
 
-    The cleaning level can be set in the file with:
-    % CLEANING_LEVEL: 3
+    Front Title Page Designer:
+    If the preamble contains ``\def\BSGTitlePageConfig{...}`` with
+    ``"enabled": true``, the front title-page frame is regenerated from
+    that configuration via ``_build_title_page()``.  Otherwise the input
+    title-page frame is preserved unchanged.
+
+    Title-page frame preservation
+    -----------------------------
+    Native BSG-TXT begins a slide with ``\title``.  A raw LaTeX
+    title-page frame (``\begin{frame}[plain]\titlepage\end{frame}``)
+    has no ``\title`` line, so the native parser would otherwise skip it
+    entirely.  This function therefore scans the document body for such
+    a frame before parsing and lifts it into ``generated_title_page``,
+    where the writer emits it inside the document environment.
     """
     import re
+    import json
     from collections import deque
 
     # ============================================================
@@ -5788,7 +6305,7 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         0: "Clean only typos and LaTeX errors",
         1: "Clean slides only",
         2: "Clean both slides and preamble",
-        3: "None (preserve everything)"
+        3: "None (preserve everything)",
     }
     DEFAULT_CLEANING_LEVEL = 3
 
@@ -5817,7 +6334,6 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         cleaning_level = DEFAULT_CLEANING_LEVEL
         cleaning_directive_found = False
 
-        # Check first 20 lines for cleaning directive
         for i, line in enumerate(lines[:20]):
             stripped = line.strip()
             match = re.match(r'^%?\s*CLEANING_LEVEL:\s*(\d+)$', stripped)
@@ -5826,30 +6342,29 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 if level in CLEANING_LEVELS:
                     cleaning_level = level
                     cleaning_directive_found = True
-                    print(f"  ℹ Found cleaning level directive: {level} ({CLEANING_LEVELS[level]})")
+                    print(f"  ℹ Found cleaning level directive: "
+                          f"{level} ({CLEANING_LEVELS[level]})")
                     break
 
         if not cleaning_directive_found:
-            print(f"  ℹ No cleaning level directive found, using default: {DEFAULT_CLEANING_LEVEL} ({CLEANING_LEVELS[DEFAULT_CLEANING_LEVEL]})")
+            print(f"  ℹ No cleaning level directive found, using default: "
+                  f"{DEFAULT_CLEANING_LEVEL} "
+                  f"({CLEANING_LEVELS[DEFAULT_CLEANING_LEVEL]})")
 
         # ========== APPLY CLEANING BASED ON LEVEL ==========
-        print(f"\n🔧 Cleaning level: {cleaning_level} - {CLEANING_LEVELS[cleaning_level]}")
+        print(f"\n🔧 Cleaning level: {cleaning_level} - "
+              f"{CLEANING_LEVELS[cleaning_level]}")
 
-        # Only apply cleaning if level < 3
         if cleaning_level < 3:
             print("  Applying cleaning functions...")
             cleaned_lines = []
             for line in lines:
                 cleaned_line = line
-                # Apply cleaning functions based on level
                 if cleaning_level >= 0:
-                    # Level 0+: Fix obvious LaTeX errors
                     cleaned_line = fix_latex_errors(cleaned_line)
                 if cleaning_level >= 1:
-                    # Level 1+: Clean content
                     cleaned_line = clean_content_line(cleaned_line)
                 if cleaning_level >= 2:
-                    # Level 2+: Clean preamble
                     cleaned_line = clean_preamble_line(cleaned_line)
                 cleaned_lines.append(cleaned_line)
             lines = cleaned_lines
@@ -5870,7 +6385,6 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             for line in lines:
                 stripped = line.strip()
 
-                # Check for tikzpicture start
                 if '\\begin{tikzpicture}' in stripped:
                     in_tikz = True
                     tikz_buffer = [line]
@@ -5881,16 +6395,13 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                     tikz_buffer.append(line)
                     if '\\end{tikzpicture}' in stripped:
                         in_tikz = False
-                        # Process the entire TikZ block
                         tikz_content = '\n'.join(tikz_buffer)
 
-                        # Check if it needs fixing (has line breaks with potential issues)
                         needs_fix = False
                         if '\\\\' in tikz_content:
-                            # Check if it has nodes with line breaks that lack proper handling
-                            if 'minimum height' not in tikz_content and 'minipage' not in tikz_content:
+                            if ('minimum height' not in tikz_content
+                                    and 'minipage' not in tikz_content):
                                 needs_fix = True
-                            # Also check for nodes with line breaks
                             node_pattern = r'\\node.*?\{[^}]*\\\\[^}]*\}'
                             if re.search(node_pattern, tikz_content):
                                 needs_fix = True
@@ -5900,29 +6411,30 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                                 fixed_tikz = fix_tikz_node_line_breaks(tikz_content)
                                 if fixed_tikz is None:
                                     fixed_tikz = tikz_content
-                                # Ensure we don't lose the tikzpicture environment
-                                if '\\begin{tikzpicture}' in fixed_tikz and '\\end{tikzpicture}' in fixed_tikz:
+                                if ('\\begin{tikzpicture}' in fixed_tikz
+                                        and '\\end{tikzpicture}' in fixed_tikz):
                                     fixed_lines.extend(fixed_tikz.split('\n'))
                                     tikz_fix_count += 1
                                     print(f"  ✓ Fixed TikZ block {tikz_fix_count}")
                                 else:
-                                    # If fix broke the environment, use original
                                     fixed_lines.extend(tikz_buffer)
-                                    print(f"  ⚠ TikZ block {tikz_block_count} fix failed (environment broken), using original")
+                                    print(f"  ⚠ TikZ block {tikz_block_count} "
+                                          f"fix failed (environment broken), "
+                                          f"using original")
                             except Exception as e:
-                                print(f"  ⚠ TikZ block {tikz_block_count} fix error: {str(e)[:50]}, using original")
+                                print(f"  ⚠ TikZ block {tikz_block_count} fix "
+                                      f"error: {str(e)[:50]}, using original")
                                 fixed_lines.extend(tikz_buffer)
                         else:
                             fixed_lines.extend(tikz_buffer)
                             if '\\\\' in tikz_content:
-                                print(f"  ℹ TikZ block {tikz_block_count} already has minimum height or minipage")
+                                print(f"  ℹ TikZ block {tikz_block_count} already "
+                                      f"has minimum height or minipage")
                         tikz_buffer = []
                     continue
 
-                # If we're not in a TikZ block, just add the line
                 fixed_lines.append(line)
 
-            # If we were still in a TikZ block at EOF, add it
             if in_tikz and tikz_buffer:
                 fixed_lines.extend(tikz_buffer)
                 print(f"  ⚠ Incomplete TikZ block at end of file")
@@ -5931,7 +6443,6 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 print(f"  ✓ Applied fixes to {tikz_fix_count} TikZ block(s)")
                 lines = fixed_lines
             else:
-                # Even if no blocks were fixed, use the fixed lines if any changes were made
                 if fixed_lines != lines:
                     lines = fixed_lines
         else:
@@ -5941,7 +6452,8 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         file_content = ''.join(lines)
         has_document_begin = '\\begin{document}' in file_content
         has_document_end = '\\end{document}' in file_content
-        has_native_titles = bool(re.search(r'^\\title\s+[^{]', file_content, re.MULTILINE))
+        has_native_titles = bool(re.search(
+            r'^\\title\s+[^{]', file_content, re.MULTILINE))
         has_latex_frames = '\\begin{frame}' in file_content
         has_content_blocks = '\\begin{Content}' in file_content
         has_notes_blocks = '\\begin{Notes}' in file_content
@@ -5969,8 +6481,8 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         preamble_generated = False
         generated_title_page = ""
 
-        # Find ALL \begin{document} positions
-        doc_positions = [i for i, line in enumerate(lines) if '\\begin{document}' in line]
+        doc_positions = [i for i, line in enumerate(lines)
+                         if '\\begin{document}' in line]
         if doc_positions:
             doc_pos = doc_positions[-1]
             before_document = ''.join(lines[:doc_pos])
@@ -5984,7 +6496,9 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 content_lines = lines[doc_pos + 1:]
                 preamble_found = True
 
-                end_doc_positions = [i for i, line in enumerate(content_lines) if '\\end{document}' in line]
+                end_doc_positions = [i for i, line
+                                     in enumerate(content_lines)
+                                     if '\\end{document}' in line]
                 if end_doc_positions:
                     end_doc_pos = end_doc_positions[0]
                     content_lines = content_lines[:end_doc_pos]
@@ -5992,10 +6506,7 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 else:
                     has_document_end = False
 
-                # A title-page frame is document BODY, never preamble.  Older
-                # IDE save paths could leave a generated title frame in the
-                # preamble.  Extract it here and emit it only after the single
-                # \begin{document}.
+                # A title-page frame is document BODY, never preamble.
                 preamble_text = ''.join(preamble_lines)
                 preamble_title_match = re.search(
                     r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
@@ -6005,26 +6516,137 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 )
                 if preamble_title_match:
                     if not generated_title_page:
-                        generated_title_page = preamble_title_match.group(0).strip()
+                        generated_title_page = (
+                            preamble_title_match.group(0).strip())
                     preamble_text = (
                         preamble_text[:preamble_title_match.start()] +
                         preamble_text[preamble_title_match.end():]
                     )
                     preamble_lines = preamble_text.splitlines(keepends=True)
-                    print("  ✓ Moved title-page frame from preamble into document body")
+                    print("  ✓ Moved title-page frame from preamble into "
+                          "document body")
 
                 while content_lines and not content_lines[0].strip():
                     content_lines.pop(0)
+
+                # ------------------------------------------------------------------
+                # Also scan the document BODY for a frame that contains
+                # \titlepage or \maketitle.  The native BSG-TXT parser
+                # only begins a new slide at a \title directive, so a raw
+                # LaTeX title-page frame with no \title line is otherwise
+                # silently skipped and never reaches the generated TeX.
+                # When found, the frame is lifted into generated_title_page
+                # and removed from content_lines.
+                # ------------------------------------------------------------------
+                if not generated_title_page:
+                    body_text = ''.join(content_lines)
+                    body_title_match = re.search(
+                        r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+                        r'(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
+                        body_text,
+                        re.DOTALL
+                    )
+                    if body_title_match:
+                        generated_title_page = (
+                            body_title_match.group(0).strip())
+                        body_text = (
+                            body_text[:body_title_match.start()] +
+                            body_text[body_title_match.end():]
+                        )
+                        content_lines = body_text.splitlines(keepends=True)
+                        while content_lines and not content_lines[0].strip():
+                            content_lines.pop(0)
+                        print("  ✓ Extracted raw title-page frame from "
+                              "document body")
             else:
                 preamble_lines = []
                 content_lines = lines[doc_pos + 1:]
                 preamble_found = False
+
+                # Even without a real preamble, the body may contain a
+                # raw title-page frame that must be preserved.
+                body_text = ''.join(content_lines)
+                body_title_match = re.search(
+                    r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?.*?'
+                    r'(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
+                    body_text,
+                    re.DOTALL
+                )
+                if body_title_match:
+                    generated_title_page = (
+                        body_title_match.group(0).strip())
+                    body_text = (
+                        body_text[:body_title_match.start()] +
+                        body_text[body_title_match.end():]
+                    )
+                    content_lines = body_text.splitlines(keepends=True)
+                    while content_lines and not content_lines[0].strip():
+                        content_lines.pop(0)
+                    print("  ✓ Extracted raw title-page frame from "
+                          "document body (no real preamble)")
         else:
             content_lines = lines
             preamble_lines = []
             preamble_found = False
 
-        # If no preamble found, generate one
+        # ============================================================
+        # READ FRONT-TITLE-PAGE-DESIGNER CONFIG
+        # ============================================================
+        # The on-disk JSON in \def\BSGTitlePageConfig{...} is the
+        # authoritative source.  presentation_info is only consulted
+        # for keys the file does not provide.
+        # ============================================================
+        _preamble_text = ''.join(preamble_lines)
+
+        try:
+            title_page_config = _read_bsg_title_page_config(_preamble_text)
+        except Exception as exc:
+            print(f"  ⚠ _read_bsg_title_page_config failed: {exc}")
+            title_page_config = {}
+
+        # Merge in presentation_info, letting the file win.
+        if presentation_info:
+            pi_tpc = presentation_info.get('title_page_config') or {}
+            if isinstance(pi_tpc, dict):
+                merged = dict(pi_tpc)
+                merged.update(title_page_config)  # file wins
+                title_page_config = merged
+
+        # ============================================================
+        # LAST-RESORT: if a bg_image is present but 'enabled' is not
+        # explicitly True, force it on.  This guarantees the designer
+        # path is taken whenever the user has configured an image.
+        # ============================================================
+        if (not title_page_config.get('enabled')
+                and title_page_config.get('bg_image')):
+            print("  ℹ bg_image present without enabled=true → "
+                  "forcing designer path ON")
+            title_page_config['enabled'] = True
+
+        # ============================================================
+        # DIAGNOSTIC
+        # ============================================================
+        print("\n" + "=" * 70)
+        print("BSG DIAGNOSTIC — TITLE PAGE CONFIG")
+        print("=" * 70)
+        print(f"  preamble_found                : {preamble_found}")
+        print(f"  presentation_info             : "
+              f"{'<set>' if presentation_info else '<None>'}")
+        print(f"  _preamble_text length         : {len(_preamble_text)}")
+        print(f"  Contains BSGTitlePageConfig   : "
+              f"{'\\def\\BSGTitlePageConfig' in _preamble_text}")
+        print(f"  Contains BSGBgTitleImage      : "
+              f"{'\\def\\BSGBgTitleImage' in _preamble_text}")
+        print(f"  title_page_config['enabled']  : "
+              f"{title_page_config.get('enabled')}")
+        print(f"  title_page_config['bg_image'] : "
+              f"{title_page_config.get('bg_image')!r}")
+        print(f"  title_page_config['bg_image_opacity'] : "
+              f"{title_page_config.get('bg_image_opacity')}")
+        print(f"  All keys : {sorted(title_page_config.keys())}")
+        print("=" * 70 + "\n")
+
+        # ========== GENERATE PREAMBLE IF MISSING ==========
         if not preamble_found and presentation_info:
             from BeamerSlideGenerator import get_beamer_preamble
             preamble_text = get_beamer_preamble(
@@ -6039,38 +6661,130 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 auto_fit=presentation_info.get('auto_fit', True)
             )
 
-            # get_beamer_preamble historically returns the title frame together
-            # with the preamble. Keep the title frame out of the preamble: it
-            # must be emitted after exactly one \begin{document}.
             title_marker = '\n% Title page'
             if title_marker in preamble_text:
-                preamble_text, generated_title_page = preamble_text.split(title_marker, 1)
+                preamble_text, generated_title_page = preamble_text.split(
+                    title_marker, 1)
                 generated_title_page = '% Title page' + generated_title_page
 
             preamble_lines = preamble_text.split('\n')
             preamble_generated = True
-            warnings.append("Generated full BSG preamble (no user preamble found in file)")
+            warnings.append(
+                "Generated full BSG preamble (no user preamble found in file)")
 
-        # ========== PRESERVE EXPLICIT TITLE PAGE FROM INPUT ==========
-        # Native parsing starts at the first native \title command and would
-        # otherwise silently discard a standalone title-page frame.
-        input_title_page = ""
-        title_frame_pattern = re.compile(
+        # ============================================================
+        # BUILD OR REBUILD THE TITLE PAGE
+        # ============================================================
+        # This block ALWAYS runs.  When the designer is enabled, the
+        # existing title-page frame (if any) is removed and a freshly
+        # rendered frame is prepended.  When the designer is disabled,
+        # the input title-page frame is preserved unchanged, or a plain
+        # \titlepage frame is prepended if none was present.
+        # ============================================================
+        _input_content_text = ''.join(content_lines)
+
+        _title_frame_pattern = re.compile(
             r'\\begin\{frame\}(?:\[[^\]]*\])?(?:\{[^}]*\})?'
-            r'.*?(?:\\titlepage|\\maketitle).*?\\end\{frame\}',
+            r'(?:'
+            r'  .*?(?:\\titlepage|\\maketitle).*?'
+            r'  |'
+            r'  \s*\\begin\{tikzpicture\}(?:\[overlay,remember picture\])?'
+            r'  .*?'
+            r'  \\end\{tikzpicture\}\s*'
+            r')'
+            r'\\end\{frame\}',
             re.DOTALL
         )
-        title_frame_match = title_frame_pattern.search(''.join(content_lines))
-        if title_frame_match:
-            input_title_page = title_frame_match.group(0).strip()
-            # The explicit title page in the TXT file is authoritative.
-            # Its standard \titlepage command uses the metadata in the preamble.
-            generated_title_page = re.sub(r'\\begin\{frame\}\[plain\]', r'\\begin{frame}', input_title_page)
-            content_without_title = (
-                ''.join(content_lines)[:title_frame_match.start()] +
-                ''.join(content_lines)[title_frame_match.end():]
+        _title_frame_match = _title_frame_pattern.search(_input_content_text)
+
+        print(f"[TITLE PAGE] existing frame found: "
+              f"{bool(_title_frame_match)}")
+        if _title_frame_match:
+            print(f"[TITLE PAGE] existing frame starts with: "
+                  f"{_title_frame_match.group(0)[:80]!r}")
+
+        if title_page_config.get('enabled'):
+            print("  ✓ Front Title Page Designer is ENABLED — "
+                  "regenerating title page from config")
+
+            def _grab(key, default=''):
+                mm = re.search(
+                    r'\\' + key + r'\{([^}]*)\}', _preamble_text)
+                return mm.group(1).strip() if mm else default
+
+            _title = (
+                (presentation_info.get('title', '') if presentation_info
+                 else '') or _grab('title'))
+            _subtitle = (
+                (presentation_info.get('subtitle', '') if presentation_info
+                 else '') or _grab('subtitle'))
+            _author = (
+                (presentation_info.get('author', '') if presentation_info
+                 else '') or _grab('author'))
+            _institution = (
+                (presentation_info.get('institution', '') if presentation_info
+                 else '') or _grab('institute'))
+            _short_inst = (
+                presentation_info.get('short_institute', '')
+                if presentation_info else '')
+            _date = (
+                (presentation_info.get('date', '') if presentation_info
+                 else '') or _grab('date') or r'\today')
+            _logo = ''
+            _lg = re.search(
+                r'\\def\\BSGPresentationLogo\{([^}]*)\}',
+                _preamble_text)
+            if _lg:
+                _logo = _lg.group(1).strip()
+            if not _logo and presentation_info:
+                _logo = presentation_info.get('logo', '')
+            _lgh = '2.2ex'
+            _lh = re.search(
+                r'\\def\\BSGLogoHeight\{([^}]*)\}', _preamble_text)
+            if _lh:
+                _lgh = _lh.group(1).strip()
+            if presentation_info:
+                _lgh = presentation_info.get('logo_size', _lgh) or _lgh
+
+            generated_title_page = _build_title_page(
+                title=_title,
+                subtitle=_subtitle,
+                author=_author,
+                institution=_institution,
+                short_institute=_short_inst,
+                date=_date,
+                logo=_logo,
+                logo_height=_lgh,
+                title_page_config=title_page_config,
             )
-            content_lines = content_without_title.splitlines(keepends=True)
+
+            print(f"[TITLE PAGE] generated frame length: "
+                  f"{len(generated_title_page)} chars")
+            print(f"[TITLE PAGE] generated frame preview:\n"
+                  f"{generated_title_page[:300]}")
+
+            # Remove existing frame; prepend the new one.
+            if _title_frame_match:
+                content_lines = (
+                    _input_content_text[:_title_frame_match.start()] +
+                    _input_content_text[_title_frame_match.end():]
+                ).splitlines(keepends=True)
+
+            while content_lines and not content_lines[0].strip():
+                content_lines.pop(0)
+
+            content_lines = [generated_title_page + '\n'] + content_lines
+
+        elif _title_frame_match:
+            # Designer disabled: preserve the existing title-page frame
+            # by copying it into generated_title_page and stripping it
+            # from content_lines (so the writer doesn't emit it twice).
+            if not generated_title_page:
+                generated_title_page = _title_frame_match.group(0).strip()
+            content_lines = (
+                _input_content_text[:_title_frame_match.start()] +
+                _input_content_text[_title_frame_match.end():]
+            ).splitlines(keepends=True)
 
         # ========== DEBUG: Print first 20 content lines ==========
         print("\nFirst 20 content lines:")
@@ -6080,9 +6794,9 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         # ========== PARSE SLIDES ==========
         slides = []
 
-        # Try different parsers
         print("\nTrying native parser...")
-        native_slides = parse_native_slides_full(content_lines, warnings, cleaning_level)
+        native_slides = parse_native_slides_full(
+            content_lines, warnings, cleaning_level)
         if native_slides:
             slides = native_slides
             print(f"✓ Native parser found {len(slides)} slides")
@@ -6090,7 +6804,8 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
             print("✗ Native parser found no slides")
 
             print("\nTrying hybrid parser...")
-            hybrid_slides = parse_hybrid_slides(content_lines, warnings, cleaning_level)
+            hybrid_slides = parse_hybrid_slides(
+                content_lines, warnings, cleaning_level)
             if hybrid_slides:
                 slides = hybrid_slides
                 print(f"✓ Hybrid parser found {len(slides)} slides")
@@ -6098,7 +6813,8 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 print("✗ Hybrid parser found no slides")
 
                 print("\nTrying LaTeX parser...")
-                latex_slides = parse_latex_slides_full(content_lines, warnings, cleaning_level)
+                latex_slides = parse_latex_slides_full(
+                    content_lines, warnings, cleaning_level)
                 if latex_slides:
                     slides = latex_slides
                     print(f"✓ LaTeX parser found {len(slides)} slides")
@@ -6122,33 +6838,59 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                     for line in slide['content']:
                         if isinstance(line, str) and '\\begin{tikzpicture}' in line:
                             try:
-                                # Fix any remaining TikZ content
                                 fixed_line = fix_tikz_node_line_breaks(line)
-                                if fixed_line is not None and fixed_line != line:
+                                if (fixed_line is not None
+                                        and fixed_line != line):
                                     final_tikz_fix_count += 1
-                                fixed_content.append(fixed_line if fixed_line is not None else line)
+                                fixed_content.append(
+                                    fixed_line if fixed_line is not None
+                                    else line)
                             except Exception as e:
-                                print(f"  ⚠ Slide TikZ fix error: {str(e)[:50]}, keeping original")
+                                print(f"  ⚠ Slide TikZ fix error: "
+                                      f"{str(e)[:50]}, keeping original")
                                 fixed_content.append(line)
                         else:
                             fixed_content.append(line)
                     slide['content'] = fixed_content
 
             if final_tikz_fix_count > 0:
-                print(f"  ✓ Applied {final_tikz_fix_count} additional TikZ fixes")
+                print(f"  ✓ Applied {final_tikz_fix_count} additional "
+                      f"TikZ fixes")
         else:
-            print("  ⏭ Skipping final TikZ fixes (level 3 - preserve everything)")
+            print("  ⏭ Skipping final TikZ fixes "
+                  "(level 3 - preserve everything)")
 
         # ========== WRITE OUTPUT ==========
-        # Install/replace the PPTX renderer BEFORE writing the preamble.
-        preamble_lines = _inject_pptx_textbox_render_fix(preamble_lines, file_content)
+        preamble_lines = _inject_pptx_textbox_render_fix(
+            preamble_lines, file_content)
+
         with open(output_filename, 'w', encoding='utf-8') as outfile:
-            # Write preamble
             if preamble_lines:
                 for line in preamble_lines:
                     if line.strip() or line == '\n':
-                        outfile.write(line if line.endswith('\n') else line + '\n')
+                        outfile.write(
+                            line if line.endswith('\n') else line + '\n')
                 outfile.write('\n')
+
+                # ============================================================
+                # BSG TITLE-PAGE COLOR SAFETY
+                # ------------------------------------------------------------
+                # The Front Title Page Designer may emit \textcolor{primary}
+                # and \textcolor{secondary}.  Those names are not standard
+                # LaTeX or Beamer colors, so we guarantee them here.
+                #
+                # \providecolor defines each color only if it is not
+                # already defined, so a user preamble or a Beamer theme
+                # that defines these names always takes precedence.
+                # ============================================================
+                outfile.write(
+                    "% ====== BSG TITLE-PAGE COLOR SAFETY ======\n")
+                outfile.write(
+                    "\\providecolor{primary}{RGB}{25,57,90}\n")
+                outfile.write(
+                    "\\providecolor{secondary}{RGB}{225,112,25}\n")
+                outfile.write(
+                    "% =========================================\n\n")
 
                 outfile.write("% ====== CRITICAL FIXES ======\n")
                 outfile.write("\\overfullrule=0pt\n")
@@ -6174,7 +6916,6 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
 
             # Process each slide
             for slide in slides:
-                # Protect TikZ content before any processing
                 if slide.get('content'):
                     protected_content = []
                     for line in slide['content']:
@@ -6182,12 +6923,14 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                             protected_line = protect_tikz_content(line)
                             protected_content.append(protected_line)
                         except Exception as e:
-                            print(f"  ⚠ Protect TikZ error: {str(e)[:50]}, using original")
+                            print(f"  ⚠ Protect TikZ error: "
+                                  f"{str(e)[:50]}, using original")
                             protected_content.append(line)
                     slide['content'] = protected_content
 
                 try:
-                    processed_slide = process_slide_with_features(slide, outfile, warnings, cleaning_level)
+                    processed_slide = process_slide_with_features(
+                        slide, outfile, warnings, cleaning_level)
                     if processed_slide:
                         outfile.write(processed_slide)
                         outfile.write('\n')
@@ -6195,16 +6938,12 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                     else:
                         failed += 1
                 except Exception as e:
-                    print(f"  ⚠ Slide processing error: {str(e)[:50]}, skipping")
+                    print(f"  ⚠ Slide processing error: "
+                          f"{str(e)[:50]}, skipping")
                     failed += 1
                     errors.append(f"Slide {processed + 1}: {str(e)}")
 
-            # After processing all slides, add \end{document} if not present
-            if not has_document_end:
-                outfile.write("\n\\end{document}\n")
-            else:
-                # If it was present in the original, make sure it's at the end
-                outfile.write("\n\\end{document}\n")
+            outfile.write("\n\\end{document}\n")
 
         # ============================================================
         # CRITICAL FIX: Only apply final TikZ fixes to TeX if cleaning_level < 3
@@ -6215,7 +6954,6 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 with open(output_filename, 'r', encoding='utf-8') as f:
                     tex_content = f.read()
 
-                # Apply TikZ fixes to the entire TeX content
                 fixed_tex_content = fix_tikz_in_tex_content(tex_content)
 
                 if fixed_tex_content != tex_content:
@@ -6225,9 +6963,11 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
                 else:
                     print("  ℹ No additional TikZ fixes needed")
             except Exception as e:
-                print(f"  ⚠ Failed to apply TikZ fixes to TeX output: {str(e)[:50]}")
+                print(f"  ⚠ Failed to apply TikZ fixes to TeX output: "
+                      f"{str(e)[:50]}")
         else:
-            print("  ⏭ Skipping final TikZ fixes to TeX (level 3 - preserve everything)")
+            print("  ⏭ Skipping final TikZ fixes to TeX "
+                  "(level 3 - preserve everything)")
 
         print(f"\nProcessed {processed} slides, {failed} failed")
 
@@ -6243,7 +6983,6 @@ def process_input_file(file_path, output_filename='movie.tex', presentation_info
         import traceback
         traceback.print_exc()
         return processed, failed, errors
-
 # ============================================================
 # HELPER CLEANING FUNCTIONS
 # ============================================================
@@ -7764,7 +8503,8 @@ def process_content_with_features(content):
         if in_math:
             math_buffer.append(line)
             if any(end in stripped for end in ['\\end{align', '\\end{equation}', '\\end{gather', '\\end{multline']):
-                in_math = False                result.append('\n'.join(math_buffer))
+                in_math = False
+                result.append('\n'.join(math_buffer))
                 math_buffer = []
             continue
 
