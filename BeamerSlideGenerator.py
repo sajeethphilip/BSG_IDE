@@ -2807,35 +2807,6 @@ def get_beamer_preamble(title, subtitle, author, institution, short_institute, d
     for value in metadata_values:
         core_preamble = core_preamble.replace("%s", value, 1)
 
-    # ============================================================
-    # FOOTER LOGO — single source of truth
-    # ------------------------------------------------------------
-    # The logo path is emitted as \def\BSGPresentationLogo{...} and
-    # the footline consumes it through that macro.  This is the same
-    # convention used by _save_presentation_settings_to_file(), so
-    # the two writers agree and a logo configured once will keep
-    # rendering on every subsequent rebuild.
-    #
-    # The \IfFileExists guard is evaluated at footline-expansion time
-    # (i.e. once per slide).  When the file is present, the logo is
-    # typeset at height \BSGLogoHeight; otherwise the frame counter
-    # is used, so the footline is never broken.
-    # ============================================================
-    if logo_path:
-        logo_footer = (
-            "\\IfFileExists{\\BSGPresentationLogo}{%"
-            f"\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_height}]"
-            "{\\BSGPresentationLogo}}%"
-            "}{%"
-            "\\insertframenumber{} / \\inserttotalframenumber%"
-            "}\\hspace*{1ex}%"
-        )
-    else:
-        logo_footer = (
-            "\\insertframenumber{} / \\inserttotalframenumber"
-            "\\hspace*{1ex}%"
-        )
-    core_preamble = core_preamble.replace("%LOGOFOOTER%", logo_footer, 1)
 
     # ============================================================
     # PERSIST FEATURE FLAGS AND LOGO DEFINITION
@@ -6121,149 +6092,6 @@ CLEANING_LEVELS = {
 
 DEFAULT_CLEANING_LEVEL = 3  # None by default - preserves everything
 
-def _inject_presentation_settings_footer(preamble_text: str,
-                                         presentation_info: dict) -> str:
-    r"""
-    Ensure the preserved user preamble contains the BSGPresentationLogo
-    definition and a footline that renders it.
-
-    This is the piece that lets a Presentation-Settings logo survive
-    a round trip through a user-authored preamble.  Without it, the
-    default Beamer footline (frame number only) is used, and the
-    configured logo silently disappears.
-    """
-    import re as _re
-
-    if not presentation_info:
-        return preamble_text
-
-    logo = (presentation_info.get('logo') or '').strip()
-    logo_height = (presentation_info.get('logo_size') or '2.2ex').strip() or '2.2ex'
-    if _re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', logo_height):
-        logo_height += 'ex'
-    elif not _re.fullmatch(
-            r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)',
-            logo_height):
-        logo_height = '2.2ex'
-
-    # Normalise the logo path exactly the way _save_presentation_settings_to_file
-    # does so that the two paths agree.
-    logo_tex = ''
-    if logo:
-        logo_abs = os.path.abspath(os.path.expanduser(logo))
-        logo_tex = (logo_abs.replace('\\', '/')
-                    .replace('#', r'\#').replace('%', r'\%')
-                    .replace('{', r'\{').replace('}', r'\}'))
-
-    # ---------------------------------------------------------------
-    # Strip any previously managed footer block so we do not accumulate.
-    # ---------------------------------------------------------------
-    def _strip_block(text, start_marker, end_marker):
-        while True:
-            s = text.find(start_marker)
-            if s < 0:
-                break
-            e = text.find(end_marker, s + len(start_marker))
-            if e < 0:
-                break
-            text = text[:s] + text[e + len(end_marker):]
-        return text
-
-    preamble_text = _strip_block(
-        preamble_text,
-        '% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings',
-        '% ============================================================'
-    )
-
-    # Remove any standalone logo definition.
-    preamble_text = _re.sub(
-        r'(?m)^\\def\\BSGPresentationLogo\{[^}]*\}\s*\n?',
-        '',
-        preamble_text
-    )
-    preamble_text = _re.sub(
-        r'(?m)^\\def\\BSGLogoHeight\{[^}]*\}\s*\n?',
-        '',
-        preamble_text
-    )
-
-    # Remove any old footline template that would conflict.
-    marker = r'\setbeamertemplate{footline}{'
-    while True:
-        start = preamble_text.find(marker)
-        if start < 0:
-            break
-        depth = 0
-        i = start + len(marker) - 1
-        while i < len(preamble_text):
-            ch = preamble_text[i]
-            if ch == '{' and (i == 0 or preamble_text[i - 1] != '\\'):
-                depth += 1
-            elif ch == '}' and (i == 0 or preamble_text[i - 1] != '\\'):
-                depth -= 1
-                if depth == 0:
-                    i += 1
-                    break
-            i += 1
-        preamble_text = preamble_text[:start] + preamble_text[i:]
-
-    # ---------------------------------------------------------------
-    # Build the managed footer block.
-    # ---------------------------------------------------------------
-    if logo_tex:
-        right_footer = (
-            "\\IfFileExists{\\BSGPresentationLogo}{%"
-            f"\\raisebox{{-0.15ex}}{{\\includegraphics[height={logo_height}]"
-            "{\\BSGPresentationLogo}}%"
-            "}{%"
-            "\\insertframenumber{} / \\inserttotalframenumber%"
-            "}\\hspace*{1ex}%"
-        )
-    else:
-        right_footer = (
-            "\\insertframenumber{} / \\inserttotalframenumber"
-            "\\hspace*{1ex}%"
-        )
-
-    logo_definition = (
-        f"\\def\\BSGPresentationLogo{{{logo_tex}}}\n"
-        if logo_tex else ""
-    )
-
-    block = (
-        "% ============================================================\n"
-        "% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings\n"
-        "% ============================================================\n"
-        f"{logo_definition}"
-        f"\\def\\BSGLogoHeight{{{logo_height}}}\n"
-        "\\makeatletter\n"
-        "\\setbeamertemplate{footline}{%\n"
-        "  \\leavevmode%\n"
-        "  \\hbox{%\n"
-        "    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]"
-        "{author in head/foot}%\n"
-        "      \\usebeamerfont{author in head/foot}"
-        "\\insertshortauthor{} (\\insertshortinstitute)%\n"
-        "    \\end{beamercolorbox}%\n"
-        "    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,center]"
-        "{title in head/foot}%\n"
-        "      \\usebeamerfont{title in head/foot}\\insertshorttitle%\n"
-        "    \\end{beamercolorbox}%\n"
-        "    \\begin{beamercolorbox}[wd=.333333\\paperwidth,ht=2.25ex,dp=1ex,right]"
-        "{date in head/foot}%\n"
-        "      \\usebeamerfont{date in head/foot}"
-        "\\insertshortdate{}\\hspace*{1.5em}%\n"
-        "      " + right_footer + "\n"
-        "    \\end{beamercolorbox}%\n"
-        "  }%\n"
-        "  \\vskip0pt%\n"
-        "}\n"
-        "\\makeatother\n"
-        "% ============================================================\n"
-    )
-
-    return preamble_text.rstrip() + "\n\n" + block + "\n"
-
 # ============================================================
 # COMPLETE UPDATED process_input_file FUNCTION
 # ============================================================
@@ -6293,6 +6121,20 @@ def process_input_file(file_path, output_filename='movie.tex',
     entirely.  This function therefore scans the document body for such
     a frame before parsing and lifts it into ``generated_title_page``,
     where the writer emits it inside the document environment.
+
+    Idempotency of the safety blocks
+    --------------------------------
+    Both this function and _save_presentation_settings_to_file() in
+    BSG_IDE.py emit a "% BSG TITLE-PAGE COLOR SAFETY" block and a
+    "% CRITICAL FIXES" block before \begin{document}.  Without
+    stripping pre-existing copies, each conversion would append another
+    pair, and after a few saves the preamble would contain dozens of
+    duplicate \raggedright declarations.  That shifts brace depth at the
+    point where \setbeamertemplate{footline}{...} is parsed and causes
+    the "Runaway argument? / File ended while scanning use of
+    \beamer@sbtexec" error.  This function strips every pre-existing
+    copy before emitting exactly one, so the preamble always has a
+    single, well-defined tail.
     """
     import re
     import json
@@ -6864,42 +6706,77 @@ def process_input_file(file_path, output_filename='movie.tex',
         preamble_lines = _inject_pptx_textbox_render_fix(
             preamble_lines, file_content)
 
+        # ============================================================
+        # Idempotent preamble tail
+        # ------------------------------------------------------------
+        # Both this function and _save_presentation_settings_to_file()
+        # emit a "% BSG TITLE-PAGE COLOR SAFETY" block and a
+        # "% CRITICAL FIXES" block before \begin{document}.  Strip every
+        # pre-existing copy from the preamble, then emit exactly one,
+        # so a file converted N times contains exactly one copy of each.
+        # ============================================================
+        preamble_text_for_write = ''.join(preamble_lines)
+
+        _safety_patterns = (
+            re.compile(
+                r'(?ms)^[ \t]*%\s*=+\s*BSG TITLE-PAGE COLOR SAFETY\s*=+\s*\n'
+                r'[ \t]*\\providecolor\{primary\}\{RGB\}\{25,57,90\}\s*\n'
+                r'[ \t]*\\providecolor\{secondary\}\{RGB\}\{225,112,25\}\s*\n'
+                r'[ \t]*%\s*=+\s*\n'
+            ),
+            re.compile(
+                r'(?ms)^[ \t]*%\s*=+\s*CRITICAL FIXES\s*=+\s*\n'
+                r'[ \t]*\\overfullrule=0pt\s*\n'
+                r'[ \t]*\\sloppy\s*\n'
+                r'[ \t]*\\tolerance=9999\s*\n'
+                r'[ \t]*\\emergencystretch=3em\s*\n'
+                r'[ \t]*\\hfuzz=2pt\s*\n'
+                r'[ \t]*\\raggedright\s*\n'
+                r'[ \t]*%\s*=+\s*\n'
+            ),
+        )
+        for _pat in _safety_patterns:
+            preamble_text_for_write = _pat.sub(
+                '', preamble_text_for_write)
+        preamble_text_for_write = re.sub(
+            r'\n{3,}', '\n\n', preamble_text_for_write
+        )
+
         with open(output_filename, 'w', encoding='utf-8') as outfile:
-            if preamble_lines:
-                for line in preamble_lines:
-                    if line.strip() or line == '\n':
-                        outfile.write(
-                            line if line.endswith('\n') else line + '\n')
+            if preamble_text_for_write.strip():
+                outfile.write(preamble_text_for_write)
+                if not preamble_text_for_write.endswith('\n'):
+                    outfile.write('\n')
                 outfile.write('\n')
 
-                # ============================================================
-                # BSG TITLE-PAGE COLOR SAFETY
-                # ------------------------------------------------------------
-                # The Front Title Page Designer may emit \textcolor{primary}
-                # and \textcolor{secondary}.  Those names are not standard
-                # LaTeX or Beamer colors, so we guarantee them here.
-                #
-                # \providecolor defines each color only if it is not
-                # already defined, so a user preamble or a Beamer theme
-                # that defines these names always takes precedence.
-                # ============================================================
-                outfile.write(
-                    "% ====== BSG TITLE-PAGE COLOR SAFETY ======\n")
-                outfile.write(
-                    "\\providecolor{primary}{RGB}{25,57,90}\n")
-                outfile.write(
-                    "\\providecolor{secondary}{RGB}{225,112,25}\n")
-                outfile.write(
-                    "% =========================================\n\n")
+            # ============================================================
+            # BSG TITLE-PAGE COLOR SAFETY
+            # ------------------------------------------------------------
+            # The Front Title Page Designer may emit \textcolor{primary}
+            # and \textcolor{secondary}.  Those names are not standard
+            # LaTeX or Beamer colors, so we guarantee them here.
+            #
+            # \providecolor defines each color only if it is not
+            # already defined, so a user preamble or a Beamer theme
+            # that defines these names always takes precedence.
+            # ============================================================
+            outfile.write(
+                "% ====== BSG TITLE-PAGE COLOR SAFETY ======\n")
+            outfile.write(
+                "\\providecolor{primary}{RGB}{25,57,90}\n")
+            outfile.write(
+                "\\providecolor{secondary}{RGB}{225,112,25}\n")
+            outfile.write(
+                "% =========================================\n\n")
 
-                outfile.write("% ====== CRITICAL FIXES ======\n")
-                outfile.write("\\overfullrule=0pt\n")
-                outfile.write("\\sloppy\n")
-                outfile.write("\\tolerance=9999\n")
-                outfile.write("\\emergencystretch=3em\n")
-                outfile.write("\\hfuzz=2pt\n")
-                outfile.write("\\raggedright\n")
-                outfile.write("% ===========================\n\n")
+            outfile.write("% ====== CRITICAL FIXES ======\n")
+            outfile.write("\\overfullrule=0pt\n")
+            outfile.write("\\sloppy\n")
+            outfile.write("\\tolerance=9999\n")
+            outfile.write("\\emergencystretch=3em\n")
+            outfile.write("\\hfuzz=2pt\n")
+            outfile.write("\\raggedright\n")
+            outfile.write("% ===========================\n\n")
 
             # Always write exactly one document begin.
             outfile.write("\\begin{document}\n")
@@ -6983,6 +6860,7 @@ def process_input_file(file_path, output_filename='movie.tex',
         import traceback
         traceback.print_exc()
         return processed, failed, errors
+
 # ============================================================
 # HELPER CLEANING FUNCTIONS
 # ============================================================

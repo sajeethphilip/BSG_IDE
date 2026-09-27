@@ -431,6 +431,41 @@ def _bsg_json_escape_for_def(json_str: str) -> str:
     json_str = json_str.replace('}', r'\}')
     return json_str
 
+def _insert_preamble_definition(preamble_text: str,
+                                definition: str) -> str:
+    r"""
+    Insert a definition into a preamble at a defined, safe anchor.
+
+    The anchor is the position of ``\begin{document}``.  If that
+    marker is absent, the definition is appended at the very end of
+    the string.
+
+    This must be used instead of ``preamble.rstrip() + '\n' + def``
+    because a naive append can land inside an open brace group — for
+    example inside a \setbeamertemplate{footline}{...} body whose
+    closing brace is on a later line — and produce a "Runaway
+    argument" error when the file is compiled.
+
+    Args:
+        preamble_text: the preamble to modify.
+        definition:    the definition (one or more lines) to insert.
+
+    Returns:
+        The modified preamble.
+    """
+    definition = definition.rstrip()
+    if not definition:
+        return preamble_text
+
+    anchor = re.search(r'\\begin\{document\}', preamble_text)
+    if anchor is None:
+        return preamble_text.rstrip() + '\n' + definition + '\n'
+
+    insert_at = anchor.start()
+    prefix = preamble_text[:insert_at]
+    if prefix and not prefix.endswith('\n'):
+        prefix += '\n'
+    return prefix + definition + '\n' + preamble_text[insert_at:]
 
 def _bsg_json_unescape_from_def(json_str: str) -> str:
     r"""
@@ -797,6 +832,32 @@ CANONICAL_INSTALL_MAP = {
     },
 }
 
+def _extract_managed_footer_block(text: str) -> str:
+    r"""
+    Return the PS-managed footer block (with its surrounding markers)
+    from `text`, or '' if the block is absent.
+    """
+    s = text.find(PS_FOOT_START)
+    if s < 0:
+        return ''
+    e = text.find(PS_FOOT_END, s + len(PS_FOOT_START))
+    if e < 0:
+        return ''
+    return text[s:e + len(PS_FOOT_END)]
+
+
+def _strip_managed_footer_block(text: str) -> str:
+    r"""
+    Remove every PS-managed footer block from `text`.
+    """
+    while True:
+        s = text.find(PS_FOOT_START)
+        if s < 0:
+            return text
+        e = text.find(PS_FOOT_END, s + len(PS_FOOT_START))
+        if e < 0:
+            return text[:s]
+        text = text[:s] + text[e + len(PS_FOOT_END):]
 
 def _resolve_mapped_source(source_dir, source_names):
     """Return the first existing source file from a prioritized candidate list."""
@@ -1643,6 +1704,72 @@ import json
 import time
 from pathlib import Path
 from datetime import datetime
+
+# ============================================================
+# WRITER OWNERSHIP PARTITION
+# ============================================================
+# The preamble is divided into three disjoint territories:
+#
+#   * PS  = Presentation Settings (this file's settings dialog and
+#           _save_presentation_settings_to_file)
+#   * TS  = Theme & Styles (get_beamer_preamble in
+#           BeamerSlideGenerator.py, plus the Theme & Styles dialog)
+#   * GEN = the generator's own fallback defaults, applied only when a
+#           file has no preamble at all
+#
+# The rule enforced everywhere below is:
+#
+#     PS has priority for every field it writes, provided the value
+#     it holds is non-empty.  If PS is blank for that field, the
+#     value currently in the file (TS or GEN) is preserved.
+#
+# Two writers must never touch the same slot name.  Where a slot has
+# both writers, the PS writer reads the current file value first and
+# applies the priority rule above.
+# ============================================================
+
+# --- Slots that Presentation Settings exclusively owns ---
+PS_ONLY_SCALAR_SLOTS = (
+    # (slot_id, presentation_info key, default when PS value is blank)
+    ('def:BSGAutoCompleteEnabled', 'autocomplete_enabled', '1'),
+    ('def:BSGLaTeXEngine',        'latex_engine',        'pdflatex'),
+)
+
+# --- Slots that Presentation Settings and Theme & Styles both may write ---
+PS_TS_SHARED_SCALAR_SLOTS = (
+    # (slot_id, presentation_info key, default when both are blank)
+    ('title',                      'title',             'Presentation'),
+    ('subtitle',                   'subtitle',          ''),
+    ('author',                     'author',            'airis4D'),
+    ('institute',                  'institution',       ''),
+    ('date',                       'date',              r'\today'),
+    ('def:insertshortinstitute',   'short_institute',   ''),
+    ('def:BSGPresentationLogo',    'logo',              ''),
+    ('def:BSGLogoHeight',          'logo_size',         '2.2ex'),
+)
+
+# --- Slots that Theme & Styles exclusively owns ---
+# Listed for documentation and for the safety check that rejects an
+# accidental PS write to one of these names.
+TS_ONLY_SLOT_NAMES = frozenset({
+    'usetheme', 'usecolortheme', 'usefonttheme',
+    'setbeamertemplate', 'setbeamercolor', 'setbeamerfont',
+    'definecolor', 'colorlet',
+    'BSGTitlePageConfig',
+    'BSGBgTitleImage', 'BSGBgTitleOpacity',
+    'BSGBgFrameImage', 'BSGBgFrameOpacity',
+})
+
+# The managed footer block is PS-owned, but it is bounded by fixed
+# comment markers rather than by a slot name.  These markers are the
+# only thing the PS writer may add or remove.
+PS_FOOT_START = (
+    '% ============================================================\n'
+    '% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings\n'
+    '% ============================================================\n'
+)
+PS_FOOT_END = '% ============================================================\n'
+
 
 # ============================================================================
 # WINDOW MANAGER - Add this after imports
@@ -8305,27 +8432,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             # STEP 6: Build footline template - SIMPLE
             # ============================================================
             footline_template = r"""
-        % ========== FOOTLINE TEMPLATE ==========
-        \makeatletter
-        \setbeamertemplate{footline}{%
-          \leavevmode%
-          \hbox{%
-            \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{author in head/foot}%
-              \usebeamerfont{author in head/foot}\insertshortauthor{} (\insertshortinstitute)%
-            \end{beamercolorbox}%
-            \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,center]{title in head/foot}%
-              \usebeamerfont{title in head/foot}\insertshorttitle%
-            \end{beamercolorbox}%
-            \begin{beamercolorbox}[wd=.333333\paperwidth,ht=2.25ex,dp=1ex,right]{date in head/foot}%
-              \usebeamerfont{date in head/foot}\insertshortdate{}\hspace*{2em}%
-              \IfFileExists{\BSGPresentationLogo}{%
-                \raisebox{-0.25ex}{\includegraphics[height=2.4ex]{\BSGPresentationLogo}}%
-              }{%
-                \insertframenumber{} / \inserttotalframenumber%
-              }\hspace*{1ex}%
-            \end{beamercolorbox}}%
-          \vskip0pt%
-        }
         \makeatother
         % ========================================
         """
@@ -33957,7 +34063,14 @@ Created by {self.__author__}
             if fixed_preamble != file_preamble:
                 self.write("  📝 Preamble was modified - updating file\n", "cyan")
 
-                # Update the file with the fixed preamble
+                # Preserve the PS-managed footer block: extract it from the
+                # current file, strip it from `fixed_preamble` if the fixer
+                # duplicated it, and re-append it exactly once.
+                footer_block = _extract_managed_footer_block(content)
+                fixed_preamble = _strip_managed_footer_block(fixed_preamble)
+                if footer_block:
+                    fixed_preamble = fixed_preamble.rstrip() + '\n\n' + footer_block
+
                 doc_pos = content.find('\\begin{document}')
                 if doc_pos != -1:
                     document_body = content[doc_pos:]
@@ -35767,34 +35880,133 @@ Created by {self.__author__}
         dialog.after(10, center_dialog)
         dialog.lift()
 
+    def _build_managed_footer_block(self,
+                                    footer_logo_tex: str,
+                                    footer_logo_size: str) -> str:
+        r"""
+        Return the complete marked footer block.
+
+        This is the ONLY place in BSG_IDE.py that emits a
+        \setbeamertemplate{footline}{...}.  The generator in
+        BeamerSlideGenerator.py must not emit one; its default footline is
+        removed when a PS-managed block is present.
+
+        Brace accounting for the logo branch
+        ------------------------------------
+        \IfFileExists takes three arguments:
+
+            \IfFileExists{file}{true code}{false code}
+
+        The true branch contains \raisebox{...}{\includegraphics[...]{...}}.
+        Counting braces after the outer \IfFileExists{:
+
+            {                                        depth 1
+              \raisebox{                             depth 2
+                \includegraphics[height=...]{...}    depth 2 (balanced)
+              }                                      depth 1
+            }{                                       depth 0, reopens to 1
+              \insertframenumber{} / \inserttotalframenumber
+            }                                        depth 0
+            \hspace*{1ex}                            independent
+
+        So after the false branch closes, exactly one '}' must follow to
+        close the \IfFileExists itself.  The previous version emitted only
+        one '}' in this position, which closed the true branch a second
+        time and left \IfFileExists unterminated.  That is the direct cause
+        of the "File ended while scanning use of \beamer@sbtexec" error.
+        """
+        if footer_logo_tex:
+            right_footer = (
+                '\\IfFileExists{\\BSGPresentationLogo}{%'
+                f'\\raisebox{{-0.15ex}}{{\\includegraphics'
+                f'[height={footer_logo_size}]'
+                '{\\BSGPresentationLogo}}%'
+                '}{%'
+                '\\insertframenumber{} / \\inserttotalframenumber%'
+                '}}\\hspace*{1ex}%'      # <-- FIXED: two braces close the
+                                          #     true branch and then
+                                          #     \IfFileExists itself
+            )
+        else:
+            right_footer = (
+                '\\insertframenumber{} / \\inserttotalframenumber'
+                '\\hspace*{1ex}%'
+            )
+
+        return (
+            PS_FOOT_START
+            + '\\makeatletter\n'
+            '\\setbeamertemplate{footline}{%\n'
+            '  \\leavevmode%\n'
+            '  \\hbox{%\n'
+            '    \\begin{beamercolorbox}[wd=.333333\\paperwidth,'
+            'ht=2.25ex,dp=1ex,center]{author in head/foot}%\n'
+            '      \\usebeamerfont{author in head/foot}'
+            '\\insertshortauthor{} (\\insertshortinstitute)%\n'
+            '    \\end{beamercolorbox}%\n'
+            '    \\begin{beamercolorbox}[wd=.333333\\paperwidth,'
+            'ht=2.25ex,dp=1ex,center]{title in head/foot}%\n'
+            '      \\usebeamerfont{title in head/foot}'
+            '\\insertshorttitle%\n'
+            '    \\end{beamercolorbox}%\n'
+            '    \\begin{beamercolorbox}[wd=.333333\\paperwidth,'
+            'ht=2.25ex,dp=1ex,right]{date in head/foot}%\n'
+            '      \\usebeamerfont{date in head/foot}'
+            '\\insertshortdate{}\\hspace*{1.5em}%\n'
+            '      ' + right_footer + '\n'
+            '    \\end{beamercolorbox}%\n'
+            '  }%\n'
+            '  \\vskip0pt%\n'
+            '}\n'
+            '\\makeatother\n'
+            + PS_FOOT_END
+        )
+
     def _save_presentation_settings_to_file(self) -> bool:
         r"""
         Write the Presentation Settings slots into the current TXT file.
 
-        Design
-        ------
-        The TXT preamble is treated as a document with a small set of
-        named slots.  Each slot is written in place:
+        Territory
+        ---------
+        This method owns exactly the following preamble elements:
 
-            * If the slot already exists (anywhere in the preamble),
-              only that line is edited.  Everything else on the line,
-              and every other line in the file, is left byte-for-byte
-              unchanged.
-            * If the slot does not exist, a new line is inserted at a
-              fixed anchor immediately before ``\begin{document}``.
+            \title, \subtitle, \author, \institute, \date
+            \def\insertshortinstitute
+            \def\BSGPresentationLogo
+            \def\BSGLogoHeight
+            \def\BSGAutoCompleteEnabled
+            \def\BSGLaTeXEngine
+            the marked block
+                % BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings
+                ... (contains a single \setbeamertemplate{footline}{...})
+                % ============================================================
 
-        Consequences
-        ------------
-        * Theme & Styles owns ``\usetheme``, ``\definecolor``,
-          ``\setbeamertemplate``, ``\def\\BSGTitlePageConfig``, the
-          background-image macros, and everything else in the preamble.
-          None of those lines are ever touched by this method.
-        * The only multi-line construct that this method owns is the
-          managed footer block, which is bounded by two fixed comment
-          markers that Theme & Styles never writes.
-        * Because the edit is in place, the file's whitespace, comments,
-          ordering, and any hand-written preamble content all survive
-          every save.
+        It never touches any other preamble element.  In particular it
+        never touches \usetheme, \definecolor, \setbeamertemplate{...}
+        (except the footline inside the marked block), the title-page
+        designer macros, or the layout commands.
+
+        Priority
+        --------
+        Presentation Settings unconditionally owns the shared scalar
+        slots on the write path.  The read path (load_file) has already
+        folded any Theme & Styles value into the PS fields before the
+        user pressed Save, so re-reading the file here would only risk
+        reintroducing a stale value.  See _apply_priority() below.
+
+        Idempotency
+        -----------
+        Both this writer and process_input_file() in BeamerSlideGenerator.py
+        emit a "% BSG TITLE-PAGE COLOR SAFETY" block and a
+        "% CRITICAL FIXES" block before \begin{document}.  Without
+        stripping pre-existing copies, each save would append another
+        pair, and after a few saves the preamble would contain dozens of
+        duplicate \raggedright declarations.  That shifts brace depth at
+        the point where \setbeamertemplate{footline}{...} is parsed and
+        causes the "Runaway argument? / File ended while scanning use of
+        \beamer@sbtexec" error.  This method strips every pre-existing
+        copy before emitting exactly one, so the preamble always has a
+        single, well-defined tail.
 
         Returns True on success.
         """
@@ -35807,24 +36019,16 @@ Created by {self.__author__}
                 content = f.read()
 
             # ============================================================
-            # 1. Sanitise the values we are about to write.
+            # 1. Value sanitisation
             # ============================================================
             def _san(value) -> str:
                 r"""
                 Prepare a plain-text value for a TeX macro argument.
-
-                The value will be wrapped in ``\title{...}`` and similar.
-                Characters that would break out of the argument's braces
-                are escaped.  Backslash is escaped LAST so that the
-                escapes introduced by the earlier replacements are not
-                themselves escaped.
+                See the original docstring for the escaping contract.
                 """
                 if value is None:
                     return ''
                 text = str(value)
-                # Unwrap common text-formatting commands so that a title
-                # of ``\textbf{Foo}`` becomes ``Foo`` rather than an
-                # unbalanced mess.
                 text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
                 text = re.sub(
                     r'\\(?:textbf|textit|emph|textrm|textsf|texttt|textsc)'
@@ -35833,8 +36037,6 @@ Created by {self.__author__}
                 text = re.sub(r'\\[A-Za-z]+', '', text)
                 text = re.sub(r'\s+', ' ', text).strip()
 
-                # Escape in order.  Note that each escape introduces a
-                # backslash; the backslash itself is escaped last.
                 text = text.replace('{', r'\{')
                 text = text.replace('}', r'\}')
                 text = text.replace('#', r'\#')
@@ -35850,8 +36052,6 @@ Created by {self.__author__}
             def _san_path(value) -> str:
                 r"""
                 Prepare a filesystem path for a TeX macro argument.
-                Paths may legitimately contain a backslash on Windows;
-                forward slashes are used instead.
                 """
                 if not value:
                     return ''
@@ -35863,55 +36063,147 @@ Created by {self.__author__}
                 p = p.replace('}', r'\}')
                 return p
 
-            title = _san(self.presentation_info.get('title', '') or 'Presentation')
-            subtitle = _san(self.presentation_info.get('subtitle', ''))
-            author = _san(self.presentation_info.get('author', '') or 'airis4D')
-            institution = _san(self.presentation_info.get('institution', ''))
-            short_institute = _san(self.presentation_info.get('short_institute', ''))
-
-            # Date is special: \today is a control sequence, not literal text.
-            _date_raw = (self.presentation_info.get('date', '') or '').strip()
-            if _date_raw in ('', r'\today'):
-                date = r'\today'
-            else:
-                date = _san(_date_raw)
-
-            # Footer logo path and size.
-            footer_logo_path = (self.presentation_info.get('logo') or '').strip()
-            if footer_logo_path:
-                footer_logo_path = os.path.abspath(
-                    os.path.expanduser(footer_logo_path))
-                self.presentation_info['logo'] = footer_logo_path
-            footer_logo_tex = _san_path(footer_logo_path)
-
-            footer_logo_size = str(
-                self.presentation_info.get('logo_size', '2.2ex')).strip() or '2.2ex'
-            if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', footer_logo_size):
-                footer_logo_size += 'ex'
-            elif not re.fullmatch(
-                    r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)',
-                    footer_logo_size):
-                footer_logo_size = '2.2ex'
-            self.presentation_info['logo_size'] = footer_logo_size
-
-            autocomplete_value = (
-                '1'
-                if self.presentation_info.get('autocomplete_enabled', True)
-                else '0'
-            )
-            engine_value = str(
-                self.presentation_info.get('latex_engine', 'pdflatex')
-            ).strip().lower()
-            if engine_value not in ('pdflatex', 'xelatex'):
-                engine_value = 'pdflatex'
+            def _san_logo_height(value) -> str:
+                r"""
+                Normalise a logo height to a TeX dimension.
+                """
+                s = str(value or '').strip() or '2.2ex'
+                if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', s):
+                    s += 'ex'
+                elif not re.fullmatch(
+                        r'[0-9]+(?:\.[0-9]+)?(?:ex|em|cm|mm|pt|bp|in)', s):
+                    s = '2.2ex'
+                return s
 
             # ============================================================
-            # 2. Split the file at \begin{document}.
+            # 2. Read the current value of a slot from the file
+            # ============================================================
+            def _read_slot_value(preamble_text: str, slot_id: str) -> str:
+                r"""
+                Return the current value of a scalar slot, or '' if the
+                slot is absent.  Two forms are recognised:
+
+                    \title{Foo}
+                    \def\BSGLogoHeight{2.2ex}
+                """
+                if slot_id.startswith('def:'):
+                    name = slot_id[4:]
+                    m = re.search(
+                        r'(?m)^\s*\\def\\' + re.escape(name)
+                        + r'\{([^{}]*)\}\s*$',
+                        preamble_text,
+                    )
+                else:
+                    m = re.search(
+                        r'(?m)^\s*\\' + re.escape(slot_id)
+                        + r'\s*\{([^{}]*)\}\s*$',
+                        preamble_text,
+                    )
+                return m.group(1).strip() if m else ''
+
+            # ============================================================
+            # 3. Priority rule
+            # ============================================================
+            def _apply_priority(ps_value: str, file_value: str) -> str:
+                r"""
+                Presentation Settings unconditionally owns the shared
+                slots on the write path.
+
+                Why the file value is ignored here
+                ----------------------------------
+                The read path has already folded any Theme & Styles
+                value into the Presentation Settings fields before the
+                user pressed Save.  See load_file(): when it extracts a
+                shared scalar from the preamble, it assigns the
+                non-empty value into self.presentation_info[<key>].  So
+                by the time this function runs, ps_value is either the
+                user's edit or the value that was already in the file.
+                Re-reading the file at this point would only risk
+                reintroducing a stale value that the user has since
+                changed.
+
+                The file_value argument is retained for signature
+                stability and for any external caller; it is
+                deliberately not consulted.
+                """
+                return (ps_value or '').strip()
+
+            # ============================================================
+            # 4. Slot write helper — callable replacement, template safe
+            # ============================================================
+            def _write_slot(text: str, pattern, replacement: str) -> str:
+                r"""
+                Replace the value of a single-line slot, or insert the
+                slot if it does not exist.  The replacement is applied via
+                a callable so that the re module never parses it as a
+                template (which would reject \d, \B, etc.).
+                """
+                if pattern.search(text):
+                    return pattern.sub(lambda _m, _r=replacement: _r,
+                                       text, count=1)
+
+                # Not present: insert at a defined anchor.
+                anchor = re.search(r'\\begin\{document\}', text)
+                if anchor:
+                    insert_at = anchor.start()
+                    prefix = text[:insert_at]
+                    if prefix and not prefix.endswith('\n'):
+                        prefix += '\n'
+                    return prefix + replacement + '\n' + text[insert_at:]
+                return text.rstrip() + '\n' + replacement + '\n'
+
+            def _slot_pattern(slot_id: str):
+                if slot_id.startswith('def:'):
+                    name = slot_id[4:]
+                    return re.compile(
+                        r'(?m)^\s*\\def\\' + re.escape(name)
+                        + r'\{[^{}]*\}\s*$'
+                    )
+                return re.compile(
+                    r'(?m)^\s*\\' + re.escape(slot_id)
+                    + r'\s*\{[^{}]*\}\s*$'
+                )
+
+            # ============================================================
+            # 5. Sanitise PS values per slot kind
+            # ============================================================
+            def _ps_value_for(slot_id: str, key: str, default: str) -> str:
+                raw = self.presentation_info.get(key, '')
+                if raw is None:
+                    raw = ''
+                if slot_id == 'def:BSGPresentationLogo':
+                    # Path sanitisation
+                    if str(raw).strip():
+                        raw = os.path.abspath(
+                            os.path.expanduser(str(raw).strip()))
+                        self.presentation_info['logo'] = raw
+                        return _san_path(raw)
+                    return ''
+                if slot_id == 'def:BSGLogoHeight':
+                    v = _san_logo_height(raw or default)
+                    self.presentation_info['logo_size'] = v
+                    return v
+                if slot_id == 'def:BSGAutoCompleteEnabled':
+                    return '1' if bool(raw) else '0'
+                if slot_id == 'def:BSGLaTeXEngine':
+                    v = str(raw or default).strip().lower()
+                    return v if v in ('pdflatex', 'xelatex') else 'pdflatex'
+                if slot_id == 'date':
+                    d = str(raw or default).strip()
+                    return r'\today' if d in ('', r'\today') else _san(d)
+                return _san(str(raw) if raw != '' else default)
+
+            def _format_slot_line(slot_id: str, value: str) -> str:
+                if slot_id.startswith('def:'):
+                    name = slot_id[4:]
+                    return f'\\def\\{name}{{{value}}}'
+                return f'\\{slot_id}{{{value}}}'
+
+            # ============================================================
+            # 6. Split the file at \begin{document}
             # ============================================================
             begin_match = re.search(r'\\begin\{document\}', content)
             if not begin_match:
-                # No document wrapper.  Write a minimal one around the
-                # existing content so the file remains usable.
                 preamble_text = content
                 body_text = ''
                 needs_document_wrapper = True
@@ -35921,238 +36213,157 @@ Created by {self.__author__}
                 needs_document_wrapper = False
 
             # ============================================================
-            # 3. Slot write helper.
-            #
-            #    ``anchored`` controls fallback insertion:
-            #       'after-title'   -> insert after \title{...} if present
-            #       'after-author'  -> insert after \author{...} if present
-            #       'before-begin'  -> insert just before \begin{document}
+            # 7. Remove the marked footer block (and only that block)
             # ============================================================
-            def _write_slot(text, pattern, replacement, anchored='before-begin'):
-                r"""
-                Replace the value of a single-line slot, or insert the
-                slot if it does not exist.
-
-                ``pattern`` is a compiled regex matching the entire line
-                (including leading whitespace) that owns the slot.
-                ``replacement`` is the new line (without newline).
-                """
-                if pattern.search(text):
-                    return pattern.sub(replacement, text, count=1)
-
-                # Not present: insert.
-                if anchored == 'after-title':
-                    anchor = re.search(
-                        r'(?m)^\s*\\title\s*\{[^{}]*\}\s*$', text)
-                elif anchored == 'after-author':
-                    anchor = re.search(
-                        r'(?m)^\s*\\author\s*\{[^{}]*\}\s*$', text)
-                else:
-                    anchor = None
-
-                if anchor:
-                    insert_at = anchor.end()
-                    return text[:insert_at] + '\n' + replacement + text[insert_at:]
-
-                # Fallback: before \begin{document} if present, else at end.
-                begin_here = re.search(r'\\begin\{document\}', text)
-                if begin_here:
-                    insert_at = begin_here.start()
-                    # Ensure separation from the preceding line.
-                    prefix = text[:insert_at]
-                    if prefix and not prefix.endswith('\n'):
-                        prefix += '\n'
-                    return prefix + replacement + '\n' + text[insert_at:]
-                return text.rstrip() + '\n' + replacement + '\n'
-
-            # ============================================================
-            # 4. Write each slot in place.
-            # ============================================================
-            preamble_text = _write_slot(
-                preamble_text,
-                re.compile(r'(?m)^\s*\\title\s*\{[^{}]*\}\s*$'),
-                f'\\title{{{title}}}',
-                anchored='before-begin',
-            )
-            preamble_text = _write_slot(
-                preamble_text,
-                re.compile(r'(?m)^\s*\\subtitle\s*\{[^{}]*\}\s*$'),
-                f'\\subtitle{{{subtitle}}}',
-                anchored='after-title',
-            )
-            preamble_text = _write_slot(
-                preamble_text,
-                re.compile(r'(?m)^\s*\\author\s*\{[^{}]*\}\s*$'),
-                f'\\author{{{author}}}',
-                anchored='after-title',
-            )
-            preamble_text = _write_slot(
-                preamble_text,
-                re.compile(r'(?m)^\s*\\institute\s*\{[^{}]*\}\s*$'),
-                f'\\institute{{{institution}}}',
-                anchored='after-author',
-            )
-            preamble_text = _write_slot(
-                preamble_text,
-                re.compile(r'(?m)^\s*\\date\s*\{[^{}]*\}\s*$'),
-                f'\\date{{{date}}}',
-                anchored='after-author',
-            )
-            preamble_text = _write_slot(
-                preamble_text,
-                re.compile(r'(?m)^\s*\\def\\insertshortinstitute\{[^{}]*\}\s*$'),
-                f'\\def\\insertshortinstitute{{{short_institute}}}',
-                anchored='after-author',
-            )
-
-            # The logo path and logo height are kept as dedicated macros.
-            # If a path is empty, remove the macro entirely rather than
-            # writing an empty body.
-            preamble_text = re.sub(
-                r'(?m)^\s*\\def\\BSGPresentationLogo\{[^{}]*\}\s*\n?',
-                '',
-                preamble_text,
-            )
-            preamble_text = re.sub(
-                r'(?m)^\s*\\def\\BSGLogoHeight\{[^{}]*\}\s*\n?',
-                '',
-                preamble_text,
-            )
-            _extra_defs = []
-            if footer_logo_tex:
-                _extra_defs.append(
-                    f'\\def\\BSGPresentationLogo{{{footer_logo_tex}}}')
-            _extra_defs.append(f'\\def\\BSGLogoHeight{{{footer_logo_size}}}')
-            _extra_defs.append(
-                f'\\def\\BSGAutoCompleteEnabled{{{autocomplete_value}}}')
-            _extra_defs.append(f'\\def\\BSGLaTeXEngine{{{engine_value}}}')
-            for _line in _extra_defs:
-                preamble_text = _write_slot(
-                    preamble_text,
-                    re.compile(
-                        r'(?m)^\s*\\def\\'
-                        + re.escape(_line.split('{', 1)[0].lstrip('\\def\\'))
-                        + r'\{[^{}]*\}\s*$'),
-                    _line,
-                    anchored='after-author',
-                )
-
-            # ============================================================
-            # 5. Managed footer block.
-            #
-            #    The block is bounded by two fixed comment markers that
-            #    Theme & Styles never emits.  It is removed as a unit
-            #    and re-emitted at a single anchor.
-            # ============================================================
-            _FOOT_START = (
-                '% ============================================================\n'
-                '% BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation '
-                'Settings\n'
-                '% ============================================================\n'
-            )
-            _FOOT_END = (
-                '% ============================================================\n'
-            )
-
-            # Remove any previous footer block.
             while True:
-                s = preamble_text.find(_FOOT_START)
+                s = preamble_text.find(PS_FOOT_START)
                 if s < 0:
                     break
-                e = preamble_text.find(_FOOT_END, s + len(_FOOT_START))
+                e = preamble_text.find(PS_FOOT_END, s + len(PS_FOOT_START))
                 if e < 0:
-                    # Unterminated: drop everything to the end.
+                    # Unterminated block: drop everything to the end.
                     preamble_text = preamble_text[:s]
                     break
-                preamble_text = preamble_text[:s] + preamble_text[e + len(_FOOT_END):]
-
-            # Remove any stray managed footline template that may have
-            # survived from an earlier writer version.
-            _marker = r'\setbeamertemplate{footline}{'
-            while True:
-                s = preamble_text.find(_marker)
-                if s < 0:
-                    break
-                depth = 0
-                i = s + len(_marker) - 1
-                while i < len(preamble_text):
-                    ch = preamble_text[i]
-                    if ch == '{' and (i == 0 or preamble_text[i - 1] != '\\'):
-                        depth += 1
-                    elif ch == '}' and (i == 0 or preamble_text[i - 1] != '\\'):
-                        depth -= 1
-                        if depth == 0:
-                            i += 1
-                            break
-                    i += 1
-                preamble_text = preamble_text[:s] + preamble_text[i:]
-
-            # Build the new footer block.
-            if footer_logo_tex:
-                right_footer = (
-                    '\\IfFileExists{\\BSGPresentationLogo}{%'
-                    f'\\raisebox{{-0.15ex}}{{\\includegraphics'
-                    f'[height={footer_logo_size}]'
-                    '{\\BSGPresentationLogo}}%'
-                    '}{%'
-                    '\\insertframenumber{} / \\inserttotalframenumber%'
-                    '}\\hspace*{1ex}%'
-                )
-            else:
-                right_footer = (
-                    '\\insertframenumber{} / \\inserttotalframenumber'
-                    '\\hspace*{1ex}%'
+                preamble_text = (
+                    preamble_text[:s]
+                    + preamble_text[e + len(PS_FOOT_END):]
                 )
 
-            footer_block = (
-                _FOOT_START
-                + '\\makeatletter\n'
-                '\\setbeamertemplate{footline}{%\n'
-                '  \\leavevmode%\n'
-                '  \\hbox{%\n'
-                '    \\begin{beamercolorbox}[wd=.333333\\paperwidth,'
-                'ht=2.25ex,dp=1ex,center]{author in head/foot}%\n'
-                '      \\usebeamerfont{author in head/foot}'
-                '\\insertshortauthor{} (\\insertshortinstitute)%\n'
-                '    \\end{beamercolorbox}%\n'
-                '    \\begin{beamercolorbox}[wd=.333333\\paperwidth,'
-                'ht=2.25ex,dp=1ex,center]{title in head/foot}%\n'
-                '      \\usebeamerfont{title in head/foot}'
-                '\\insertshorttitle%\n'
-                '    \\end{beamercolorbox}%\n'
-                '    \\begin{beamercolorbox}[wd=.333333\\paperwidth,'
-                'ht=2.25ex,dp=1ex,right]{date in head/foot}%\n'
-                '      \\usebeamerfont{date in head/foot}'
-                '\\insertshortdate{}\\hspace*{1.5em}%\n'
-                '      ' + right_footer + '\n'
-                '    \\end{beamercolorbox}%\n'
-                '  }%\n'
-                '  \\vskip0pt%\n'
-                '}\n'
-                '\\makeatother\n'
-                + _FOOT_END
+            # ============================================================
+            # 7b. Remove every pre-existing safety block.
+            #
+            # Both this writer and process_input_file() emit a
+            # "% BSG TITLE-PAGE COLOR SAFETY" block followed by a
+            # "% CRITICAL FIXES" block before \begin{document}.  Without
+            # stripping pre-existing copies, each save would append
+            # another pair, and after a few saves the preamble would
+            # contain dozens of duplicate \raggedright declarations.
+            # That shifts brace depth at the point where
+            # \setbeamertemplate{footline}{...} is parsed, causing the
+            # "Runaway argument? / File ended while scanning use of
+            # \beamer@sbtexec" error.
+            # ============================================================
+            _safety_patterns = (
+                re.compile(
+                    r'(?ms)^[ \t]*%\s*=+\s*BSG TITLE-PAGE COLOR SAFETY\s*=+\s*\n'
+                    r'[ \t]*\\providecolor\{primary\}\{RGB\}\{25,57,90\}\s*\n'
+                    r'[ \t]*\\providecolor\{secondary\}\{RGB\}\{225,112,25\}\s*\n'
+                    r'[ \t]*%\s*=+\s*\n'
+                ),
+                re.compile(
+                    r'(?ms)^[ \t]*%\s*=+\s*CRITICAL FIXES\s*=+\s*\n'
+                    r'[ \t]*\\overfullrule=0pt\s*\n'
+                    r'[ \t]*\\sloppy\s*\n'
+                    r'[ \t]*\\tolerance=9999\s*\n'
+                    r'[ \t]*\\emergencystretch=3em\s*\n'
+                    r'[ \t]*\\hfuzz=2pt\s*\n'
+                    r'[ \t]*\\raggedright\s*\n'
+                    r'[ \t]*%\s*=+\s*\n'
+                ),
+            )
+            for _pat in _safety_patterns:
+                preamble_text = _pat.sub('', preamble_text)
+
+            # Collapse the blank-line runs left behind by the removals.
+            preamble_text = re.sub(r'\n{3,}', '\n\n', preamble_text)
+
+            # ============================================================
+            # 8. Write the PS-owned scalar slots
+            # ============================================================
+            # The PS-only slots are written unconditionally.
+            for slot_id, key, default in PS_ONLY_SCALAR_SLOTS:
+                value = _ps_value_for(slot_id, key, default)
+                preamble_text = _write_slot(
+                    preamble_text,
+                    _slot_pattern(slot_id),
+                    _format_slot_line(slot_id, value),
+                )
+
+            # The PS/TS-shared slots are written unconditionally from the
+            # current Presentation Settings state.  _ps_value_for() has
+            # already substituted the slot default when the PS value is
+            # blank, so a blank PS field yields the default value, not an
+            # empty argument.
+            for slot_id, key, default in PS_TS_SHARED_SCALAR_SLOTS:
+                ps_value = _ps_value_for(slot_id, key, default)
+                final_value = _apply_priority(ps_value, '')
+                preamble_text = _write_slot(
+                    preamble_text,
+                    _slot_pattern(slot_id),
+                    _format_slot_line(slot_id, final_value),
+                )
+
+            # ============================================================
+            # 9. Build and re-insert the managed footer block
+            # ============================================================
+            footer_logo_path = (self.presentation_info.get('logo') or '').strip()
+            if footer_logo_path:
+                footer_logo_path = os.path.abspath(
+                    os.path.expanduser(footer_logo_path))
+            footer_logo_tex = _san_path(footer_logo_path) if footer_logo_path else ''
+
+            footer_logo_size = _san_logo_height(
+                self.presentation_info.get('logo_size', '2.2ex'))
+
+            footer_block = self._build_managed_footer_block(
+                footer_logo_tex, footer_logo_size)
+
+            # ------------------------------------------------------------
+            # Emit exactly one copy of each safety block, immediately
+            # before \begin{document}, followed by the PS footer block.
+            # The preamble tail is therefore always:
+            #
+            #     \def\BSGLaTeXEngine{...}
+            #
+            #     % BSG TITLE-PAGE COLOR SAFETY
+            #     ...
+            #     % CRITICAL FIXES
+            #     ...
+            #
+            #     % BSG PRESENTATION SETTINGS FOOTER -- managed by PS
+            #     ...
+            #     % ============================================
+            #
+            #     \begin{document}
+            # ------------------------------------------------------------
+            _safety_block = (
+                "\n% ====== BSG TITLE-PAGE COLOR SAFETY ======\n"
+                "\\providecolor{primary}{RGB}{25,57,90}\n"
+                "\\providecolor{secondary}{RGB}{225,112,25}\n"
+                "% =========================================\n"
+                "\n% ====== CRITICAL FIXES ======\n"
+                "\\overfullrule=0pt\n"
+                "\\sloppy\n"
+                "\\tolerance=9999\n"
+                "\\emergencystretch=3em\n"
+                "\\hfuzz=2pt\n"
+                "\\raggedright\n"
+                "% ===========================\n"
             )
 
-            # Re-insert the footer block immediately before \begin{document}.
             begin_here = re.search(r'\\begin\{document\}', preamble_text)
             if begin_here:
                 insert_at = begin_here.start()
-                prefix = preamble_text[:insert_at]
-                if prefix and not prefix.endswith('\n'):
-                    prefix += '\n'
+                prefix = preamble_text[:insert_at].rstrip()
                 preamble_text = (
-                    prefix + '\n' + footer_block + preamble_text[insert_at:]
+                    prefix
+                    + _safety_block
+                    + '\n'
+                    + footer_block
+                    + '\n'
+                    + preamble_text[insert_at:]
                 )
             else:
-                # No document wrapper in the preamble; the body will add
-                # one below.  Insert the footer block at the very end of
-                # the preamble.
                 preamble_text = (
-                    preamble_text.rstrip() + '\n\n' + footer_block
+                    preamble_text.rstrip()
+                    + _safety_block
+                    + '\n'
+                    + footer_block
+                    + '\n\\begin{document}\n'
                 )
 
             # ============================================================
-            # 6. Reassemble and write.
+            # 10. Reassemble and write
             # ============================================================
             if needs_document_wrapper:
                 new_content = (
@@ -36169,16 +36380,11 @@ Created by {self.__author__}
                 f.write(new_content)
 
             # ============================================================
-            # 7. Keep the in-memory preamble in sync with the file.
-            #
-            #    This is what allows a later save_file() or convert_to_tex()
-            #    to write the same content back without losing the slots
-            #    we just set.  Because the preamble was edited in place,
-            #    Theme & Styles' regions are preserved automatically.
+            # 11. Sync the in-memory preamble
             # ============================================================
-            _doc_pos = new_content.find('\\begin{document}')
-            if _doc_pos >= 0:
-                self.preamble_from_file = new_content[:_doc_pos].rstrip()
+            doc_pos = new_content.find('\\begin{document}')
+            if doc_pos >= 0:
+                self.preamble_from_file = new_content[:doc_pos].rstrip()
                 self.custom_preamble = self.preamble_from_file
                 self.using_custom_preamble = True
                 self.preamble_origin = 'file'
@@ -40028,23 +40234,29 @@ Created by {self.__author__}
         Fix malformed custom commands with user conflict resolution.
         Shows dialogs for each conflict and lets the user choose.
 
-        Phase 1: Manual conflict resolution (user chooses)
-        Phase 2: Automated cleanup (removes remaining issues)
+        Phase 1: Remove conflicting packages (automated).
+        Phase 2: Detect custom command conflicts.
+        Phase 3: Apply user choices.
+        Phase 4: Automated cleanup.
 
         Returns: (fixed_preamble, resolutions)
+
+        All re-insertions go through _insert_preamble_definition(), which
+        places the new definition immediately before \\begin{document}.
+        This never appends inside an open brace group, which is what
+        used to produce "Runaway argument" errors in the generated .tex.
         """
         import re
 
         fixed_preamble = preamble
         resolutions = {}
-        apply_to_all_choice = None  # Store the "Apply to All" choice
+        apply_to_all_choice = None  # "Apply to All" choice
 
         # ============================================================
-        # PHASE 1: REMOVE CONFLICTING PACKAGES FIRST (AUTOMATED)
+        # PHASE 1: REMOVE CONFLICTING PACKAGES (AUTOMATED)
         # ============================================================
         print("\n🔧 Phase 1: Removing conflicting packages...")
 
-        # Remove soul package - it conflicts with custom \hl
         soul_patterns = [
             '\\usepackage{soul}',
             '\\IfFileExists{soul.sty}{\\usepackage{soul}}{}',
@@ -40058,7 +40270,6 @@ Created by {self.__author__}
                 )
                 print(f"  ✓ Removed soul package (conflicts with custom \\hl)")
 
-        # Remove obsolete packages
         obsolete_packages = ['grffile', 'capt-of', 'kvoptions']
         for pkg in obsolete_packages:
             pkg_pattern = f'\\usepackage{{{pkg}}}'
@@ -40074,7 +40285,6 @@ Created by {self.__author__}
         # ============================================================
         print("\n🔧 Phase 2: Detecting custom command conflicts...")
 
-        # Define the correct command definitions
         CORRECT_COMMANDS = {
             'split': {
                 'definition': r"""\ifcsname split\endcsname\else
@@ -40250,39 +40460,25 @@ Created by {self.__author__}
     }
     \fi""",
                 'description': 'Mosaic grid layout (2 parameters)'
-            }
+            },
         }
 
         # ============================================================
-        # Helper: Find command definitions (ENHANCED)
+        # Helper: find command definitions in the preamble
         # ============================================================
         def find_command_definitions(text, cmd_name):
-            """Find all definitions of a command in the preamble"""
             definitions = []
 
-            # ============================================================
-            # FIX: Better patterns to catch ALL malformed commands
-            # ============================================================
             patterns = [
-                # Malformed: \newcommand{\cmd}{...} (no params)
                 (r'\\newcommand\{\\' + cmd_name + r'\}\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_no_params'),
-                # Malformed: \newcommand{\cmd}[0]{...} (0 params)
                 (r'\\newcommand\{\\' + cmd_name + r'\}\s*\[0\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_0_params'),
-                # Malformed: \newcommand{\cmd}[1]{...} (1 param - wrong)
                 (r'\\newcommand\{\\' + cmd_name + r'\}\s*\[1\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_1_param'),
-                # Correct: \newcommand{\cmd}[2]{...} (2 params)
                 (r'\\newcommand\{\\' + cmd_name + r'\}\s*\[2\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'newcommand_2_params'),
-                # Malformed: \def\cmd{...} (no params)
                 (r'\\def\\' + cmd_name + r'\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'def_no_params'),
-                # Malformed: \def\cmd#1{...} (1 param - wrong)
                 (r'\\def\\' + cmd_name + r'#1\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'def_1_param'),
-                # Correct: \def\cmd#1#2{...} (2 params)
                 (r'\\def\\' + cmd_name + r'#1#2\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'def_2_params'),
-                # \let\cmd = ... (alias)
                 (r'\\let\\' + cmd_name + r'\s*=\s*([^\\\n]+)', 'let'),
-                # Malformed: \renewcommand{\cmd}{...} (no params)
                 (r'\\renewcommand\{\\' + cmd_name + r'\}\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'renewcommand_no_params'),
-                # Correct: \renewcommand{\cmd}[2]{...} (2 params)
                 (r'\\renewcommand\{\\' + cmd_name + r'\}\s*\[2\]\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', 'renewcommand_2_params'),
             ]
 
@@ -40311,22 +40507,28 @@ Created by {self.__author__}
             if len(existing_defs) > 0:
                 is_correct = False
                 for def_info in existing_defs:
-                    # Check if the command is correctly defined with 2 parameters
-                    if 'newcommand_2_params' in def_info['type'] or 'def_2_params' in def_info['type']:
+                    t = def_info['type']
+
+                    # Parameterised forms require both #1 and #2.
+                    if t in ('newcommand_2_params', 'def_2_params'):
                         if '#1' in def_info['content'] and '#2' in def_info['content']:
                             is_correct = True
                             break
-                    # Also check if it's properly guarded
+
+                    # Scalar forms: a non-empty body is correct as-is.
+                    # This is the form used for \insertshortinstitute.
+                    if t in ('newcommand_0_params', 'newcommand_no_params',
+                             'def_no_params'):
+                        if def_info['content'].strip():
+                            is_correct = True
+                            break
+
+                    # Guarded forms.
                     if '\\ifcsname' in def_info['full'] and cmd_name in def_info['full']:
                         if '\\else' in def_info['full'] and '\\fi' in def_info['full']:
                             is_correct = True
                             break
 
-                # ============================================================
-                # CRITICAL: Detect conflict if:
-                # 1. Multiple definitions exist, OR
-                # 2. The definition is malformed (not correct)
-                # ============================================================
                 if len(existing_defs) > 1 or not is_correct:
                     conflicts.append({
                         'name': cmd_name,
@@ -40334,8 +40536,8 @@ Created by {self.__author__}
                         'is_correct': is_correct,
                         'default_def': CORRECT_COMMANDS[cmd_name]
                     })
-                    print(f"  ⚠ Conflict detected for \\{cmd_name}: {len(existing_defs)} definition(s), correct={is_correct}")
-
+                    print(f"  ⚠ Conflict detected for \\{cmd_name}: "
+                          f"{len(existing_defs)} definition(s), correct={is_correct}")
 
         if conflicts:
             print(f"\n⚠ Found {len(conflicts)} conflict(s) to resolve")
@@ -40356,31 +40558,22 @@ Created by {self.__author__}
                     user_choice = 'existing'
                 else:
                     if parent:
-                        # ============================================================
-                        # CRITICAL FIX: Handle "Apply to All" choice
-                        # ============================================================
                         if apply_to_all_choice is not None:
-                            # Use the stored "Apply to All" choice
                             user_choice = apply_to_all_choice
                             print(f"   → Applying '{user_choice}' to all remaining conflicts")
                         else:
-                            # Show the dialog
                             user_choice = BeamerSlideEditor._show_conflict_dialog(
                                 parent, cmd_name, existing_defs, default_def
                             )
-                            # Check if user wants to apply to all
                             if user_choice == 'all_default':
                                 apply_to_all_choice = 'default'
                                 user_choice = 'default'
-                                print(f"   → Applying 'default' to all remaining conflicts")
                             elif user_choice == 'all_existing':
                                 apply_to_all_choice = 'existing'
                                 user_choice = 'existing'
-                                print(f"   → Applying 'existing' to all remaining conflicts")
                             elif user_choice == 'all_remove':
                                 apply_to_all_choice = 'remove'
                                 user_choice = 'remove'
-                                print(f"   → Applying 'remove' to all remaining conflicts")
                     else:
                         print("\n   Options:")
                         print("   1. Use DEFAULT definition (correct)")
@@ -40419,7 +40612,7 @@ Created by {self.__author__}
         # ============================================================
         print("\n🔧 Phase 3: Applying user choices...")
 
-        # Remove ALL existing definitions for conflicted commands
+        # Remove ALL existing definitions for conflicted commands.
         for cmd_name, resolution in resolutions.items():
             for def_info in resolution['existing_defs']:
                 full_def = def_info['full']
@@ -40427,58 +40620,71 @@ Created by {self.__author__}
                     fixed_preamble = fixed_preamble.replace(full_def, '')
                     print(f"  ✓ Removed existing definition of \\{cmd_name}")
 
-        # Clean up extra newlines
+        # Collapse extra blank lines created by the removals.
         fixed_preamble = re.sub(r'\n\s*\n\s*\n', '\n\n', fixed_preamble)
         fixed_preamble = re.sub(r'\n\s*\n', '\n\n', fixed_preamble)
 
-        # Insert ONLY the selected definitions
+        # Re-insert ONLY the selected definitions, at a defined anchor.
         for cmd_name, resolution in resolutions.items():
             choice = resolution['choice']
 
             if choice == 'default':
                 default_def = resolution['default_def']['definition']
-                fixed_preamble = fixed_preamble.rstrip() + '\n' + default_def
+                fixed_preamble = _insert_preamble_definition(
+                    fixed_preamble, default_def)
                 print(f"  ✓ Added DEFAULT \\{cmd_name} definition")
+
             elif choice == 'existing':
                 existing_defs = resolution['existing_defs']
                 best_def = None
                 for def_info in existing_defs:
-                    if 'newcommand_2_params' in def_info['type'] or 'def_2_params' in def_info['type']:
+                    if ('newcommand_2_params' in def_info['type']
+                            or 'def_2_params' in def_info['type']):
                         if '#1' in def_info['content'] and '#2' in def_info['content']:
                             best_def = def_info['full']
                             break
                 if not best_def and existing_defs:
                     best_def = existing_defs[0]['full']
                 if best_def:
-                    fixed_preamble = fixed_preamble.rstrip() + '\n' + best_def
+                    fixed_preamble = _insert_preamble_definition(
+                        fixed_preamble, best_def)
                     print(f"  ✓ Kept EXISTING \\{cmd_name} definition")
+
             else:
                 print(f"  ✓ Removed \\{cmd_name} (user chose to skip)")
 
         # ============================================================
-        # PHASE 4: AUTOMATED CLEANUP (Run after manual resolution)
+        # PHASE 4: AUTOMATED CLEANUP
         # ============================================================
         print("\n🔧 Phase 4: Automated cleanup...")
 
-        # Check for any remaining malformed commands (hidden conflicts)
+        # Detect any remaining malformed commands that were hidden.
         for cmd_name in CORRECT_COMMANDS.keys():
-            # Check if the command exists without a guard but is malformed
-            if cmd_name not in resolutions:
-                # Check if it exists but is malformed
-                defs = find_command_definitions(fixed_preamble, cmd_name)
-                for def_info in defs:
-                    if 'newcommand_2_params' not in def_info['type'] and 'def_2_params' not in def_info['type']:
-                        # This is a malformed command that was hidden
-                        if def_info['full'] in fixed_preamble:
-                            fixed_preamble = fixed_preamble.replace(def_info['full'], '')
-                            print(f"  ✓ Removed hidden malformed \\{cmd_name} definition")
+            if cmd_name in resolutions:
+                continue
+            defs = find_command_definitions(fixed_preamble, cmd_name)
+            for def_info in defs:
+                t = def_info['type']
+                if (t in ('newcommand_2_params', 'def_2_params')
+                        and '#1' in def_info['content']
+                        and '#2' in def_info['content']):
+                    continue
+                if (t in ('newcommand_0_params', 'newcommand_no_params',
+                          'def_no_params')
+                        and def_info['content'].strip()):
+                    continue
+                # Malformed definition: remove and replace with the correct one.
+                if def_info['full'] in fixed_preamble:
+                    fixed_preamble = fixed_preamble.replace(def_info['full'], '')
+                    print(f"  ✓ Removed hidden malformed \\{cmd_name} definition")
+                    guard = f'\\ifcsname {cmd_name}\\endcsname'
+                    if guard not in fixed_preamble:
+                        fixed_preamble = _insert_preamble_definition(
+                            fixed_preamble,
+                            CORRECT_COMMANDS[cmd_name]['definition'])
+                        print(f"  ✓ Added corrected \\{cmd_name} definition")
 
-                            # Add the correct version if it's not already there
-                            if f'\\ifcsname {cmd_name}\\endcsname' not in fixed_preamble:
-                                fixed_preamble = fixed_preamble.rstrip() + '\n' + CORRECT_COMMANDS[cmd_name]['definition']
-                                print(f"  ✓ Added corrected \\{cmd_name} definition")
-
-        # Fix any empty or malformed \insertshortinstitute
+        # Fix empty or malformed \insertshortinstitute.
         if '\\def\\insertshortinstitute{}' in fixed_preamble:
             fixed_preamble = fixed_preamble.replace(
                 '\\def\\insertshortinstitute{}',
@@ -40493,15 +40699,16 @@ Created by {self.__author__}
             )
             print(f"  ✓ Fixed malformed \\insertshortinstitute")
 
-        # Fix any empty institute
+        # Fix empty institute.
         if '\\institute{\\textcolor{mygreen}{}}' in fixed_preamble:
             fixed_preamble = fixed_preamble.replace(
                 '\\institute{\\textcolor{mygreen}{}}',
-                '\\institute{\\textcolor{mygreen}{Artificial Intelligence Research and Intelligent Systems (airis4D)}}'
+                '\\institute{\\textcolor{mygreen}{Artificial Intelligence '
+                'Research and Intelligent Systems (airis4D)}}'
             )
             print(f"  ✓ Fixed empty \\institute")
 
-        # Remove duplicate \insertshortinstitute definitions
+        # Remove duplicate \insertshortinstitute lines.
         lines = fixed_preamble.split('\n')
         seen_lines = set()
         cleaned_lines = []
@@ -40513,7 +40720,6 @@ Created by {self.__author__}
             cleaned_lines.append(line)
         fixed_preamble = '\n'.join(cleaned_lines)
 
-        # Final cleanup
         fixed_preamble = fixed_preamble.strip()
 
         print(f"\n✅ Conflict resolution complete")
