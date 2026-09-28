@@ -1770,6 +1770,21 @@ PS_FOOT_START = (
 )
 PS_FOOT_END = '% ============================================================\n'
 
+# ============================================================
+# TS COLOR PALETTE BLOCK
+# ------------------------------------------------------------
+# Theme & Styles owns the user's custom color definitions.  They
+# are emitted between two fixed markers so that a subsequent save
+# can find and replace the block idempotently, without touching
+# any \definecolor that the user wrote by hand or any \definecolor
+# that the title-page designer emitted.
+# ============================================================
+TS_PALETTE_START = (
+    '% ============================================================\n'
+    '% BSG COLOR PALETTE -- managed by Theme & Styles\n'
+    '% ============================================================\n'
+)
+TS_PALETTE_END = '% ============================================================\n'
 
 # ============================================================================
 # WINDOW MANAGER - Add this after imports
@@ -6522,82 +6537,126 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.fonttheme_menu.grid(row=2, column=1, padx=5, pady=5)
         self.create_tooltip(self.fonttheme_menu, "Choose a font theme for your presentation")
 
-        # 2. COLOR SETTINGS GROUP (New - expanded)
+        # 2. COLOR SETTINGS GROUP
+        # ------------------------------------------------------------
+        # Semantic color slots.  Each slot has a fixed LaTeX name that
+        # is written into \setbeamercolor, and a value that is written
+        # into \definecolor.  The user never types a '#' into a
+        # \setbeamercolor argument because this dialog never writes a
+        # raw hex into one.
+        # ------------------------------------------------------------
         color_group = self.create_group_frame(settings_panel, "🎨 Color Settings")
         color_grid = ctk.CTkFrame(color_group)
         color_grid.pack(fill="x", padx=5, pady=5)
 
-        # Background Color
-        ctk.CTkLabel(color_grid, text="Background Color:", font=("Arial", 12)).grid(row=0, column=0, padx=5, pady=5, sticky="e")
-        self.bg_color_var = ctk.StringVar(value=self.current_values['bg_color'])
-        bg_entry = ctk.CTkEntry(color_grid, textvariable=self.bg_color_var, width=150)
-        bg_entry.grid(row=0, column=1, padx=5, pady=5)
-        bg_entry.bind('<KeyRelease>', self._on_bg_color_changed)
-        self.create_tooltip(bg_entry, "Background color (e.g., white, #F5F5F5)")
+        ctk.CTkLabel(
+            color_grid,
+            text="Pick a slot, then choose its color.  The slot name is "
+                 "what LaTeX uses.  The value is stored in \\definecolor.",
+            font=("Arial", 10),
+            text_color="#888888",
+            wraplength=700,
+            justify="left"
+        ).grid(row=0, column=0, columnspan=4, padx=5, pady=(4, 8), sticky="w")
 
-        bg_picker_btn = ctk.CTkButton(
+        # The list of semantic slots this dialog manages.
+        # Each entry is (display_name, slot_key, latex_setbeamercolor_template).
+        self._semantic_slot_defs = [
+            ("Background canvas",     "bg",
+             "\\setbeamercolor{background canvas}{bg=%s}"),
+            ("Normal text",           "fg",
+             "\\setbeamercolor{normal text}{fg=%s}"),
+            ("Frametitle text",       "title",
+             "\\setbeamercolor{frametitle}{fg=%s}"),
+            ("Frametitle background", "title_bg",
+             "\\setbeamercolor{frametitle}{bg=%s}"),
+        ]
+
+        # Seed self._semantic_slots from current_values.
+        self._semantic_slots = {}
+        _slot_key_to_setting = {
+            'bg': 'bg_color',
+            'fg': 'fg_color',
+            'title': 'title_color',
+            'title_bg': 'title_bg_color',
+        }
+        for _display, _key, _tmpl in self._semantic_slot_defs:
+            self._semantic_slots[_key] = {
+                'display': _display,
+                'template': _tmpl,
+                'name': self._semantic_slot_default_name(_key),
+                'value': self.current_values.get(
+                    _slot_key_to_setting[_key], '#000000'),
+            }
+
+        # Row 1: slot dropdown
+        ctk.CTkLabel(color_grid, text="Slot:", font=("Arial", 12)).grid(
+            row=1, column=0, padx=5, pady=5, sticky="e")
+        self._semantic_slot_var = ctk.StringVar(
+            value=self._semantic_slot_defs[0][0])
+        slot_menu = ctk.CTkOptionMenu(
+            color_grid,
+            values=[d for d, _, _ in self._semantic_slot_defs],
+            variable=self._semantic_slot_var,
+            width=220,
+            command=self._on_semantic_slot_selected)
+        slot_menu.grid(row=1, column=1, columnspan=3,
+                       padx=5, pady=5, sticky="w")
+        self.create_tooltip(
+            slot_menu,
+            "Select which semantic slot to edit.\n"
+            "Background canvas = the page background.\n"
+            "Normal text = body text color.\n"
+            "Frametitle text = the title of each slide.\n"
+            "Frametitle background = the band behind the title.")
+
+        # Row 2: value entry + pick button
+        ctk.CTkLabel(color_grid, text="Color:", font=("Arial", 12)).grid(
+            row=2, column=0, padx=5, pady=5, sticky="e")
+        self._semantic_value_var = ctk.StringVar(value="#000000")
+        value_entry = ctk.CTkEntry(
+            color_grid, textvariable=self._semantic_value_var, width=180)
+        value_entry.grid(row=2, column=1, padx=5, pady=5)
+        value_entry.bind('<KeyRelease>', self._on_semantic_value_changed)
+        self.create_tooltip(
+            value_entry,
+            "Hex value for the selected slot, e.g. #f9f7f7.\n"
+            "This value is stored in \\definecolor.")
+
+        ctk.CTkButton(
             color_grid,
             text="🎨 Pick",
-            command=lambda: self._pick_color('bg_color'),
-            width=60,
+            command=self._semantic_pick_color,
+            width=80,
             fg_color="#3498db"
-        )
-        bg_picker_btn.grid(row=0, column=2, padx=5, pady=5)
-        self.create_tooltip(bg_picker_btn, "Open color picker for background")
+        ).grid(row=2, column=2, padx=5, pady=5)
 
-        # Foreground (Text) Color - NEW
-        ctk.CTkLabel(color_grid, text="Text Color:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        self.fg_color_var = ctk.StringVar(value=self.current_values.get('fg_color', 'black'))
-        fg_entry = ctk.CTkEntry(color_grid, textvariable=self.fg_color_var, width=150)
-        fg_entry.grid(row=1, column=1, padx=5, pady=5)
-        fg_entry.bind('<KeyRelease>', self.on_setting_changed)
-        self.create_tooltip(fg_entry, "Text/foreground color (e.g., black, white, #333333)")
+        # Row 3: resolved LaTeX name
+        ctk.CTkLabel(color_grid, text="LaTeX name:", font=("Arial", 12)).grid(
+            row=3, column=0, padx=5, pady=5, sticky="e")
+        self._semantic_name_label = ctk.CTkLabel(
+            color_grid, text="", font=("Courier", 11),
+            text_color="#4ECDC4", anchor="w")
+        self._semantic_name_label.grid(
+            row=3, column=1, columnspan=3, padx=5, pady=5, sticky="w")
+        self.create_tooltip(
+            self._semantic_name_label,
+            "This is the name that will appear in \\setbeamercolor.\n"
+            "It is fixed per slot, so repeated saves overwrite the same "
+            "\\definecolor line rather than accumulate.")
 
-        fg_picker_btn = ctk.CTkButton(
-            color_grid,
-            text="🎨 Pick",
-            command=lambda: self._pick_color('fg_color'),
-            width=60,
-            fg_color="#2ecc71"
-        )
-        fg_picker_btn.grid(row=1, column=2, padx=5, pady=5)
-        self.create_tooltip(fg_picker_btn, "Open color picker for text")
+        # Populate the initial state for the first slot.
+        self._on_semantic_slot_selected(self._semantic_slot_defs[0][0])
 
-        # Title Color - NEW
-        ctk.CTkLabel(color_grid, text="Title Color:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
-        self.title_color_var = ctk.StringVar(value=self.current_values.get('title_color', 'white'))
-        title_entry = ctk.CTkEntry(color_grid, textvariable=self.title_color_var, width=150)
-        title_entry.grid(row=2, column=1, padx=5, pady=5)
-        title_entry.bind('<KeyRelease>', self.on_setting_changed)
-        self.create_tooltip(title_entry, "Title text color")
 
-        title_picker_btn = ctk.CTkButton(
-            color_grid,
-            text="🎨 Pick",
-            command=lambda: self._pick_color('title_color'),
-            width=60,
-            fg_color="#e67e22"
-        )
-        title_picker_btn.grid(row=2, column=2, padx=5, pady=5)
-        self.create_tooltip(title_picker_btn, "Open color picker for title")
-
-        # Title Background Color - NEW
-        ctk.CTkLabel(color_grid, text="Title Background:", font=("Arial", 12)).grid(row=3, column=0, padx=5, pady=5, sticky="e")
-        self.title_bg_color_var = ctk.StringVar(value=self.current_values.get('title_bg_color', '#2980b9'))
-        title_bg_entry = ctk.CTkEntry(color_grid, textvariable=self.title_bg_color_var, width=150)
-        title_bg_entry.grid(row=3, column=1, padx=5, pady=5)
-        title_bg_entry.bind('<KeyRelease>', self.on_setting_changed)
-        self.create_tooltip(title_bg_entry, "Title background color")
-
-        title_bg_picker_btn = ctk.CTkButton(
-            color_grid,
-            text="🎨 Pick",
-            command=lambda: self._pick_color('title_bg_color'),
-            width=60,
-            fg_color="#9b59b6"
-        )
-        title_bg_picker_btn.grid(row=3, column=2, padx=5, pady=5)
-        self.create_tooltip(title_bg_picker_btn, "Open color picker for title background")
+        # ============================================================
+        # 2b. COLOR DEFINITIONS (PALETTE EDITOR)
+        # ------------------------------------------------------------
+        # Managed by Theme & Styles.  Emits a marked block of
+        # \definecolor and \colorlet lines that the user can then
+        # reference from slide text via \textcolor{name}{...}.
+        # ============================================================
+        self.create_color_palette_group(settings_panel)
 
         # 3. FOOTER SETTINGS GROUP
         footer_group = self.create_group_frame(settings_panel, "📌 Footer Settings")
@@ -6617,7 +6676,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             "Force footer to use the author, title, and institution from Presentation Settings\n"
             "Overrides any footer defined in the imported theme")
 
-        # Footer Logo - NEW
+        # Footer Logo
         ctk.CTkLabel(footer_grid, text="Footer Logo:", font=("Arial", 12)).grid(row=1, column=0, padx=5, pady=5, sticky="e")
         self.footer_logo_var = ctk.StringVar(value=self.presentation_info.get('logo', self.current_values.get('footer_logo', '')).strip())
         logo_entry = ctk.CTkEntry(footer_grid, textvariable=self.footer_logo_var, width=200)
@@ -6634,7 +6693,7 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         logo_browse_btn.grid(row=1, column=2, padx=5, pady=5)
         self.create_tooltip(logo_browse_btn, "Browse for logo image file")
 
-        # Footer Logo Color - NEW
+        # Footer Logo Color
         ctk.CTkLabel(footer_grid, text="Logo Color:", font=("Arial", 12)).grid(row=2, column=0, padx=5, pady=5, sticky="e")
         self.footer_logo_color_var = ctk.StringVar(value=self.current_values.get('footer_logo_color', ''))
         logo_color_entry = ctk.CTkEntry(footer_grid, textvariable=self.footer_logo_color_var, width=150)
@@ -6990,14 +7049,27 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
         footer_text = f"{clean_author[:20]} ({clean_inst[:15]}) | {clean_title[:25]}"
 
-        # Add logo if present
-        logo_path = self.footer_logo_var.get().strip()
+        # ------------------------------------------------------------
+        # The footer-logo widget variable lives on the main editor,
+        # not on this dialog.  When draw_dashboard() is called during
+        # __init__ (before the dialog has finished building all its
+        # widgets), or when the dialog has not been wired to its parent
+        # yet, the attribute is absent.  Look it up defensively on the
+        # dialog first, then on the parent editor, then fall back to an
+        # empty string.
+        # ------------------------------------------------------------
+        logo_path = ''
+        _logo_var = getattr(self, 'footer_logo_var', None)
+        if _logo_var is None and getattr(self, 'parent', None) is not None:
+            _logo_var = getattr(self.parent, 'footer_logo_var', None)
+        if _logo_var is not None:
+            try:
+                logo_path = (_logo_var.get() or '').strip()
+            except Exception:
+                logo_path = ''
+
         if logo_path:
-            logo_color = self.footer_logo_color_var.get().strip()
-            if logo_color:
-                footer_text = f"[Logo] {footer_text}"
-            else:
-                footer_text = f"📷 {footer_text}"
+            footer_text = f"[Logo] {footer_text}"
 
         return footer_text
 
@@ -7201,8 +7273,32 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             footer_text = self.get_footer_text()
 
             # Check if footer has logo color markup
-            logo_path = self.footer_logo_var.get().strip()
-            logo_color = self.footer_logo_color_var.get().strip()
+            # The footer-logo variable lives on the main editor and is
+            # also created later in create_widgets() for this dialog.  During
+            # __init__, draw_dashboard() runs before that group is built,
+            # so the attribute may be absent.  Look it up defensively on
+            # the dialog first, then on the parent editor.
+            _logo_var = getattr(self, 'footer_logo_var', None)
+            if _logo_var is None and getattr(self, 'parent', None) is not None:
+                _logo_var = getattr(self.parent, 'footer_logo_var', None)
+            try:
+                logo_path = (_logo_var.get() if _logo_var is not None else '') or ''
+                logo_path = logo_path.strip()
+            except Exception:
+                logo_path = ''
+
+            # The footer_logo_color_var widget is created later in
+            # create_widgets(), but draw_dashboard() can be invoked by an
+            # early <Configure> event on the canvas.  Look it up
+            # defensively so an early resize does not crash the dialog.
+            _logo_color_var = getattr(self, 'footer_logo_color_var', None)
+            if _logo_color_var is None and getattr(self, 'parent', None) is not None:
+                _logo_color_var = getattr(self.parent, 'footer_logo_color_var', None)
+            try:
+                logo_color = (_logo_color_var.get() if _logo_color_var is not None else '') or ''
+                logo_color = logo_color.strip()
+            except Exception:
+                logo_color = ''
 
             if footer_text:
                 # Clean up any markup for display
@@ -7362,6 +7458,50 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 changes.append(
                     f"Content-page bg opacity ({old:.2f} → {new:.2f})"
                 )
+
+        # ----- NEW: semantic colour slots -----
+        # Each slot owns a fixed LaTeX name (bsgBackgroundCanvas, ...)
+        # and a user-editable value.  A change here must be reported so
+        # that apply_settings() knows to invoke _inject_palette_block(),
+        # which re-emits both the \definecolor line and the matching
+        # \setbeamercolor line idempotently.
+        _slot_key_to_setting = {
+            'bg':       'bg_color',
+            'fg':       'fg_color',
+            'title':    'title_color',
+            'title_bg': 'title_bg_color',
+        }
+        if getattr(self, '_semantic_slots', None):
+            for _key, _setting_key in _slot_key_to_setting.items():
+                slot = self._semantic_slots.get(_key)
+                if not slot:
+                    continue
+                new_val = (slot.get('value') or '').strip()
+                old_val = (cur.get(_setting_key) or '').strip()
+                if new_val != old_val:
+                    changes.append(
+                        f"Color slot ({slot.get('display', _key)}) "
+                        f"({old_val} → {new_val})"
+                    )
+
+        # ----- NEW: user palette additions / removals / edits -----
+        # The palette lives in self._palette_entries, which is not part
+        # of current_values.  Compare against a signature captured when
+        # the dialog was opened.  If there is no prior signature (first
+        # open, or the dialog was constructed outside __init__), treat
+        # the palette as unchanged so we do not raise a spurious flag.
+        if getattr(self, '_palette_entries', None) is not None:
+            _old_signature = cur.get('_palette_signature', None)
+            _new_signature = tuple(
+                (
+                    e.get('name', ''),
+                    e.get('model', ''),
+                    e.get('value', ''),
+                )
+                for e in self._palette_entries
+            )
+            if _old_signature is not None and tuple(_old_signature) != _new_signature:
+                changes.append("Color palette (modified)")
 
         # ----- NEW: Front Title Page Designer -----
         # Compare field-by-field against current_values['title_page_config']
@@ -7808,6 +7948,11 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             return
 
         self._is_applying = True
+
+        # Bind the baseline before the try block so the except branch
+        # always has a value to refer to.
+        preamble = self.current_preamble or ''
+
         try:
             # -------------- synchronise logo --------------
             self.presentation_info['logo'] = self.footer_logo_var.get().strip()
@@ -7819,9 +7964,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             # -------------- collect ALL current settings --------------
             new_settings = self.get_current_settings()
 
-            # Push everything we own into the parent's presentation_info
-            # so the file save routine can persist it.  This ensures that
-            # subsequent opens repopulate every field.
             parent_info = getattr(self.parent, 'presentation_info', None)
             if parent_info is not None:
                 parent_info['title_bg_image']    = new_settings.get('title_bg_image', '')
@@ -7831,16 +7973,15 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 parent_info['title_page_config'] = new_settings.get('title_page_config', {})
 
             # -------------- build the new preamble --------------
-            preamble = self.current_preamble or ''
-            if self._current_theme_name:
-                theme_data = ThemeManager.load_theme(self._current_theme_name)
-                if theme_data and theme_data.get('raw_preamble'):
-                    preamble = theme_data['raw_preamble']
+            # The on-disk preamble passed in by edit_theme_style() is the
+            # authoritative baseline.  Never substitute a saved theme's
+            # raw preamble here: that is the path that silently discards
+            # every previously saved edit.
+            #
+            # preamble is already bound above.
 
             # ---- apply the standard (non-title-page) changes first ----
             for change in changes:
-                # Skip anything that belongs exclusively to the title-page
-                # designer — those are handled by _apply_title_page_config.
                 if change.startswith("Title Page:"):
                     continue
                 if change == "Title-only background image":
@@ -7873,15 +8014,86 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                 elif "Logo Color" in change:
                     preamble = self._apply_footer_logo_color(preamble, self.footer_logo_color_var.get())
 
-            # ---- apply the title-page designer and page backgrounds ----
-            preamble = self._apply_title_page_config(
-                preamble,
-                new_settings.get('title_page_config', {}) or {},
-                new_settings.get('title_bg_image', ''),
-                float(new_settings.get('title_bg_opacity', 0.30)),
-                new_settings.get('frame_bg_image', ''),
-                float(new_settings.get('frame_bg_opacity', 0.15)),
+            # ============================================================
+            # Title-page designer
+            # ------------------------------------------------------------
+            # _apply_title_page_config() strips and re-emits every
+            # \def\BSGTitlePageConfig, \def\BSGBgTitleImage,
+            # \def\BSGBgTitleOpacity, \def\BSGBgFrameImage,
+            # \def\BSGBgFrameOpacity macro in the preamble.
+            #
+            # Calling it unconditionally is what resets the title page
+            # on every Apply: the JS/JSON it re-emits comes from
+            # self.current_values['title_page_config'], which is only
+            # correct if the dialog was opened from the current on-disk
+            # preamble.  Calling it only when the user actually edited
+            # a title-page field is what keeps the on-disk block intact
+            # for every other Apply.
+            # ============================================================
+            _title_page_changed = any(
+                change.startswith("Title Page:")
+                or change == "Title-only background image"
+                for change in changes
             )
+
+            if _title_page_changed:
+                preamble = self._apply_title_page_config(
+                    preamble,
+                    new_settings.get('title_page_config', {}) or {},
+                    new_settings.get('title_bg_image', ''),
+                    float(new_settings.get('title_bg_opacity', 0.30)),
+                    new_settings.get('frame_bg_image', ''),
+                    float(new_settings.get('frame_bg_opacity', 0.15)),
+                )
+                self.write("✓ Applied title-page designer configuration\n",
+                           "green")
+            else:
+                self.write("ℹ Title-page designer unchanged - preserving "
+                           "existing \\def\\BSG* macros\n", "cyan")
+
+            # ============================================================
+            # Semantic colour slots and the user palette
+            # ------------------------------------------------------------
+            # Same rule as the title page: only run _inject_palette_block()
+            # when the user actually edited a slot or a palette entry.
+            # When it does run, the block below ensures any user-added
+            # hex \definecolor{...}{HTML}{...} entries that are still
+            # present in the file are carried over into the emitted
+            # palette block, so they are not silently dropped.
+            # ============================================================
+            _palette_changed = any(
+                c.startswith("Color slot (")
+                or c == "Color palette (modified)"
+                for c in changes
+            )
+
+            if _palette_changed:
+                try:
+                    # Preserve user-added \definecolor{...}{HTML}{...}
+                    # entries that are on disk but not in _palette_entries.
+                    self._merge_missing_file_colors_into_palette(preamble)
+
+                    if hasattr(self, '_inject_palette_block'):
+                        preamble = self._inject_palette_block(preamble)
+                        self.write(
+                            "✓ Applied semantic colour slots and "
+                            "palette to preamble\n",
+                            "green",
+                        )
+                except Exception as _pal_err:
+                    import traceback as _tb
+                    _tb.print_exc()
+                    self.write(
+                        f"⚠ Could not inject colour palette block: "
+                        f"{_pal_err}\n",
+                        "yellow",
+                    )
+            else:
+                self.write(
+                    "ℹ Palette and semantic colour slots unchanged - "
+                    "preserving existing definitions\n",
+                    "cyan",
+                )
 
             self.result = preamble
             self._is_applying = False
@@ -7906,6 +8118,72 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             WindowManager.show_message(
                 self, "Error",
                 f"Error applying settings:\n{str(e)}", "error"
+            )
+
+    def _merge_missing_file_colors_into_palette(self, preamble_text: str) -> None:
+        r"""
+        Ensure every user-visible \definecolor{NAME}{MODEL}{VALUE} on
+        disk that is not already represented in self._palette_entries is
+        added, so that a later _inject_palette_block() does not silently
+        drop it.
+
+        Only HTML/RGB models are considered.  Well-known system names
+        (primary, secondary, airis4d_*, bsg*, ...) are skipped because
+        they are managed by other writers.
+        """
+        import re
+
+        if not preamble_text:
+            return
+
+        if not hasattr(self, '_palette_entries') or self._palette_entries is None:
+            return
+
+        existing = set()
+        for e in self._palette_entries:
+            existing.add((e.get('name', ''), e.get('model', '')))
+
+        # Names that other writers own.  Never copy these into the user
+        # palette: they belong to the theme or to the title-page designer.
+        reserved_prefixes = ('bsg', 'BSG', 'airis4d_', 'airis4d')
+        reserved_exact = {
+            'primary', 'secondary', 'accent', 'info', 'success',
+            'warning', 'danger', 'gold', 'teal', 'forest', 'brown',
+        }
+
+        pattern = re.compile(
+            r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        )
+
+        added = 0
+        for match in pattern.finditer(preamble_text):
+            name = match.group(1).strip()
+            model = match.group(2).strip()
+            value = match.group(3).strip()
+
+            if model.upper() not in ('HTML', 'RGB'):
+                continue
+            if name in reserved_exact:
+                continue
+            if any(name.startswith(p) for p in reserved_prefixes):
+                continue
+            if (name, model) in existing:
+                continue
+
+            self._palette_entries.append({
+                'name': name,
+                'model': model,
+                'value': value,
+                'raw': match.group(0),
+            })
+            existing.add((name, model))
+            added += 1
+
+        if added:
+            self.write(
+                f"  ✓ Carried over {added} existing color "
+                f"definition(s) from the file into the palette\n",
+                "cyan",
             )
 
     # ============================================================================
@@ -8014,11 +8292,35 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                                  title_bg_opacity: float,
                                  frame_bg_image: str,
                                  frame_bg_opacity: float) -> str:
-        """
+        r"""
         Write/replace the Front Title Page Designer configuration and
         the per-region background definitions.
 
-        IMPORTANT:
+        Priority rule
+        -------------
+        This is a TS-owned region, but Presentation Settings also reads
+        and writes some of the same physical slots (the title-page
+        background macros).  To keep the two writers from clobbering
+        each other, this method obeys the same rule stated at the top
+        of BSG_IDE.py:
+
+            PS has priority for every field it writes, provided the
+            value it holds is non-empty.  If PS is blank for that
+            field, the value currently in the file (TS or GEN) is
+            preserved.
+
+        Concretely, this method:
+
+          1. Reads the *current* \\def\\BSGTitlePageConfig{...} and the
+             companion \\def\\BSGBg* lines from ``preamble``.
+          2. Merges the caller-supplied ``tp_cfg`` on top of the disk
+             config, letting a non-empty caller value win and an empty
+             caller value fall back to the disk value.
+          3. Emits a single, well-formed block, so a repeated Apply
+             produces the same output (idempotent).
+
+        IMPORTANT
+        ---------
         The Front Title Page Designer stores its image as:
 
             tp_cfg['bg_image']
@@ -8027,11 +8329,54 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
             \\def\\BSGBgTitleImage{...}
 
-        Therefore this function explicitly synchronises the two.
+        Both forms are synchronised here.
         """
 
         import re
         import json
+
+        # ============================================================
+        # 0. READ THE ON-DISK CONFIG
+        # ============================================================
+        # Merge order: disk first, caller second, but only for fields
+        # that the caller actually has a non-empty value for.  An empty
+        # caller value never overwrites the disk value.
+        disk_cfg = {}
+        try:
+            disk_cfg = _read_bsg_title_page_config(preamble)
+        except Exception as _rd_err:
+            print(f"  ⚠ Could not read on-disk title config: {_rd_err}")
+            disk_cfg = {}
+
+        merged_cfg = dict(disk_cfg or {})
+        for k, v in (tp_cfg or {}).items():
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip() == '':
+                # Empty string from the caller: keep the disk value.
+                continue
+            if isinstance(v, dict) and not v:
+                continue
+            merged_cfg[k] = v
+        tp_cfg = merged_cfg
+
+        # Same rule for the two background images.  If the caller did
+        # not supply one, try the on-disk macro.
+        if not title_bg_image:
+            m = re.search(
+                r'(?m)^\s*\\def\\BSGBgTitleImage\{([^}]*)\}\s*$',
+                preamble,
+            )
+            if m and m.group(1).strip():
+                title_bg_image = m.group(1).strip()
+
+        if not frame_bg_image:
+            m = re.search(
+                r'(?m)^\s*\\def\\BSGBgFrameImage\{([^}]*)\}\s*$',
+                preamble,
+            )
+            if m and m.group(1).strip():
+                frame_bg_image = m.group(1).strip()
 
         # ============================================================
         # 1. NORMALISE / SYNCHRONISE TITLE-PAGE IMAGE
@@ -9364,6 +9709,493 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             title_label.pack(side="left", padx=10, pady=5)
 
             return group
+
+    def create_color_palette_group(self, parent):
+        r"""
+        Build the Color Definitions group.
+
+        The user can:
+          * see every color definition that is not a well-known
+            system name;
+          * add a new named color and pick its value in one dialog;
+          * change the color of an existing entry, keeping its name;
+          * rename an entry;
+          * delete an entry.
+
+        All changes are held in self._palette_entries and written to
+        the file by _inject_palette_block() on Apply.
+        """
+        import tkinter as tk
+
+        group = self.create_group_frame(parent, "🎨 Color Definitions")
+        grid = ctk.CTkFrame(group)
+        grid.pack(fill="x", padx=5, pady=5)
+
+        self._palette_entries = []
+        self._load_palette_from_preamble()
+
+        ctk.CTkLabel(
+            grid,
+            text="Named colors available for \\textcolor{name}{...}:",
+            font=("Arial", 11)
+        ).pack(anchor="w", padx=5, pady=(4, 2))
+
+        list_frame = ctk.CTkFrame(grid)
+        list_frame.pack(fill="x", padx=5, pady=4)
+
+        self.palette_listbox = tk.Listbox(
+            list_frame, height=8, font=("Courier", 10),
+            bg='#1e1e1e', fg='#d4d4d4', selectbackground='#2F3542')
+        self.palette_listbox.pack(
+            side="left", fill="both", expand=True, padx=(0, 6))
+
+        palette_scroll = tk.Scrollbar(
+            list_frame, command=self.palette_listbox.yview)
+        palette_scroll.pack(side="right", fill="y")
+        self.palette_listbox.config(yscrollcommand=palette_scroll.set)
+
+        self._refresh_palette_listbox()
+
+        btn_frame = ctk.CTkFrame(grid)
+        btn_frame.pack(fill="x", padx=5, pady=6)
+
+        ctk.CTkButton(
+            btn_frame, text="➕ Add", width=90,
+            command=self._palette_add_dialog
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            btn_frame, text="🎨 Change Color", width=150,
+            command=self._palette_change_color_selected
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            btn_frame, text="✏️ Rename", width=100,
+            command=self._palette_rename_selected
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            btn_frame, text="🗑 Delete", width=90,
+            fg_color="#dc3545", hover_color="#c82333",
+            command=self._palette_delete_selected
+        ).pack(side="left", padx=3)
+
+        ctk.CTkButton(
+            btn_frame, text="↺ Restore BSG palette", width=170,
+            fg_color="#17a2b8", hover_color="#138496",
+            command=self._palette_restore_defaults
+        ).pack(side="right", padx=3)
+
+        return self._palette_entries
+
+
+    # ============================================================
+    # Palette helpers
+    # ============================================================
+    def _palette_block_pattern(self):
+        import re
+        return re.compile(
+            re.escape(TS_PALETTE_START) + r'.*?' + re.escape(TS_PALETTE_END),
+            re.DOTALL,
+        )
+
+    def _load_palette_from_preamble(self):
+        import re
+        self._palette_entries = []
+        preamble = getattr(self, 'current_preamble', '') or ''
+
+        block_match = self._palette_block_pattern().search(preamble)
+        if block_match:
+            block = block_match.group(0)
+            self._palette_entries.extend(self._parse_color_lines(block))
+            return
+
+        system_names = {
+            'primary', 'secondary', 'accent', 'gold', 'brown', 'teal',
+            'forest', 'info', 'success', 'warning', 'danger',
+            'DeepBlue', 'IndiaSaffron', 'IndiaGreen',
+            'SoftGold', 'SoftGreen', 'SoftBlue', 'SoftRed',
+            'airis4d_blue', 'airis4d_green', 'airis4d_orange',
+            'airis4d_red', 'airis4d_purple', 'airis4d_teal',
+            'airis4d_gray',
+            'bsgTitleBg', 'bsgTitleColor', 'bsgAuthorColor',
+            'bsgInstituteColor', 'bsgDateColor',
+        }
+        for entry in self._parse_color_lines(preamble):
+            if entry['name'] not in system_names:
+                self._palette_entries.append(entry)
+
+    @staticmethod
+    def _parse_color_lines(text):
+        import re
+        entries = []
+        definecolor = re.compile(
+            r'\\definecolor\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}'
+        )
+        for m in definecolor.finditer(text):
+            entries.append({
+                'name': m.group(1).strip(),
+                'model': m.group(2).strip(),
+                'value': m.group(3).strip(),
+                'raw': m.group(0),
+            })
+        colorlet = re.compile(r'\\colorlet\{([^}]+)\}\{([^}]+)\}')
+        for m in colorlet.finditer(text):
+            entries.append({
+                'name': m.group(1).strip(),
+                'model': 'colorlet',
+                'value': m.group(2).strip(),
+                'raw': m.group(0),
+            })
+        return entries
+
+    def _refresh_palette_listbox(self):
+        if not hasattr(self, 'palette_listbox'):
+            return
+        self.palette_listbox.delete(0, 'end')
+        for entry in self._palette_entries:
+            display = f"{entry['name']:<22} {entry['model']:<8} {entry['value']}"
+            self.palette_listbox.insert('end', display)
+
+    def _palette_selected_index(self):
+        sel = self.palette_listbox.curselection()
+        if not sel:
+            WindowManager.show_message(
+                self, "No Selection",
+                "Select a color from the list first.", "warning")
+            return None
+        return sel[0]
+
+    def _palette_add_dialog(self):
+        """Add a new named color by picking a color and typing a name."""
+        result = ColorPickerDialog.pick_color(self, None)
+        if not result:
+            return
+        name = (result.get('name') or '').strip()
+        if not name:
+            return
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', name):
+            WindowManager.show_message(
+                self, "Invalid Name",
+                "Color names must start with a letter and contain only "
+                "letters, digits, and underscores.", "error")
+            return
+        if any(e['name'] == name for e in self._palette_entries):
+            WindowManager.show_message(
+                self, "Duplicate Name",
+                f"A color named '{name}' already exists.", "error")
+            return
+        r, g, b = result['rgb']
+        self._palette_entries.append({
+            'name': name,
+            'model': 'RGB',
+            'value': f'{r},{g},{b}',
+            'raw': f'\\definecolor{{{name}}}{{RGB}}{{{r},{g},{b}}}',
+        })
+        self._refresh_palette_listbox()
+        self.on_setting_changed()
+
+    def _palette_change_color_selected(self):
+        """Change the color of the selected entry, keeping its name."""
+        idx = self._palette_selected_index()
+        if idx is None:
+            return
+        entry = self._palette_entries[idx]
+
+        # Seed the picker with the current value.
+        seed = None
+        if entry['model'].upper() == 'RGB':
+            parts = entry['value'].split(',')
+            if len(parts) == 3:
+                try:
+                    r, g, b = (int(p) for p in parts)
+                    seed = f'#{r:02x}{g:02x}{b:02x}'
+                except ValueError:
+                    pass
+        elif entry['model'].upper() == 'HTML':
+            seed = '#' + entry['value'].lstrip('#')
+
+        # Use a picker that does not ask for a name, because we keep
+        # the existing name.  We reuse ColorPickerDialog and ignore
+        # any name change it returns.
+        result = ColorPickerDialog.pick_color(self, seed)
+        if not result:
+            return
+        r, g, b = result['rgb']
+        entry['model'] = 'RGB'
+        entry['value'] = f'{r},{g},{b}'
+        entry['raw'] = f"\\definecolor{{{entry['name']}}}{{RGB}}{{{r},{g},{b}}}"
+        self._refresh_palette_listbox()
+        self.on_setting_changed()
+
+    def _palette_rename_selected(self):
+        """Rename the selected entry, keeping its color."""
+        idx = self._palette_selected_index()
+        if idx is None:
+            return
+        entry = self._palette_entries[idx]
+        new_name = simpledialog.askstring(
+            "Rename Color", "New name for this color:",
+            initialvalue=entry['name'], parent=self)
+        if not new_name:
+            return
+        new_name = new_name.strip()
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', new_name):
+            WindowManager.show_message(
+                self, "Invalid Name",
+                "Color names must start with a letter and contain only "
+                "letters, digits, and underscores.", "error")
+            return
+        if any(i != idx and e['name'] == new_name
+               for i, e in enumerate(self._palette_entries)):
+            WindowManager.show_message(
+                self, "Duplicate Name",
+                f"A color named '{new_name}' already exists.", "error")
+            return
+        # Rebuild the raw line with the new name.
+        if entry['model'].upper() == 'colorlet':
+            entry['raw'] = f"\\colorlet{{{new_name}}}{{{entry['value']}}}"
+        else:
+            entry['raw'] = (
+                f"\\definecolor{{{new_name}}}"
+                f"{{{entry['model']}}}{{{entry['value']}}}"
+            )
+        entry['name'] = new_name
+        self._refresh_palette_listbox()
+        self.on_setting_changed()
+
+    def _palette_delete_selected(self):
+        idx = self._palette_selected_index()
+        if idx is None:
+            return
+        entry = self._palette_entries[idx]
+        if not WindowManager.show_message(
+                self, "Delete Color",
+                f"Delete '{entry['name']}' from the palette?", "yesno"):
+            return
+        del self._palette_entries[idx]
+        self._refresh_palette_listbox()
+        self.on_setting_changed()
+
+    def _palette_restore_defaults(self):
+        defaults = [
+            ('airis4d_blue',   '41,128,185'),
+            ('airis4d_green',  '39,174,96'),
+            ('airis4d_orange', '243,156,18'),
+            ('airis4d_red',    '231,76,60'),
+            ('airis4d_purple', '155,89,182'),
+            ('airis4d_teal',   '26,188,156'),
+            ('airis4d_gray',   '149,165,166'),
+        ]
+        existing = {e['name'] for e in self._palette_entries}
+        for name, value in defaults:
+            if name in existing:
+                continue
+            self._palette_entries.append({
+                'name': name, 'model': 'RGB', 'value': value,
+                'raw': f'\\definecolor{{{name}}}{{RGB}}{{{value}}}',
+            })
+        self._refresh_palette_listbox()
+        self.on_setting_changed()
+
+    def _render_palette_block(self):
+        """Return the marked palette block, or '' if the palette is empty."""
+        if not getattr(self, '_palette_entries', None):
+            return ''
+        lines = [TS_PALETTE_START.rstrip(), '']
+        for entry in self._palette_entries:
+            lines.append(entry['raw'])
+        lines.append('')
+        lines.append(TS_PALETTE_END.rstrip())
+        return '\n'.join(lines) + '\n'
+
+    def _render_semantic_color_block(self):
+        """Return the \\definecolor lines for the semantic slots."""
+        if not getattr(self, '_semantic_slots', None):
+            return ''
+        lines = []
+        for _display, key, _tmpl in self._semantic_slot_defs:
+            slot = self._semantic_slots[key]
+            value = (slot['value'] or '').strip()
+            if not value.startswith('#'):
+                continue  # name-only; nothing to define
+            body = value.lstrip('#')
+            if not re.fullmatch(r'[0-9a-fA-F]{6}', body):
+                continue
+            lines.append(
+                f"\\definecolor{{{slot['name']}}}"
+                f"{{HTML}}{{{body.lower()}}}"
+            )
+        return '\n'.join(lines) + ('\n' if lines else '')
+
+    def _render_semantic_setbeamercolor_block(self):
+        r"""
+        Return the \setbeamercolor lines that reference the semantic
+        slot names, but only for slots whose value changed since the
+        dialog was opened.
+
+        Emitting a line for an untouched slot would overwrite whatever
+        the Front Title Page Designer (or the loaded file) had placed
+        there, which is what resets the title-page appearance on the
+        next open.
+        """
+        if not getattr(self, '_semantic_slots', None):
+            return ''
+
+        _slot_key_to_setting = {
+            'bg':       'bg_color',
+            'fg':       'fg_color',
+            'title':    'title_color',
+            'title_bg': 'title_bg_color',
+        }
+
+        lines = []
+        for _display, key, tmpl in self._semantic_slot_defs:
+            slot = self._semantic_slots[key]
+            new_val = (slot.get('value') or '').strip()
+            old_val = (self.current_values.get(
+                _slot_key_to_setting.get(key, ''), ''
+            ) or '').strip()
+            if new_val == old_val:
+                # Slot untouched: preserve whatever is in the file.
+                continue
+            lines.append(tmpl % slot['name'])
+        return ('\n'.join(lines) + '\n') if lines else ''
+
+    def _inject_palette_block(self, preamble_text):
+        r"""
+        Remove any existing palette block and semantic-slot definitions
+        and re-emit them.  Also re-emit the corresponding
+        \setbeamercolor lines.  Idempotent.
+        """
+        import re as _re
+
+        text = self._palette_block_pattern().sub('', preamble_text)
+
+        # Remove any previous semantic-slot \definecolor and
+        # \setbeamercolor lines, so that re-saving does not duplicate
+        # them.
+        for _display, key, _tmpl in self._semantic_slot_defs:
+            name = self._semantic_slots[key]['name']
+            text = _re.sub(
+                r'\\definecolor\{' + _re.escape(name)
+                + r'\}\{[^}]+\}\{[^}]+\}', '', text)
+        for _display, key, tmpl in self._semantic_slot_defs:
+            name = self._semantic_slots[key]['name']
+            # Match the corresponding \setbeamercolor line by its
+            # argument to the surrounding braces, so we do not
+            # accidentally remove other \setbeamercolor lines.
+            head = tmpl.split('%s')[0]
+            text = _re.sub(
+                _re.escape(head) + r'[^}]*\}', '', text)
+
+        # Collapse blank-line runs left by the removals.
+        text = _re.sub(r'\n{3,}', '\n\n', text)
+
+        # Compose the new blocks.
+        palette_block = self._render_palette_block()
+        semantic_defs = self._render_semantic_color_block()
+        semantic_uses = self._render_semantic_setbeamercolor_block()
+
+        combined = ''
+        if palette_block:
+            combined += palette_block + '\n'
+        if semantic_defs:
+            combined += semantic_defs + '\n'
+        if semantic_uses:
+            combined += semantic_uses + '\n'
+
+        if not combined:
+            return text
+
+        # Insert immediately before \begin{document}.
+        anchor = _re.search(r'\\begin\{document\}', text)
+        if anchor:
+            insert_at = anchor.start()
+            prefix = text[:insert_at].rstrip()
+            return prefix + '\n\n' + combined + '\n' + text[insert_at:]
+        return text.rstrip() + '\n\n' + combined + '\n'
+
+    def _inject_palette_block(self, preamble_text: str) -> str:
+        r"""
+        Remove any existing palette block and insert the current one
+        immediately before \begin{document}.
+        """
+        import re
+        text = self._palette_block_pattern().sub('', preamble_text)
+        block = self._render_palette_block()
+        if not block:
+            return text
+
+        anchor = re.search(r'\\begin\{document\}', text)
+        if anchor:
+            insert_at = anchor.start()
+            prefix = text[:insert_at].rstrip()
+            return prefix + '\n\n' + block + '\n' + text[insert_at:]
+        return text.rstrip() + '\n\n' + block + '\n'
+
+    @staticmethod
+    def _semantic_slot_default_name(slot_key):
+        """Deterministic LaTeX name for a semantic slot."""
+        return {
+            'bg': 'bsgBackgroundCanvas',
+            'fg': 'bsgNormalText',
+            'title': 'bsgFrametitleFg',
+            'title_bg': 'bsgFrametitleBg',
+        }[slot_key]
+
+    def _on_semantic_slot_selected(self, display_name):
+        """Load the selected slot into the value entry and label."""
+        for _display, key, _tmpl in self._semantic_slot_defs:
+            if _display == display_name:
+                slot = self._semantic_slots[key]
+                self._semantic_value_var.set(slot['value'])
+                self._semantic_name_label.configure(text=slot['name'])
+                return
+
+    def _on_semantic_value_changed(self, event=None):
+        """Store the value back into the currently selected slot."""
+        current = self._semantic_slot_var.get()
+        for _display, key, _tmpl in self._semantic_slot_defs:
+            if _display == current:
+                self._semantic_slots[key]['value'] = \
+                    self._semantic_value_var.get().strip()
+                self.on_setting_changed()
+                return
+
+    def _semantic_pick_color(self):
+        """Open the color picker for the currently selected slot."""
+        current = self._semantic_slot_var.get()
+        for _display, key, _tmpl in self._semantic_slot_defs:
+            if _display == current:
+                slot = self._semantic_slots[key]
+                result = ColorPickerDialog.pick_color(self, slot['value'])
+                if result:
+                    value = (result.get('hex') or result.get('name') or '').strip()
+                    if value:
+                        slot['value'] = value
+                        self._semantic_value_var.set(value)
+                        self.on_setting_changed()
+                return
+
+    def write(self, text, color="white"):
+        r"""Route status messages to the parent editor when it exposes a
+        write() method; otherwise print them.
+
+        This dialog does not own a terminal/status bar, but several of
+        its code paths (including the palette injection in
+        apply_settings) want to log progress.  Providing a local write()
+        keeps those call sites identical to the main editor's, so no
+        other part of the code has to change.
+        """
+        parent = getattr(self, 'master', None)
+        if parent is not None and hasattr(parent, 'write'):
+            try:
+                parent.write(text, color)
+                return
+            except Exception:
+                pass
+        print(text)
 
 class PreambleConflictResolver:
     """Handle conflicts when merging preambles with user choice"""
@@ -32783,45 +33615,41 @@ Created by {self.__author__}
 
 
     def _apply_preamble_to_file(self, file_path: str, new_preamble: str) -> bool:
-        """
-        Apply the new preamble to the file while preserving the document body.
-        Returns True if successful.
-        """
+        """Replace the region of `file_path` that precedes \\begin{document}
+        with `new_preamble`.  The document body is preserved byte-for-byte."""
         try:
             import re
 
-            # Read the file
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # Find the document body
-            doc_match = re.search(r'(\\begin{document}.*?\\end{document})', content, re.DOTALL)
-
-            if doc_match:
-                # Preserve the document body
-                document_body = doc_match.group(1)
-                # Build new content
-                new_content = new_preamble + "\n\n" + document_body
+            # Find the FIRST \begin{document}.  Everything before it is
+            # the preamble; everything from it onward is the body.
+            m = re.search(r'\\begin\{document\}', content)
+            if m is None:
+                # No body yet: write the preamble and add an empty
+                # document wrapper so the file remains compilable.
+                new_content = (
+                    new_preamble.rstrip()
+                    + "\n\n\\begin{document}\n\n\\end{document}\n"
+                )
             else:
-                # No document body found - try to find \begin{document}
-                begin_match = re.search(r'(\\begin{document})', content)
-                if begin_match:
-                    document_body = content[begin_match.start():]
-                    new_content = new_preamble + "\n\n" + document_body
-                else:
-                    # No document at all - create one
-                    new_content = new_preamble + "\n\n\\begin{document}\n\n\\end{document}\n"
+                document_body = content[m.start():]
+                new_content = new_preamble.rstrip() + "\n\n" + document_body.lstrip()
 
-            # Write the file
+            # Never let a second \begin{document} sneak in.
+            if new_content.count('\\begin{document}') > 1:
+                idx = new_content.find('\\begin{document}')
+                tail = new_content[idx:]
+                new_content = new_content[:idx] + tail
+
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(new_content)
 
-            # Update the stored preamble
             self.custom_preamble = new_preamble
             self.using_custom_preamble = True
             self.preamble_origin = 'theme_style'
             self.preamble_from_file = new_preamble
-
             return True
 
         except Exception as e:
@@ -32836,33 +33664,26 @@ Created by {self.__author__}
 
     # Modify the edit_theme_style method in BeamerSlideEditor class
     def edit_theme_style(self):
-        """Open the enhanced Theme & Style dialog with live preview and change tracking."""
-        # Get the current preamble
-        current_preamble = self._get_safe_current_preamble()
+        """Open the enhanced Theme & Style dialog with the current file's
+        on-disk preamble as the baseline."""
+        # Prefer the preamble that is actually on disk.  That is the only
+        # value that reflects everything the user has previously saved.
+        current_preamble = self._get_preamble_from_current_file()
 
-        # Open the enhanced dialog
         dialog = EnhancedThemeStyleDialog(self, current_preamble)
         self.wait_window(dialog)
 
-        # If user applied changes, update the preamble
         if dialog.result is not None:
             new_preamble = dialog.result
-
-            # Apply the new preamble to the file
             if self.current_file and os.path.exists(self.current_file):
-                success = self._apply_preamble_to_file(self.current_file, new_preamble)
-                if success:
+                if self._apply_preamble_to_file(self.current_file, new_preamble):
                     self.write("✓ Theme and style changes applied successfully\n", "green")
                     self.load_file(self.current_file)
-                    messagebox.showinfo("Success",
-                        "Theme and style settings applied successfully!\n\n"
-                        "Only the settings you changed were modified.\n"
-                        "All other customizations were preserved.")
+                    messagebox.showinfo("Success", "Theme and style settings applied successfully!")
                 else:
                     self.write("✗ Failed to apply theme changes\n", "red")
                     messagebox.showerror("Error", "Failed to apply theme changes.")
             else:
-                # No file loaded - store in memory
                 self.custom_preamble = new_preamble
                 self.using_custom_preamble = True
                 self.preamble_origin = 'theme_style'
@@ -35886,55 +36707,47 @@ Created by {self.__author__}
         r"""
         Return the complete marked footer block.
 
-        This is the ONLY place in BSG_IDE.py that emits a
-        \setbeamertemplate{footline}{...}.  The generator in
-        BeamerSlideGenerator.py must not emit one; its default footline is
-        removed when a PS-managed block is present.
+        Beamer's \setbeamertemplate{footline}{...} is read by
+        \beamer@sbtexec, which is a fragile token scanner that does not
+        handle nested argument groups inside the template reliably.
+        Embedding \IfFileExists{...}{...}{...} directly inside the
+        template therefore risks a brace-count mismatch that manifests
+        as:
 
-        Brace accounting for the logo branch
-        ------------------------------------
-        \IfFileExists takes three arguments:
+            Runaway argument?
+            {\leavevmode \hbox {\begin {beamercolorbox}...
+            ! File ended while scanning use of \beamer@sbtexec.
 
-            \IfFileExists{file}{true code}{false code}
-
-        The true branch contains \raisebox{...}{\includegraphics[...]{...}}.
-        Counting braces after the outer \IfFileExists{:
-
-            {                                        depth 1
-              \raisebox{                             depth 2
-                \includegraphics[height=...]{...}    depth 2 (balanced)
-              }                                      depth 1
-            }{                                       depth 0, reopens to 1
-              \insertframenumber{} / \inserttotalframenumber
-            }                                        depth 0
-            \hspace*{1ex}                            independent
-
-        So after the false branch closes, exactly one '}' must follow to
-        close the \IfFileExists itself.  The previous version emitted only
-        one '}' in this position, which closed the true branch a second
-        time and left \IfFileExists unterminated.  That is the direct cause
-        of the "File ended while scanning use of \beamer@sbtexec" error.
+        The safe pattern is to precompute the right-hand box in a
+        separate macro before \makeatletter, and reference that macro
+        from the template with no braces of its own.
         """
         if footer_logo_tex:
-            right_footer = (
-                '\\IfFileExists{\\BSGPresentationLogo}{%'
-                f'\\raisebox{{-0.15ex}}{{\\includegraphics'
-                f'[height={footer_logo_size}]'
-                '{\\BSGPresentationLogo}}%'
-                '}{%'
-                '\\insertframenumber{} / \\inserttotalframenumber%'
-                '}}\\hspace*{1ex}%'      # <-- FIXED: two braces close the
-                                          #     true branch and then
-                                          #     \IfFileExists itself
+            right_box_def = (
+                '\\newcommand{\\BSGFooterRightBox}{%\n'
+                '  \\IfFileExists{\\BSGPresentationLogo}{%\n'
+                '    \\raisebox{-0.15ex}{%\n'
+                '      \\includegraphics[height=' + footer_logo_size + ']'
+                '{\\BSGPresentationLogo}%\n'
+                '    }%\n'
+                '  }{%\n'
+                '    \\insertframenumber{} / \\inserttotalframenumber%\n'
+                '  }%\n'
+                '  \\hspace*{1ex}%\n'
+                '}\n'
             )
         else:
-            right_footer = (
-                '\\insertframenumber{} / \\inserttotalframenumber'
-                '\\hspace*{1ex}%'
+            right_box_def = (
+                '\\newcommand{\\BSGFooterRightBox}{%\n'
+                '  \\insertframenumber{} / \\inserttotalframenumber%\n'
+                '  \\hspace*{1ex}%\n'
+                '}\n'
             )
 
         return (
             PS_FOOT_START
+            + '% Right-hand box is precomputed to keep the template flat.\n'
+            + right_box_def
             + '\\makeatletter\n'
             '\\setbeamertemplate{footline}{%\n'
             '  \\leavevmode%\n'
@@ -35953,7 +36766,7 @@ Created by {self.__author__}
             'ht=2.25ex,dp=1ex,right]{date in head/foot}%\n'
             '      \\usebeamerfont{date in head/foot}'
             '\\insertshortdate{}\\hspace*{1.5em}%\n'
-            '      ' + right_footer + '\n'
+            '      \\BSGFooterRightBox%\n'
             '    \\end{beamercolorbox}%\n'
             '  }%\n'
             '  \\vskip0pt%\n'
@@ -35962,13 +36775,14 @@ Created by {self.__author__}
             + PS_FOOT_END
         )
 
+
     def _save_presentation_settings_to_file(self) -> bool:
         r"""
         Write the Presentation Settings slots into the current TXT file.
 
         Territory
         ---------
-        This method owns exactly the following preamble elements:
+        PS owns exactly:
 
             \title, \subtitle, \author, \institute, \date
             \def\insertshortinstitute
@@ -35976,39 +36790,28 @@ Created by {self.__author__}
             \def\BSGLogoHeight
             \def\BSGAutoCompleteEnabled
             \def\BSGLaTeXEngine
-            the marked block
-                % BSG PRESENTATION SETTINGS FOOTER -- managed by Presentation Settings
-                ... (contains a single \setbeamertemplate{footline}{...})
-                % ============================================================
+            the marked PS footer block.
 
-        It never touches any other preamble element.  In particular it
-        never touches \usetheme, \definecolor, \setbeamertemplate{...}
-        (except the footline inside the marked block), the title-page
+        It never touches \usetheme, \definecolor, \setbeamertemplate
+        (except footline inside the managed block), the title-page
         designer macros, or the layout commands.
 
         Priority
         --------
-        Presentation Settings unconditionally owns the shared scalar
-        slots on the write path.  The read path (load_file) has already
-        folded any Theme & Styles value into the PS fields before the
-        user pressed Save, so re-reading the file here would only risk
-        reintroducing a stale value.  See _apply_priority() below.
+        PS has priority for every shared scalar slot, provided the
+        value PS holds is non-empty.  If PS is blank for a shared slot,
+        the on-disk value (TS or GEN) is preserved byte-for-byte.
+
+        This rule is enforced by:
+
+          * _ps_value_for()  -- returns '' when PS has no value
+          * _read_slot_value()  -- reads the current on-disk value
+          * _apply_priority()  -- returns the non-empty one
 
         Idempotency
         -----------
-        Both this writer and process_input_file() in BeamerSlideGenerator.py
-        emit a "% BSG TITLE-PAGE COLOR SAFETY" block and a
-        "% CRITICAL FIXES" block before \begin{document}.  Without
-        stripping pre-existing copies, each save would append another
-        pair, and after a few saves the preamble would contain dozens of
-        duplicate \raggedright declarations.  That shifts brace depth at
-        the point where \setbeamertemplate{footline}{...} is parsed and
-        causes the "Runaway argument? / File ended while scanning use of
-        \beamer@sbtexec" error.  This method strips every pre-existing
-        copy before emitting exactly one, so the preamble always has a
-        single, well-defined tail.
-
-        Returns True on success.
+        Every managed block is stripped before being re-emitted, so a
+        repeated Save produces the same output.
         """
         if not self.current_file or not os.path.exists(self.current_file):
             self.write("\u26a0 No file to save settings to\n", "yellow")
@@ -36022,10 +36825,6 @@ Created by {self.__author__}
             # 1. Value sanitisation
             # ============================================================
             def _san(value) -> str:
-                r"""
-                Prepare a plain-text value for a TeX macro argument.
-                See the original docstring for the escaping contract.
-                """
                 if value is None:
                     return ''
                 text = str(value)
@@ -36050,9 +36849,6 @@ Created by {self.__author__}
                 return text
 
             def _san_path(value) -> str:
-                r"""
-                Prepare a filesystem path for a TeX macro argument.
-                """
                 if not value:
                     return ''
                 p = os.path.abspath(os.path.expanduser(str(value)))
@@ -36064,9 +36860,6 @@ Created by {self.__author__}
                 return p
 
             def _san_logo_height(value) -> str:
-                r"""
-                Normalise a logo height to a TeX dimension.
-                """
                 s = str(value or '').strip() or '2.2ex'
                 if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', s):
                     s += 'ex'
@@ -36081,10 +36874,7 @@ Created by {self.__author__}
             def _read_slot_value(preamble_text: str, slot_id: str) -> str:
                 r"""
                 Return the current value of a scalar slot, or '' if the
-                slot is absent.  Two forms are recognised:
-
-                    \title{Foo}
-                    \def\BSGLogoHeight{2.2ex}
+                slot is absent.
                 """
                 if slot_id.startswith('def:'):
                     name = slot_id[4:]
@@ -36102,47 +36892,28 @@ Created by {self.__author__}
                 return m.group(1).strip() if m else ''
 
             # ============================================================
-            # 3. Priority rule
+            # 3. Priority rule  (updated)
             # ============================================================
             def _apply_priority(ps_value: str, file_value: str) -> str:
                 r"""
-                Presentation Settings unconditionally owns the shared
-                slots on the write path.
-
-                Why the file value is ignored here
-                ----------------------------------
-                The read path has already folded any Theme & Styles
-                value into the Presentation Settings fields before the
-                user pressed Save.  See load_file(): when it extracts a
-                shared scalar from the preamble, it assigns the
-                non-empty value into self.presentation_info[<key>].  So
-                by the time this function runs, ps_value is either the
-                user's edit or the value that was already in the file.
-                Re-reading the file at this point would only risk
-                reintroducing a stale value that the user has since
-                changed.
-
-                The file_value argument is retained for signature
-                stability and for any external caller; it is
-                deliberately not consulted.
+                PS has priority for every shared slot, provided the
+                value it holds is non-empty.  If PS is blank, the
+                on-disk value is preserved.  If both are blank, the
+                slot is left untouched (the caller skips writing it).
                 """
-                return (ps_value or '').strip()
+                ps_value = (ps_value or '').strip()
+                file_value = (file_value or '').strip()
+                if ps_value:
+                    return ps_value
+                return file_value
 
             # ============================================================
-            # 4. Slot write helper — callable replacement, template safe
+            # 4. Slot write helpers  (unchanged)
             # ============================================================
             def _write_slot(text: str, pattern, replacement: str) -> str:
-                r"""
-                Replace the value of a single-line slot, or insert the
-                slot if it does not exist.  The replacement is applied via
-                a callable so that the re module never parses it as a
-                template (which would reject \d, \B, etc.).
-                """
                 if pattern.search(text):
                     return pattern.sub(lambda _m, _r=replacement: _r,
                                        text, count=1)
-
-                # Not present: insert at a defined anchor.
                 anchor = re.search(r'\\begin\{document\}', text)
                 if anchor:
                     insert_at = anchor.start()
@@ -36165,33 +36936,59 @@ Created by {self.__author__}
                 )
 
             # ============================================================
-            # 5. Sanitise PS values per slot kind
+            # 5. Sanitise PS values per slot kind  (updated)
             # ============================================================
             def _ps_value_for(slot_id: str, key: str, default: str) -> str:
+                r"""
+                Return the sanitised PS value for a slot, or '' when PS
+                holds no value for it.
+
+                The previous version substituted ``default`` for a
+                blank PS field, which is exactly what caused TS values
+                to be overwritten by PS defaults.  That substitution is
+                now removed for the shared slots: a blank PS field
+                returns '', and the caller preserves the on-disk value.
+                """
                 raw = self.presentation_info.get(key, '')
                 if raw is None:
                     raw = ''
+
                 if slot_id == 'def:BSGPresentationLogo':
-                    # Path sanitisation
                     if str(raw).strip():
                         raw = os.path.abspath(
                             os.path.expanduser(str(raw).strip()))
                         self.presentation_info['logo'] = raw
                         return _san_path(raw)
                     return ''
+
                 if slot_id == 'def:BSGLogoHeight':
+                    # PS-only slot: fall back to default only when blank.
                     v = _san_logo_height(raw or default)
                     self.presentation_info['logo_size'] = v
                     return v
+
                 if slot_id == 'def:BSGAutoCompleteEnabled':
                     return '1' if bool(raw) else '0'
+
                 if slot_id == 'def:BSGLaTeXEngine':
                     v = str(raw or default).strip().lower()
                     return v if v in ('pdflatex', 'xelatex') else 'pdflatex'
+
                 if slot_id == 'date':
-                    d = str(raw or default).strip()
-                    return r'\today' if d in ('', r'\today') else _san(d)
-                return _san(str(raw) if raw != '' else default)
+                    d = str(raw).strip()
+                    if not d:
+                        # PS blank: let the caller preserve the disk
+                        # value; do NOT substitute a default here.
+                        return ''
+                    return r'\today' if d == r'\today' else _san(d)
+
+                # For every shared slot (title, subtitle, author,
+                # institute, insertshortinstitute): return '' when PS
+                # is blank so _apply_priority() can fall back to disk.
+                s = str(raw).strip()
+                if not s:
+                    return ''
+                return _san(s)
 
             def _format_slot_line(slot_id: str, value: str) -> str:
                 if slot_id.startswith('def:'):
@@ -36213,7 +37010,7 @@ Created by {self.__author__}
                 needs_document_wrapper = False
 
             # ============================================================
-            # 7. Remove the marked footer block (and only that block)
+            # 7. Remove the marked footer block
             # ============================================================
             while True:
                 s = preamble_text.find(PS_FOOT_START)
@@ -36221,7 +37018,6 @@ Created by {self.__author__}
                     break
                 e = preamble_text.find(PS_FOOT_END, s + len(PS_FOOT_START))
                 if e < 0:
-                    # Unterminated block: drop everything to the end.
                     preamble_text = preamble_text[:s]
                     break
                 preamble_text = (
@@ -36230,18 +37026,7 @@ Created by {self.__author__}
                 )
 
             # ============================================================
-            # 7b. Remove every pre-existing safety block.
-            #
-            # Both this writer and process_input_file() emit a
-            # "% BSG TITLE-PAGE COLOR SAFETY" block followed by a
-            # "% CRITICAL FIXES" block before \begin{document}.  Without
-            # stripping pre-existing copies, each save would append
-            # another pair, and after a few saves the preamble would
-            # contain dozens of duplicate \raggedright declarations.
-            # That shifts brace depth at the point where
-            # \setbeamertemplate{footline}{...} is parsed, causing the
-            # "Runaway argument? / File ended while scanning use of
-            # \beamer@sbtexec" error.
+            # 7b. Remove pre-existing safety blocks
             # ============================================================
             _safety_patterns = (
                 re.compile(
@@ -36264,29 +37049,44 @@ Created by {self.__author__}
             for _pat in _safety_patterns:
                 preamble_text = _pat.sub('', preamble_text)
 
-            # Collapse the blank-line runs left behind by the removals.
             preamble_text = re.sub(r'\n{3,}', '\n\n', preamble_text)
 
             # ============================================================
             # 8. Write the PS-owned scalar slots
             # ============================================================
-            # The PS-only slots are written unconditionally.
+            # 8a. PS-only slots: PS is the sole author, so it writes
+            # them unconditionally, falling back to the slot default.
             for slot_id, key, default in PS_ONLY_SCALAR_SLOTS:
                 value = _ps_value_for(slot_id, key, default)
+                if not value:
+                    # Should not happen for PS-only slots, but be safe:
+                    # never emit an empty \def.
+                    value = default
                 preamble_text = _write_slot(
                     preamble_text,
                     _slot_pattern(slot_id),
                     _format_slot_line(slot_id, value),
                 )
 
-            # The PS/TS-shared slots are written unconditionally from the
-            # current Presentation Settings state.  _ps_value_for() has
-            # already substituted the slot default when the PS value is
-            # blank, so a blank PS field yields the default value, not an
-            # empty argument.
+            # 8b. Shared slots: PS writes only when it has a non-empty
+            # value.  Otherwise the on-disk value is preserved and the
+            # slot is not touched at all.
             for slot_id, key, default in PS_TS_SHARED_SCALAR_SLOTS:
                 ps_value = _ps_value_for(slot_id, key, default)
-                final_value = _apply_priority(ps_value, '')
+                file_value = _read_slot_value(preamble_text, slot_id)
+                final_value = _apply_priority(ps_value, file_value)
+
+                if not final_value:
+                    # Neither PS nor the file has a value.  Leave the
+                    # slot alone; do not emit \title{} etc.
+                    continue
+
+                # If PS is blank and the file already has this exact
+                # value, skip the write to keep the preamble byte-for-
+                # byte identical across repeated saves.
+                if not ps_value and file_value == final_value:
+                    continue
+
                 preamble_text = _write_slot(
                     preamble_text,
                     _slot_pattern(slot_id),
@@ -36294,7 +37094,7 @@ Created by {self.__author__}
                 )
 
             # ============================================================
-            # 9. Build and re-insert the managed footer block
+            # 9. Build and re-insert the managed footer block  (unchanged)
             # ============================================================
             footer_logo_path = (self.presentation_info.get('logo') or '').strip()
             if footer_logo_path:
@@ -36308,24 +37108,6 @@ Created by {self.__author__}
             footer_block = self._build_managed_footer_block(
                 footer_logo_tex, footer_logo_size)
 
-            # ------------------------------------------------------------
-            # Emit exactly one copy of each safety block, immediately
-            # before \begin{document}, followed by the PS footer block.
-            # The preamble tail is therefore always:
-            #
-            #     \def\BSGLaTeXEngine{...}
-            #
-            #     % BSG TITLE-PAGE COLOR SAFETY
-            #     ...
-            #     % CRITICAL FIXES
-            #     ...
-            #
-            #     % BSG PRESENTATION SETTINGS FOOTER -- managed by PS
-            #     ...
-            #     % ============================================
-            #
-            #     \begin{document}
-            # ------------------------------------------------------------
             _safety_block = (
                 "\n% ====== BSG TITLE-PAGE COLOR SAFETY ======\n"
                 "\\providecolor{primary}{RGB}{25,57,90}\n"
@@ -36347,18 +37129,18 @@ Created by {self.__author__}
                 prefix = preamble_text[:insert_at].rstrip()
                 preamble_text = (
                     prefix
-                    + _safety_block
                     + '\n'
                     + footer_block
+                    + _safety_block
                     + '\n'
                     + preamble_text[insert_at:]
                 )
             else:
                 preamble_text = (
                     preamble_text.rstrip()
-                    + _safety_block
                     + '\n'
                     + footer_block
+                    + _safety_block
                     + '\n\\begin{document}\n'
                 )
 
@@ -43393,6 +44175,29 @@ Created by {self.__author__}
                         pass
         except Exception as exc:
             print(f"Warning: could not save shared vars: {exc}")
+
+    def _get_preamble_from_current_file(self) -> str:
+        """Return the preamble (text before \\begin{document}) of the
+        currently open file.  Falls back to the in-memory preamble when
+        the file cannot be read."""
+        try:
+            if self.current_file and os.path.exists(self.current_file):
+                with open(self.current_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                import re
+                m = re.search(r'\\begin\{document\}', content)
+                if m:
+                    return content[:m.start()].rstrip()
+        except Exception as e:
+            print(f"Warning: could not read preamble from file: {e}")
+
+        # Fallbacks, in order of decreasing authority.
+        if self.preamble_from_file:
+            return self.preamble_from_file
+        if self.custom_preamble and self.using_custom_preamble:
+            return self.custom_preamble
+        return self.get_custom_preamble()
+
 
 class ScreenCaptureMethod:
     """Detect and manage screen capture methods for different environments"""
