@@ -1792,6 +1792,88 @@ TS_PALETTE_END = '% ============================================================
 # ============================================================================
 # UPDATE WINDOW MANAGER - Add file dialog handling
 # ============================================================================
+def _safe_grab_set(window, delay_ms=50):
+    """
+    Call window.grab_set() safely.
+
+    Tk refuses to grab a window that is not yet viewable.  If the
+    toplevel was just constructed, we defer the grab until after the
+    window has been mapped.  Any residual failure is logged and ignored
+    because a missing grab only affects modality, not functionality.
+    """
+    import tkinter as _tk
+
+    def _do_grab():
+        try:
+            if window.winfo_exists() and window.winfo_viewable():
+                window.grab_set()
+        except _tk.TclError:
+            # Window not viewable yet; try once more shortly after.
+            try:
+                window.after(150,
+                             lambda: _safe_grab_set(window, delay_ms=0))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    try:
+        window.update_idletasks()
+        try:
+            window.wait_visibility()
+        except Exception:
+            # wait_visibility() can raise on some window managers;
+            # fall back to a short deferred retry.
+            pass
+
+        if window.winfo_viewable():
+            window.grab_set()
+        else:
+            window.after(max(0, delay_ms), _do_grab)
+    except Exception as exc:
+        print(f"Warning: could not set grab on {window}: {exc}")
+
+def _show_and_grab(dialog, parent=None):
+    """Make a freshly-created toplevel visible, then grab it safely.
+
+    Tk refuses ``grab_set()`` on a window that has not been mapped, which
+    raises ``TclError: grab failed: window not viewable``.  The robust
+    sequence is:
+
+        1. update_idletasks()   flush geometry and widget construction
+        2. deiconify()          make the window mapped
+        3. wait_visibility()    wait for the WM to actually show it
+        4. lift()/focus_force() raise it above siblings
+        5. grab_set()           only if winfo_viewable() is True
+
+    A failed grab only disables modality; the window remains functional,
+    so every failure here is logged and swallowed.
+    """
+    import tkinter as _tk
+
+    try:
+        if parent is not None and parent.winfo_exists():
+            dialog.transient(parent)
+
+        dialog.update_idletasks()
+        dialog.deiconify()
+
+        try:
+            dialog.wait_visibility()
+        except Exception:
+            # Some window managers never deliver <Visibility>.
+            # Fall through; the grab attempt below may still succeed.
+            pass
+
+        dialog.lift()
+        try:
+            dialog.focus_force()
+        except Exception:
+            pass
+
+        _safe_grab_set(dialog)
+    except Exception as exc:
+        print(f"Warning: could not show/grab dialog: {exc}")
 
 class WindowManager:
     """
@@ -5173,46 +5255,76 @@ class CompleteThemeImportDialog(ctk.CTkToplevel):
         self.raw_text.configure(state="disabled")
 
     def save_theme(self):
-        """Save the complete imported theme"""
+        """Save the complete imported theme."""
         if not hasattr(self, 'current_theme') or not self.current_theme:
             WindowManager.show_message(
                 self,
                 "No Theme",
                 "Please import a theme first using 'Import & Preview'.",
-                "warning"
+                "warning",
             )
             return
 
         theme_name = self.name_entry.get().strip()
         if not theme_name:
-            WindowManager.show_message(self, "Error", "Please enter a theme name.", "error")
+            WindowManager.show_message(
+                self, "Error", "Please enter a theme name.", "error")
             return
 
+        folder = None
         try:
-            theme_path = self.importer.save_theme(self.current_theme, theme_name)
+            if (getattr(self.parent, 'current_file', None)
+                    and os.path.exists(self.parent.current_file)):
+                folder = os.path.dirname(
+                    os.path.abspath(self.parent.current_file))
+        except Exception:
+            folder = None
+        scope = 'folder' if folder else 'ide'
+
+        try:
+            # Reuse the importer-side converter so both import paths
+            # produce identical payloads.
+            settings = ThemeImportDialog._theme_to_settings(self.current_theme)
+            preamble = (
+                self.current_theme.get('raw_preamble', '')
+                or self.current_theme.get('preamble', '')
+                or ''
+            )
+
+            theme_path = ThemeManager.save_theme_scoped(
+                theme_name,
+                settings,
+                preamble=preamble,
+                scope=scope,
+                folder=folder,
+                theme_type='imported',
+            )
+
             WindowManager.show_message(
                 self,
                 "Theme Saved",
                 f"Complete theme '{theme_name}' saved successfully!\n\n"
-                f"Location: {theme_path}\n\n"
-                f"All settings have been captured and can be fully reapplied.",
-                "info"
+                f"Location: {theme_path}",
+                "info",
             )
-            self.status_label.configure(text=f"✓ Complete theme '{theme_name}' saved", text_color="#4ECDC4")
-
+            self.status_label.configure(
+                text=f"✓ Complete theme '{theme_name}' saved",
+                text_color="#4ECDC4",
+            )
             self.result = {
                 'name': theme_name,
                 'path': theme_path,
-                'data': self.current_theme
+                'data': self.current_theme,
             }
             self.destroy()
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             WindowManager.show_message(
-                self,
-                "Error",
-                f"Error saving theme:\n{str(e)}",
-                "error"
+                self, "Error",
+                f"Error saving theme:\n{e}",
+                "error",
             )
 
 
@@ -5230,126 +5342,194 @@ class ThemeImportDialog(ctk.CTkToplevel):
         self.geometry("800x600")
         self.result = None
 
+        # Make it transient to the parent but do NOT grab yet.  Tk
+        # refuses to grab a window that has not been mapped, and the
+        # previous unconditional self.grab_set() was raising
+        # TclError: grab failed: window not viewable, which aborted
+        # __init__ before the widgets were built and left a blank
+        # window.
         self.transient(parent)
-        self.grab_set()
-        WindowManager.ensure_on_top(self, parent)
-        WindowManager.center_on_parent(self, parent)
 
-        self.importer = ThemeImporter(self)
-        self.create_widgets()
+        # Build the widgets FIRST, then show and grab.
+        try:
+            self.importer = ThemeImporter(self)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            ctk.CTkLabel(
+                self,
+                text=f"Failed to build importer:\n{exc}",
+                text_color="#FF6B6B",
+                wraplength=600,
+                justify="left",
+            ).pack(padx=20, pady=20)
+            # Do not attempt to grab: the window may never be mapped.
+            return
+
+        try:
+            self.create_widgets()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            ctk.CTkLabel(
+                self,
+                text=f"Failed to build import dialog:\n{exc}",
+                text_color="#FF6B6B",
+                wraplength=600,
+                justify="left",
+            ).pack(padx=20, pady=20)
+            return
+
+        # --- safe show and grab ---------------------------------------
+        # Now that the widgets are built, make the window visible and
+        # take a grab on it.  Any residual failure is logged and
+        # ignored because modality is not essential to the dialog's
+        # functionality.
+        try:
+            self.update_idletasks()
+            self.deiconify()
+            self.lift()
+            try:
+                self.wait_visibility()
+            except Exception:
+                # Some window managers do not raise the <Visibility>
+                # event reliably; fall back to a short deferred retry.
+                pass
+
+            WindowManager.ensure_on_top(self, parent)
+            WindowManager.center_on_parent(self, parent)
+
+            try:
+                if self.winfo_exists() and self.winfo_viewable():
+                    self.grab_set()
+                else:
+                    self.after(
+                        80,
+                        lambda: self._deferred_grab(),
+                    )
+            except Exception as _grab_err:
+                print(f"Warning: could not grab Import dialog: "
+                      f"{_grab_err}")
+        except Exception as exc:
+            print(f"Warning: could not finalize Import dialog: {exc}")
+
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
+    def _deferred_grab(self):
+        """Retry grab_set() once the window has actually been mapped."""
+        try:
+            if self.winfo_exists() and self.winfo_viewable():
+                self.grab_set()
+        except Exception:
+            # Never let a modal-grab failure surface as an exception.
+            pass
 
     def create_widgets(self):
-        """Create the import dialog widgets"""
+        try:
+            main_frame = ctk.CTkFrame(self)
+            main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+            ctk.CTkLabel(
+                main_frame,
+                text="Import Theme from Beamer TeX File",
+                font=("Arial", 18, "bold"),
+            ).pack(pady=(0, 10))
 
-        # Main container
-        main_frame = ctk.CTkFrame(self)
-        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+            file_frame = ctk.CTkFrame(main_frame)
+            file_frame.pack(fill="x", pady=10)
+            ctk.CTkLabel(file_frame, text="TeX File:").pack(side="left", padx=5)
+            self.file_entry = ctk.CTkEntry(file_frame, width=400)
+            self.file_entry.pack(side="left", padx=5, fill="x", expand=True)
+            ctk.CTkButton(
+                file_frame, text="Browse...",
+                command=self.browse_file, width=100,
+            ).pack(side="left", padx=5)
 
-        # Title
-        ctk.CTkLabel(
-            main_frame,
-            text="Import Theme from Beamer TeX File",
-            font=("Arial", 18, "bold")
-        ).pack(pady=(0, 10))
+            name_frame = ctk.CTkFrame(main_frame)
+            name_frame.pack(fill="x", pady=10)
+            ctk.CTkLabel(name_frame, text="Theme Name:").pack(side="left", padx=5)
+            self.name_entry = ctk.CTkEntry(name_frame, width=300)
+            self.name_entry.pack(side="left", padx=5, fill="x", expand=True)
+            self.name_entry.insert(0, "Imported Theme")
 
-        # File selection
-        file_frame = ctk.CTkFrame(main_frame)
-        file_frame.pack(fill="x", pady=10)
+            btn_frame = ctk.CTkFrame(main_frame)
+            btn_frame.pack(fill="x", pady=10)
+            ctk.CTkButton(
+                btn_frame, text="📥 Import & Preview",
+                command=self.import_and_preview,
+                width=150, fg_color="#28a745", hover_color="#218838",
+            ).pack(side="left", padx=5)
+            ctk.CTkButton(
+                btn_frame, text="💾 Save Theme",
+                command=self.save_theme,
+                width=150, fg_color="#17a2b8", hover_color="#138496",
+            ).pack(side="left", padx=5)
+            ctk.CTkButton(
+                btn_frame, text="❌ Cancel",
+                command=self.destroy,
+                width=120, fg_color="#dc3545", hover_color="#c82333",
+            ).pack(side="right", padx=5)
 
-        ctk.CTkLabel(file_frame, text="TeX File:").pack(side="left", padx=5)
-        self.file_entry = ctk.CTkEntry(file_frame, width=400)
-        self.file_entry.pack(side="left", padx=5, fill="x", expand=True)
+            preview_frame = ctk.CTkFrame(main_frame)
+            preview_frame.pack(fill="both", expand=True, pady=10)
+            ctk.CTkLabel(
+                preview_frame, text="Preview:",
+                font=("Arial", 12, "bold"),
+            ).pack(anchor="w", padx=5)
+            self.preview_text = ctk.CTkTextbox(preview_frame,
+                                               font=("Courier", 10))
+            self.preview_text.pack(fill="both", expand=True, padx=5, pady=5)
+            self.preview_text.insert(
+                "1.0",
+                "Select a TeX file and click 'Import & Preview'.")
+            self.preview_text.configure(state="disabled")
 
-        browse_btn = ctk.CTkButton(
-            file_frame,
-            text="Browse...",
-            command=self.browse_file,
-            width=100
-        )
-        browse_btn.pack(side="left", padx=5)
+            self.status_label = ctk.CTkLabel(
+                main_frame, text="", font=("Arial", 10),
+                text_color="#4ECDC4")
+            self.status_label.pack(fill="x", pady=5)
 
-        # Theme name
-        name_frame = ctk.CTkFrame(main_frame)
-        name_frame.pack(fill="x", pady=10)
-
-        ctk.CTkLabel(name_frame, text="Theme Name:").pack(side="left", padx=5)
-        self.name_entry = ctk.CTkEntry(name_frame, width=300)
-        self.name_entry.pack(side="left", padx=5, fill="x", expand=True)
-        self.name_entry.insert(0, "Imported Theme")
-
-        # Buttons
-        btn_frame = ctk.CTkFrame(main_frame)
-        btn_frame.pack(fill="x", pady=10)
-
-        import_btn = ctk.CTkButton(
-            btn_frame,
-            text="📥 Import & Preview",
-            command=self.import_and_preview,
-            width=150,
-            fg_color="#28a745",
-            hover_color="#218838"
-        )
-        import_btn.pack(side="left", padx=5)
-
-        save_btn = ctk.CTkButton(
-            btn_frame,
-            text="💾 Save Theme",
-            command=self.save_theme,
-            width=150,
-            fg_color="#17a2b8",
-            hover_color="#138496"
-        )
-        save_btn.pack(side="left", padx=5)
-
-        close_btn = ctk.CTkButton(
-            btn_frame,
-            text="❌ Cancel",
-            command=self.destroy,
-            width=120,
-            fg_color="#dc3545",
-            hover_color="#c82333"
-        )
-        close_btn.pack(side="right", padx=5)
-
-        # Preview area
-        preview_frame = ctk.CTkFrame(main_frame)
-        preview_frame.pack(fill="both", expand=True, pady=10)
-
-        ctk.CTkLabel(preview_frame, text="Preview:", font=("Arial", 12, "bold")).pack(anchor="w", padx=5)
-
-        self.preview_text = ctk.CTkTextbox(preview_frame, font=("Courier", 10))
-        self.preview_text.pack(fill="both", expand=True, padx=5, pady=5)
-        self.preview_text.insert("1.0", "Select a TeX file and click 'Import & Preview'")
-        self.preview_text.configure(state="disabled")
-
-        # Status
-        self.status_label = ctk.CTkLabel(main_frame, text="", font=("Arial", 10), text_color="#4ECDC4")
-        self.status_label.pack(fill="x", pady=5)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            # Render the failure inside the dialog so it is never blank.
+            ctk.CTkLabel(
+                self,
+                text=f"Failed to build import dialog:\n{exc}",
+                text_color="#FF6B6B",
+                wraplength=600,
+                justify="left",
+            ).pack(padx=20, pady=20)
 
     def import_and_preview(self):
         """Import the theme and show preview"""
         file_path = self.file_entry.get().strip()
         if not file_path:
-            WindowManager.show_message(self, "Error", "Please select a TeX file.", "error")
+            WindowManager.show_message(
+                self, "Error", "Please select a TeX file.", "error")
             return
 
         if not os.path.exists(file_path):
-            WindowManager.show_message(self, "Error", f"File not found: {file_path}", "error")
+            WindowManager.show_message(
+                self, "Error", f"File not found: {file_path}", "error")
             return
 
-        self.status_label.configure(text="Importing theme...", text_color="#FFB86C")
+        self.status_label.configure(
+            text="Importing theme...", text_color="#FFB86C")
         self.update()
 
         # Import the theme
         theme_data = self.importer.import_from_file(file_path)
 
         if theme_data is None:
-            self.status_label.configure(text="✗ Import failed", text_color="#FF6B6B")
+            self.status_label.configure(
+                text="✗ Import failed", text_color="#FF6B6B")
             WindowManager.show_message(
                 self,
                 "Import Failed",
-                f"Failed to import theme.\n\nErrors:\n{chr(10).join(self.importer.errors)}",
-                "error"
+                f"Failed to import theme.\n\n"
+                f"Errors:\n{chr(10).join(self.importer.errors)}",
+                "error",
             )
             return
 
@@ -5363,76 +5543,108 @@ class ThemeImportDialog(ctk.CTkToplevel):
         summary = self.importer.get_theme_summary(theme_data)
         self.preview_text.insert("1.0", summary + "\n\n")
 
-        # Show the generated preamble preview
         if theme_data.get('categories'):
-            self.preview_text.insert("end", "="*50 + "\n")
+            self.preview_text.insert("end", "=" * 50 + "\n")
             self.preview_text.insert("end", "Generated Preamble Preview:\n")
-            self.preview_text.insert("end", "="*50 + "\n")
+            self.preview_text.insert("end", "=" * 50 + "\n")
             preamble = self.importer.generate_preamble_from_theme(theme_data)
-            self.preview_text.insert("end", preamble[:500] + "\n... (truncated)")
+            self.preview_text.insert(
+                "end", preamble[:500] + "\n... (truncated)")
 
         self.preview_text.configure(state="disabled")
 
-        # Update status
         cats = len(theme_data.get('categories', {}))
         self.status_label.configure(
-            text=f"✓ Imported {cats} categories from {Path(file_path).name}",
-            text_color="#4ECDC4"
+            text=f"✓ Imported {cats} categories from "
+                 f"{Path(file_path).name}",
+            text_color="#4ECDC4",
         )
 
     def save_theme(self):
-        """Save the imported theme"""
+        """Save the imported theme.
+
+        The theme is written through ThemeManager so that it uses the
+        same two-store layout (IDE-wide and folder-scoped) that Save
+        Theme in the main dialog uses.  The saved file carries
+        type='imported' so the main dialog can list it alongside
+        custom themes with the correct tag.
+        """
         if not hasattr(self, 'current_theme') or not self.current_theme:
             WindowManager.show_message(
                 self,
                 "No Theme",
                 "Please import a theme first using 'Import & Preview'.",
-                "warning"
+                "warning",
             )
             return
 
         theme_name = self.name_entry.get().strip()
         if not theme_name:
-            WindowManager.show_message(self, "Error", "Please enter a theme name.", "error")
+            WindowManager.show_message(
+                self, "Error", "Please enter a theme name.", "error")
             return
 
+        # Decide scope from the parent editor's currently open file.
+        folder = None
         try:
-            theme_path = self.importer.save_theme(self.current_theme, theme_name)
+            if (getattr(self.parent, 'current_file', None)
+                    and os.path.exists(self.parent.current_file)):
+                folder = os.path.dirname(
+                    os.path.abspath(self.parent.current_file))
+        except Exception:
+            folder = None
+        scope = 'folder' if folder else 'ide'
+
+        try:
+            settings = self._theme_to_settings(self.current_theme)
+            preamble = (
+                self.current_theme.get('raw_preamble', '')
+                or self.current_theme.get('preamble', '')
+                or ''
+            )
+
+            theme_path = ThemeManager.save_theme_scoped(
+                theme_name,
+                settings,
+                preamble=preamble,
+                scope=scope,
+                folder=folder,
+                theme_type='imported',
+            )
+
             WindowManager.show_message(
                 self,
                 "Theme Saved",
                 f"Theme '{theme_name}' saved successfully!\n\n"
                 f"Location: {theme_path}",
-                "info"
+                "info",
             )
-            self.status_label.configure(text=f"✓ Theme '{theme_name}' saved", text_color="#4ECDC4")
-
-            # Return the theme data
+            self.status_label.configure(
+                text=f"✓ Theme '{theme_name}' saved",
+                text_color="#4ECDC4",
+            )
             self.result = {
                 'name': theme_name,
                 'path': theme_path,
-                'data': self.current_theme
+                'data': self.current_theme,
             }
             self.destroy()
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             WindowManager.show_message(
-                self,
-                "Error",
-                f"Error saving theme:\n{str(e)}",
-                "error"
+                self, "Error",
+                f"Error saving theme:\n{e}",
+                "error",
             )
-
-    # ============================================================================
-    # UPDATE ThemeImportDialog - Use DialogManager for file browsing
-    # ============================================================================
 
     def browse_file(self):
         """Browse for a TeX file - with proper file dialog"""
         filename = DialogManager.askopenfilename(
             parent=self,
             title="Select Beamer TeX File",
-            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")]
+            filetypes=[("TeX files", "*.tex"), ("All files", "*.*")],
         )
         if filename:
             self.file_entry.delete(0, 'end')
@@ -5441,6 +5653,67 @@ class ThemeImportDialog(ctk.CTkToplevel):
             base_name = Path(filename).stem
             self.name_entry.delete(0, 'end')
             self.name_entry.insert(0, base_name.replace('_', ' ').title())
+
+
+@staticmethod
+def _theme_to_settings(theme_data):
+    """Return a settings dict, deriving one from `categories` if needed."""
+    settings = dict(theme_data.get('settings') or {})
+    if settings:
+        return settings
+
+    import re
+    categories = theme_data.get('categories') or {}
+    s = {}
+
+    doc = categories.get('documentclass') or {}
+    if isinstance(doc, dict):
+        if doc.get('aspect'):
+            s['aspect'] = str(doc['aspect'])
+        if doc.get('font_size'):
+            try:
+                s['font_size'] = int(doc['font_size'])
+            except (TypeError, ValueError):
+                pass
+
+    for key, slot in (('themes', 'theme'),
+                      ('colorthemes', 'colortheme'),
+                      ('fontthemes', 'fonttheme')):
+        for entry in categories.get(key) or []:
+            if isinstance(entry, dict) and entry.get('name'):
+                s[slot] = entry['name']
+                break
+
+    for entry in categories.get('beamercolors') or []:
+        if not isinstance(entry, dict):
+            continue
+        name = (entry.get('name') or '').strip()
+        cfg = entry.get('settings') or ''
+        if name == 'background canvas':
+            m = re.search(r'bg=([^,}]+)', cfg)
+            if m:
+                s['bg_color'] = m.group(1).strip()
+        elif name == 'normal text':
+            m = re.search(r'fg=([^,}]+)', cfg)
+            if m:
+                s['fg_color'] = m.group(1).strip()
+        elif name == 'frametitle':
+            m = re.search(r'fg=([^,}]+)', cfg)
+            if m:
+                s['title_color'] = m.group(1).strip()
+            m = re.search(r'bg=([^,}]+)', cfg)
+            if m:
+                s['title_bg_color'] = m.group(1).strip()
+
+    if categories.get('progress_bar'):
+        s['progress'] = True
+
+    for entry in categories.get('navigation') or []:
+        if isinstance(entry, dict) and entry.get('type') == 'navigation_symbols':
+            s['nav'] = (entry.get('content') or '').strip() not in ('', 'hidden')
+            break
+
+    return s
 
 # ============================================================================
 # COMPLETE THEME APPLICATION SYSTEM - Priority to imported/loaded theme
@@ -5661,182 +5934,390 @@ class ThemeApplicationSystem:
 # ============================================================================
 
 class ThemeManager:
-    """Manages saving, loading, and applying custom themes"""
+    """
+    Manages saving, loading, and applying custom themes.
+
+    Two storage scopes are supported:
+
+      * IDE scope    -- Path.home() / '.bsg-ide' / 'themes' / <name>.json
+                        Visible for every file the IDE opens.
+
+      * Folder scope -- <file folder> / '.bsg-themes' / <name>.json
+                        Visible only for files inside that folder.
+
+    Both stores are always consulted by the reader paths so a theme
+    saved to either store is found.  On a name clash the IDE-scoped
+    entry wins, so a folder theme cannot shadow an IDE theme with the
+    same name.
+
+    Every save is atomic: it writes to a sibling ``.json.tmp`` file and
+    then ``os.replace``s it into place.  An interrupted write therefore
+    leaves the previous file intact rather than a truncated one.
+    """
 
     THEME_DIR = Path.home() / '.bsg-ide' / 'themes'
 
+    # ============================================================
+    # IDE-WIDE STORE  (existing public API - behaviour preserved)
+    # ============================================================
     @classmethod
     def ensure_theme_dir(cls):
-        """Ensure the themes directory exists"""
+        """Ensure the IDE-wide themes directory exists"""
         cls.THEME_DIR.mkdir(parents=True, exist_ok=True)
         return cls.THEME_DIR
 
     @classmethod
     def get_theme_path(cls, theme_name):
-        """Get the full path for a theme file"""
+        """Get the full path for an IDE-scoped theme file"""
         cls.ensure_theme_dir()
         return cls.THEME_DIR / f"{theme_name}.json"
 
     @classmethod
-    def save_theme(cls, theme_name, settings, preamble=""):
-        """Save a theme with its settings and preamble"""
+    def _atomic_write_json(cls, path, payload):
+        """Write JSON atomically: temp file + os.replace."""
+        import os as _os
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + '.tmp')
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        _os.replace(tmp, path)
+        return path
+
+    @classmethod
+    def _normalise_preamble(cls, preamble):
+        """Make sure a preamble can always survive a JSON round trip."""
+        try:
+            return str(preamble or "")
+        except Exception:
+            return ""
+
+    @classmethod
+    def save_theme(cls, theme_name, settings, preamble="", theme_type="custom"):
+        """Save a theme to the IDE-wide store (atomic write)."""
         cls.ensure_theme_dir()
 
         theme_data = {
             'name': theme_name,
             'created': datetime.now().isoformat(),
             'settings': settings,
-            'preamble': preamble,
-            'version': '1.0'
+            'preamble': cls._normalise_preamble(preamble),
+            'version': '1.0',
+            'type': theme_type,
+            'scope': 'ide',
         }
 
         theme_path = cls.get_theme_path(theme_name)
-        with open(theme_path, 'w', encoding='utf-8') as f:
-            json.dump(theme_data, f, indent=2, ensure_ascii=False)
-
+        cls._atomic_write_json(theme_path, theme_data)
         return theme_path
 
     @classmethod
     def load_theme(cls, theme_name):
-        """Load a theme by name"""
+        """Load a theme from the IDE-wide store by name."""
         theme_path = cls.get_theme_path(theme_name)
         if not theme_path.exists():
             return None
-
-        with open(theme_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(theme_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as exc:
+            print(f"  ⚠ Could not parse IDE theme {theme_name!r}: {exc}")
+            return None
 
     @classmethod
     def list_themes(cls):
-        """List all saved themes"""
+        """List all themes in the IDE-wide store."""
         cls.ensure_theme_dir()
         themes = []
         for theme_file in cls.THEME_DIR.glob('*.json'):
             try:
                 with open(theme_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    themes.append({
-                        'name': data.get('name', theme_file.stem),
-                        'created': data.get('created', 'Unknown'),
-                        'path': theme_file,
-                        'settings': data.get('settings', {})
-                    })
-            except:
+                themes.append({
+                    'name': data.get('name', theme_file.stem),
+                    'created': data.get('created', 'Unknown'),
+                    'path': theme_file,
+                    'settings': data.get('settings', {}),
+                    'type': data.get('type', 'custom'),
+                    'scope': data.get('scope', 'ide'),
+                })
+            except Exception as exc:
+                # Keep a visible placeholder so the entry is still
+                # listable and the user can delete the broken file.
+                print(f"  ⚠ Skipping malformed IDE theme "
+                      f"{theme_file.name}: {exc}")
                 themes.append({
                     'name': theme_file.stem,
                     'created': 'Unknown',
                     'path': theme_file,
-                    'settings': {}
+                    'settings': {},
+                    'type': 'custom',
+                    'scope': 'ide',
+                    'malformed': True,
                 })
         return sorted(themes, key=lambda x: x.get('created', ''), reverse=True)
 
     @classmethod
     def delete_theme(cls, theme_name):
-        """Delete a theme"""
+        """Delete a theme from the IDE-wide store."""
         theme_path = cls.get_theme_path(theme_name)
         if theme_path.exists():
             theme_path.unlink()
             return True
         return False
 
+    # ============================================================
+    # FOLDER-SCOPED STORE
+    # ============================================================
+    @classmethod
+    def get_folder_theme_dir(cls, folder, create=True):
+        """Return <folder>/.bsg-themes, creating it on demand."""
+        if not folder:
+            return None
+        try:
+            d = Path(folder) / '.bsg-themes'
+            if create:
+                d.mkdir(parents=True, exist_ok=True)
+            return d
+        except Exception as exc:
+            print(f"  ⚠ Could not access folder theme dir: {exc}")
+            return None
+
+    @classmethod
+    def get_folder_theme_path(cls, folder, theme_name):
+        """Return the file path for a folder-scoped theme."""
+        d = cls.get_folder_theme_dir(folder, create=True)
+        if d is None:
+            return None
+        return d / f"{theme_name}.json"
+
+    @classmethod
+    def list_folder_themes(cls, folder):
+        """List the folder-scoped themes for ``folder``."""
+        d = cls.get_folder_theme_dir(folder, create=False)
+        if d is None or not d.exists():
+            return []
+        themes = []
+        for theme_file in d.glob('*.json'):
+            try:
+                with open(theme_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                themes.append({
+                    'name': data.get('name', theme_file.stem),
+                    'created': data.get('created', 'Unknown'),
+                    'path': theme_file,
+                    'settings': data.get('settings', {}),
+                    'type': data.get('type', 'custom'),
+                    'scope': 'folder',
+                })
+            except Exception as exc:
+                print(f"  ⚠ Skipping malformed folder theme "
+                      f"{theme_file.name}: {exc}")
+                themes.append({
+                    'name': theme_file.stem,
+                    'created': 'Unknown',
+                    'path': theme_file,
+                    'settings': {},
+                    'type': 'custom',
+                    'scope': 'folder',
+                    'malformed': True,
+                })
+        return sorted(themes, key=lambda x: x.get('created', ''), reverse=True)
+
+    # ============================================================
+    # COMBINED VIEW
+    # ============================================================
+    @classmethod
+    def list_themes_all(cls, folder=None):
+        """
+        List IDE-scoped themes first, then folder-scoped ones.  On a
+        name clash the IDE-scoped entry wins.
+        """
+        seen = {}
+        for t in cls.list_themes():
+            seen[t['name']] = t
+        if folder:
+            for t in cls.list_folder_themes(folder):
+                seen.setdefault(t['name'], t)
+        return sorted(
+            seen.values(),
+            key=lambda x: x.get('created', ''),
+            reverse=True,
+        )
+
+    @classmethod
+    def load_theme_anywhere(cls, theme_name, folder=None):
+        """
+        Load a theme by name; IDE store first, then folder store.
+        Returns None if not found.
+        """
+        data = cls.load_theme(theme_name)
+        if data is not None:
+            return data
+        if folder:
+            path = cls.get_folder_theme_path(folder, theme_name)
+            if path is not None and path.exists():
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception as exc:
+                    print(f"  ⚠ Could not parse folder theme "
+                          f"{theme_name!r}: {exc}")
+        return None
+
+    @classmethod
+    def save_theme_scoped(cls, theme_name, settings, preamble="",
+                          scope="ide", folder=None,
+                          theme_type="custom"):
+        """
+        Save to the chosen store.  Falls back to the IDE store if the
+        folder store is not usable.
+        """
+        payload = {
+            'name': theme_name,
+            'created': datetime.now().isoformat(),
+            'settings': settings,
+            'preamble': cls._normalise_preamble(preamble),
+            'version': '1.0',
+            'type': theme_type,
+            'scope': scope,
+        }
+
+        if scope == 'folder' and folder:
+            d = cls.get_folder_theme_dir(folder, create=True)
+            if d is not None:
+                path = d / f"{theme_name}.json"
+                cls._atomic_write_json(path, payload)
+                return path
+            # Fall through to IDE store.
+
+        cls.ensure_theme_dir()
+        path = cls.get_theme_path(theme_name)
+        cls._atomic_write_json(path, payload)
+        return path
+
+    @classmethod
+    def delete_theme_anywhere(cls, theme_name, folder=None):
+        """Delete a theme from whichever store contains it."""
+        removed = False
+        ide_path = cls.get_theme_path(theme_name)
+        if ide_path.exists():
+            try:
+                ide_path.unlink()
+                removed = True
+            except Exception as exc:
+                print(f"  ⚠ Could not delete IDE theme "
+                      f"{theme_name!r}: {exc}")
+        if folder:
+            folder_path = cls.get_folder_theme_path(folder, theme_name)
+            if folder_path is not None and folder_path.exists():
+                try:
+                    folder_path.unlink()
+                    removed = True
+                except Exception as exc:
+                    print(f"  ⚠ Could not delete folder theme "
+                          f"{theme_name!r}: {exc}")
+        return removed
+
+    # ============================================================
+    # PREAMBLE MUTATION (unchanged)
+    # ============================================================
     @classmethod
     def apply_theme_to_preamble(cls, preamble, settings):
-        """Apply theme settings to a preamble"""
+        """Apply theme settings to a preamble."""
         import re
 
-        # Theme
         if 'theme' in settings:
             pattern = r'\\usetheme\{[^}]*\}'
             replacement = f'\\usetheme{{{settings["theme"]}}}'
             if re.search(pattern, preamble):
                 preamble = re.sub(pattern, replacement, preamble)
 
-        # Color theme
         if 'colortheme' in settings and settings['colortheme'] != 'default':
             pattern = r'\\usecolortheme\{[^}]*\}'
             replacement = f'\\usecolortheme{{{settings["colortheme"]}}}'
             if re.search(pattern, preamble):
                 preamble = re.sub(pattern, replacement, preamble)
             else:
-                preamble = preamble.replace('\\begin{document}', f'{replacement}\n\\begin{document}')
+                preamble = preamble.replace(
+                    '\\begin{document}',
+                    replacement + '\n\\begin{document}')
 
-        # Font theme
         if 'fonttheme' in settings and settings['fonttheme'] != 'default':
             pattern = r'\\usefonttheme\{[^}]*\}'
             replacement = f'\\usefonttheme{{{settings["fonttheme"]}}}'
             if re.search(pattern, preamble):
                 preamble = re.sub(pattern, replacement, preamble)
             else:
-                preamble = preamble.replace('\\begin{document}', f'{replacement}\n\\begin{document}')
+                preamble = preamble.replace(
+                    '\\begin{document}',
+                    replacement + '\n\\begin{document}')
 
-        # Aspect ratio
         if 'aspect' in settings:
             pattern = r'\\documentclass\[aspectratio=\d+\]'
             if re.search(pattern, preamble):
-                preamble = re.sub(r'aspectratio=\d+', f'aspectratio={settings["aspect"]}', preamble)
+                preamble = re.sub(r'aspectratio=\d+',
+                                  f'aspectratio={settings["aspect"]}',
+                                  preamble)
             else:
                 doc_pattern = r'\\documentclass(\[.*?\])?\{beamer\}'
                 if re.search(doc_pattern, preamble):
-                    preamble = re.sub(doc_pattern, f'\\documentclass[aspectratio={settings["aspect"]}]{{beamer}}', preamble)
+                    preamble = re.sub(
+                        doc_pattern,
+                        f'\\documentclass[aspectratio={settings["aspect"]}]{{beamer}}',
+                        preamble)
 
-        # Background color
         if 'bg_color' in settings:
             pattern = r'\\setbeamercolor\{background canvas\}\{bg=[^}]*\}'
             replacement = f'\\setbeamercolor{{background canvas}}{{bg={settings["bg_color"]}}}'
             if re.search(pattern, preamble):
                 preamble = re.sub(pattern, replacement, preamble)
             else:
-                preamble = preamble.replace('\\begin{document}', f'{replacement}\n\\begin{document}')
+                preamble = preamble.replace(
+                    '\\begin{document}',
+                    replacement + '\n\\begin{document}')
 
-        # Notes mode
         if 'notes_mode' in settings:
             notes_map = {
                 "Slides Only": "hide notes",
                 "Notes Only": "show only notes",
-                "Slides + Notes": "show notes on second screen=right"
+                "Slides + Notes": "show notes on second screen=right",
             }
-            notes_option = notes_map.get(settings['notes_mode'], "show notes on second screen=right")
+            notes_option = notes_map.get(
+                settings['notes_mode'],
+                "show notes on second screen=right")
             pattern = r'\\setbeameroption\{[^}]*\}'
             replacement = f'\\setbeameroption{{{notes_option}}}'
             if re.search(pattern, preamble):
                 preamble = re.sub(pattern, replacement, preamble)
 
-        # Progress bar
-        if 'progress' in settings:
-            if not settings['progress']:
-                pattern = r'% Progress bar\s*\\makeatletter.*?\\makeatother'
-                preamble = re.sub(pattern, '', preamble, flags=re.DOTALL)
+        if 'progress' in settings and not settings['progress']:
+            pattern = r'% Progress bar\s*\\makeatletter.*?\\makeatother'
+            preamble = re.sub(pattern, '', preamble, flags=re.DOTALL)
 
-        # Navigation
         if 'nav' in settings and not settings['nav']:
             if '\\setbeamertemplate{navigation symbols}' not in preamble:
-                preamble = preamble.replace('\\begin{document}', '\\setbeamertemplate{navigation symbols}{}\n\\begin{document}')
+                preamble = preamble.replace(
+                    '\\begin{document}',
+                    '\\setbeamertemplate{navigation symbols}{}\n\\begin{document}')
 
         return preamble
 
     @classmethod
-    def get_imported_themes(cls):
-        """Get only imported themes"""
-        all_themes = cls.list_themes()
+    def get_imported_themes(cls, folder=None):
+        """Return only imported themes, from both stores."""
         imported = []
-        for theme in all_themes:
-            try:
-                with open(theme['path'], 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if data.get('type') == 'imported':
-                        imported.append(theme)
-            except:
-                pass
+        for t in cls.list_themes_all(folder=folder):
+            if t.get('type') == 'imported':
+                imported.append(t)
         return imported
 
     @classmethod
-    def apply_imported_theme(cls, theme_name, preamble):
-        """Apply an imported theme to a preamble"""
-        theme_data = cls.load_theme(theme_name)
+    def apply_imported_theme(cls, theme_name, preamble, folder=None):
+        """Apply an imported theme to a preamble."""
+        theme_data = cls.load_theme_anywhere(theme_name, folder=folder)
         if not theme_data:
             return preamble
-
-        # Use the importer to generate the preamble
         importer = ThemeImporter()
         return importer.generate_preamble_from_theme(theme_data)
 
@@ -6068,6 +6549,25 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         # Store current values from preamble
         self.current_values = self._extract_current_settings(self.current_preamble)
         self.current_values['footer_logo'] = self.presentation_info.get('logo', '').strip()
+
+        # Apply writes \setbeamercolor{...}{bg=bsgBackgroundCanvas} plus a
+        # matching \definecolor.  Resolve such names back to their hex so
+        # the slots show the real colour and no false change is reported
+        # when the dialog is re-opened.
+        try:
+            import re as _re_init
+            for _k in ('bg_color', 'fg_color', 'title_color', 'title_bg_color'):
+                _v = str(self.current_values.get(_k) or '').strip()
+                if not _v.startswith('bsg'):
+                    continue
+                _m = _re_init.search(
+                    r'\\definecolor\{' + _re_init.escape(_v)
+                    + r'\}\{HTML\}\{([0-9A-Fa-f]{6})\}',
+                    self.current_preamble)
+                if _m:
+                    self.current_values[_k] = '#' + _m.group(1).lower()
+        except Exception:
+            pass
 
         # Window management - ensure dialog is on top
         self.transient(parent)
@@ -6371,6 +6871,15 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
         return settings
 
+    def _current_folder(self):
+        """Return the folder of the currently open file, or None."""
+        try:
+            if getattr(self.master, 'current_file', None):
+                return os.path.dirname(
+                    os.path.abspath(self.master.current_file))
+        except Exception:
+            pass
+        return None
 
     def center_window(self):
         """Center the dialog on screen"""
@@ -6451,28 +6960,26 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.create_tooltip(load_theme_btn, "Load a saved custom theme")
 
         # Import Theme button
+        # ------------------------------------------------------------
+        # A single import entry point.  It routes through the complete
+        # importer so both buttons that used to exist are now unified:
+        # the one button captures everything the old "Import Complete
+        # Theme" button captured, plus whatever the basic importer
+        # captured, in a single dialog.
+        # ------------------------------------------------------------
         import_theme_btn = ctk.CTkButton(
             toolbar,
             text="📥 Import Theme",
             command=self.import_theme,
-            width=130,
+            width=150,
             fg_color="#6f42c1",
             hover_color="#5a2d91"
         )
         import_theme_btn.pack(side="left", padx=5)
-        self.create_tooltip(import_theme_btn, "Import a theme from a Beamer TeX file")
-
-        # Complete Import Theme button
-        complete_import_btn = ctk.CTkButton(
-            toolbar,
-            text="📥 Import Complete Theme",
-            command=self.import_complete_theme,
-            width=180,
-            fg_color="#8B008B",
-            hover_color="#6B006B"
-        )
-        complete_import_btn.pack(side="left", padx=5)
-        self.create_tooltip(complete_import_btn, "Import EVERYTHING from a Beamer TeX file (colors, fonts, layouts, etc.)")
+        self.create_tooltip(
+            import_theme_btn,
+            "Import a theme from a Beamer TeX file\n"
+            "(captures colours, fonts, layouts, templates and more)")
 
         # Delete theme button
         delete_theme_btn = ctk.CTkButton(toolbar, text="🗑 Delete Theme", command=self.delete_custom_theme,
@@ -6647,7 +7154,6 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
         # Populate the initial state for the first slot.
         self._on_semantic_slot_selected(self._semantic_slot_defs[0][0])
-
 
         # ============================================================
         # 2b. COLOR DEFINITIONS (PALETTE EDITOR)
@@ -7366,8 +7872,21 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.update_scaling_info()
         self.update_preview()
         self.update_info_label()
-        self._current_theme_name = None
-        self.theme_name_label.configure(text="")
+
+        # Recompute whether the current form still matches a known
+        # theme.  The label tells the user "this is still <Preset X>"
+        # or "this is now a custom configuration".
+        try:
+            match = self._find_matching_theme_name()
+        except Exception:
+            match = None
+
+        if match:
+            self._current_theme_name = match
+            self.theme_name_label.configure(text=f"Based on: {match}")
+        else:
+            self._current_theme_name = None
+            self.theme_name_label.configure(text="Custom (unsaved)")
 
     def update_info_label(self):
         """Update the info label showing what changed"""
@@ -7633,16 +8152,75 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
     # ============================================================================
 
     def get_current_settings(self) -> dict:
-        """Get all current settings as a dictionary"""
+        """Get all current settings as a dictionary."""
+
+        # ------------------------------------------------------------------
+        # Semantic-slot → legacy widget sync.
+        #
+        # The Color Settings group stores its values in self._semantic_slots,
+        # keyed by slot ('bg', 'fg', 'title', 'title_bg').  The rest of the
+        # dialog — and every writer in this file — reads self.bg_color_var,
+        # self.fg_color_var, etc.  Unless the slot values are copied into
+        # those variables first, changes made via the Color Settings group
+        # never reach the saved theme or the live preview.
+        #
+        # Rule: the slot value wins when present and non-empty.  This matches
+        # _render_semantic_setbeamercolor_block(), which already treats the
+        # slot as authoritative.
+        # ------------------------------------------------------------------
+        _slot_to_var = {
+            'bg':       'bg_color_var',
+            'fg':       'fg_color_var',
+            'title':    'title_color_var',
+            'title_bg': 'title_bg_color_var',
+        }
+        for slot_key, var_name in _slot_to_var.items():
+            slot = getattr(self, '_semantic_slots', {}).get(slot_key)
+            var = getattr(self, var_name, None)
+            if slot is None or var is None:
+                continue
+            value = (slot.get('value') or '').strip()
+            if value:
+                try:
+                    var.set(value)
+                except Exception:
+                    pass
+
+        # ------------------------------------------------------------------
+        # FIX: EnhancedThemeStyleDialog never creates bg_color_var,
+        # fg_color_var, title_color_var or title_bg_color_var (the old
+        # colour entries were replaced by the semantic slots).  The loop
+        # above therefore skips every slot (var is None) and the dict
+        # below fell back to its hard-coded defaults, so a saved theme
+        # always contained white / black / white / #2980b9.
+        #
+        # Resolve each colour straight from its slot instead.  Order of
+        # precedence: slot value -> legacy variable (if one exists) ->
+        # the original default.
+        # ------------------------------------------------------------------
+        def _resolved_color(slot_key, var_name, default):
+            slot = getattr(self, '_semantic_slots', {}).get(slot_key)
+            if slot:
+                value = (slot.get('value') or '').strip()
+                if value:
+                    return value
+            var = getattr(self, var_name, None)
+            if var is not None:
+                try:
+                    return var.get()
+                except Exception:
+                    pass
+            return default
+
         base = {
             'theme': self.theme_var.get() if hasattr(self, 'theme_var') else 'Madrid',
             'colortheme': self.colortheme_var.get() if hasattr(self, 'colortheme_var') else 'default',
             'fonttheme': self.fonttheme_var.get() if hasattr(self, 'fonttheme_var') else 'default',
             'aspect': self.aspect_var.get() if hasattr(self, 'aspect_var') else '169',
-            'bg_color': self.bg_color_var.get() if hasattr(self, 'bg_color_var') else 'white',
-            'fg_color': self.fg_color_var.get() if hasattr(self, 'fg_color_var') else 'black',
-            'title_color': self.title_color_var.get() if hasattr(self, 'title_color_var') else 'white',
-            'title_bg_color': self.title_bg_color_var.get() if hasattr(self, 'title_bg_color_var') else '#2980b9',
+            'bg_color': _resolved_color('bg', 'bg_color_var', 'white'),
+            'fg_color': _resolved_color('fg', 'fg_color_var', 'black'),
+            'title_color': _resolved_color('title', 'title_color_var', 'white'),
+            'title_bg_color': _resolved_color('title_bg', 'title_bg_color_var', '#2980b9'),
             'bg_image': self.bg_image_var.get() if hasattr(self, 'bg_image_var') else '',
             'bg_opacity': self.bg_opacity_var.get() if hasattr(self, 'bg_opacity_var') else 0.3,
             'progress': self.progress_var.get() if hasattr(self, 'progress_var') else True,
@@ -7697,8 +8275,16 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         return base
 
     def refresh_theme_list(self):
-        """Refresh the list of saved themes"""
-        self._saved_themes = ThemeManager.list_themes()
+        """Log the current theme count. The Load dialog re-queries
+        ThemeManager directly, so no cache is kept here."""
+        folder = self._current_folder()
+        try:
+            n = len(ThemeManager.list_themes_all(folder=folder))
+        except Exception as exc:
+            print(f"Warning: could not list themes: {exc}")
+            return
+        print(f"  ℹ Theme list refreshed: {n} entr"
+              f"{'y' if n == 1 else 'ies'}")
 
     def apply_preset_theme(self, preset_name):
         """Apply a preset theme"""
@@ -7746,39 +8332,51 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.status_message(f"Applied preset theme: {preset_name}")
 
     def save_custom_theme(self):
-        """Save current settings as a custom theme - with proper file dialog on top"""
+        """Save current settings as a custom theme."""
         from tkinter import simpledialog
         theme_name = simpledialog.askstring(
             "Save Theme",
             "Enter a name for this theme:",
             parent=self,
-            initialvalue=self._current_theme_name or ""
+            initialvalue=self._current_theme_name or "",
         )
+        if not theme_name:
+            return
 
+        theme_name = theme_name.strip()
         if not theme_name:
             return
 
         settings = self.get_current_settings()
         preamble = self.current_preamble
 
+        # Save to the folder store next to the current file when the
+        # file has a folder; otherwise to the IDE-wide store.
+        folder = self._current_folder()
+        scope = 'folder' if folder else 'ide'
+
         try:
-            theme_path = ThemeManager.save_theme(theme_name, settings, preamble)
+            theme_path = ThemeManager.save_theme_scoped(
+                theme_name, settings, preamble,
+                scope=scope, folder=folder,
+                theme_type='custom',
+            )
             self._current_theme_name = theme_name
             self.theme_name_label.configure(text=f"Saved: {theme_name}")
             self.refresh_theme_list()
             WindowManager.show_message(
-                self,
-                "Theme Saved",
+                self, "Theme Saved",
                 f"Theme '{theme_name}' saved successfully!\n\n"
                 f"Location: {theme_path}",
-                "info"
+                "info",
             )
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             WindowManager.show_message(
-                self,
-                "Error",
-                f"Error saving theme:\n{str(e)}",
-                "error"
+                self, "Error",
+                f"Error saving theme:\n{e}",
+                "error",
             )
 
     def _load_theme_and_close(self, dialog, theme_name):
@@ -7844,25 +8442,24 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
         self.status_message(f"Loaded theme: {theme_name}")
 
     def delete_custom_theme(self):
-        """Delete a saved custom theme"""
-        themes = ThemeManager.list_themes()
+        """Delete a saved custom theme (IDE or folder scoped)."""
+        folder = self._current_folder()
+        themes = ThemeManager.list_themes_all(folder=folder)
 
         if not themes:
             WindowManager.show_message(
-                self,
-                "No Themes",
+                self, "No Themes",
                 "No saved themes to delete.",
-                "info"
+                "info",
             )
             return
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("Delete Theme")
-        dialog.geometry("500x400")
+        dialog.geometry("520x420")
         dialog.transient(self)
-        dialog.grab_set()
-        WindowManager.ensure_on_top(dialog, self)
-        WindowManager.center_on_parent(dialog, self)
+        # ... build all widgets on `dialog` here ...
+        self._show_and_grab(dialog)
 
         list_frame = ctk.CTkScrollableFrame(dialog)
         list_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -7871,59 +8468,174 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             theme_frame = ctk.CTkFrame(list_frame)
             theme_frame.pack(fill="x", padx=5, pady=3)
 
-            name_label = ctk.CTkLabel(theme_frame, text=theme['name'], font=("Arial", 13, "bold"))
-            name_label.pack(side="left", padx=10)
+            ctk.CTkLabel(
+                theme_frame,
+                text=f"{theme['name']}  "
+                     f"({theme.get('scope', 'ide')})",
+                font=("Arial", 13, "bold"),
+            ).pack(side="left", padx=10)
 
-            delete_btn = ctk.CTkButton(theme_frame, text="🗑 Delete", width=80,
-                                       fg_color="#dc3545", hover_color="#c82333",
-                                       command=lambda t=theme['name']: self._delete_theme_and_close(dialog, t))
-            delete_btn.pack(side="right", padx=5)
+            ctk.CTkButton(
+                theme_frame, text="🗑 Delete", width=80,
+                fg_color="#dc3545", hover_color="#c82333",
+                command=lambda t=theme['name']:
+                    self._delete_theme_and_close(dialog, t),
+            ).pack(side="right", padx=5)
 
-        cancel_btn = ctk.CTkButton(dialog, text="Cancel", command=dialog.destroy, width=100,
-                                   fg_color="#6c757d", hover_color="#5a6268")
-        cancel_btn.pack(pady=10)
+        ctk.CTkButton(
+            dialog, text="Cancel", command=dialog.destroy, width=100,
+            fg_color="#6c757d", hover_color="#5a6268",
+        ).pack(pady=10)
 
     def _delete_theme_and_close(self, dialog, theme_name):
-        """Delete a theme and close the dialog"""
+        """Delete a theme and close the dialog."""
         if WindowManager.show_message(
-            self,
-            "Confirm Delete",
-            f"Delete theme '{theme_name}'?\n\nThis action cannot be undone.",
-            "yesno"
+            self, "Confirm Delete",
+            f"Delete theme '{theme_name}'?\n\n"
+            "This action cannot be undone.",
+            "yesno",
         ):
-            if ThemeManager.delete_theme(theme_name):
+            folder = self._current_folder()
+            if ThemeManager.delete_theme_anywhere(theme_name,
+                                                  folder=folder):
                 dialog.destroy()
                 self.refresh_theme_list()
                 if self._current_theme_name == theme_name:
                     self._current_theme_name = None
                     self.theme_name_label.configure(text="")
                 self.status_message(f"Deleted theme: {theme_name}")
-                WindowManager.show_message(self, "Deleted", f"Theme '{theme_name}' deleted.", "info")
+                WindowManager.show_message(
+                    self, "Deleted",
+                    f"Theme '{theme_name}' deleted.",
+                    "info",
+                )
             else:
-                WindowManager.show_message(self, "Error", f"Could not delete theme '{theme_name}'.", "error")
+                WindowManager.show_message(
+                    self, "Error",
+                    f"Could not delete theme '{theme_name}'.",
+                    "error",
+                )
 
     # ============================================================================
     # SAFE APPLY SETTINGS
     # ============================================================================
 
     def _apply_settings_safe(self):
-        """Apply settings with proper error handling"""
+        """Apply settings with proper error handling.
+
+        Guards against a half-typed colour value in the Background
+        Color entry (e.g. ``bl``, ``whit``, ``w``) before the Apply
+        pipeline runs, and makes sure a failure inside
+        ``apply_settings()`` is reported exactly once.
+
+        The guard restores the on-disk value rather than the value that
+        was captured when the dialog opened, so a normalisation that
+        happened elsewhere (Presentation Settings, an external editor)
+        is respected.
+        """
         try:
+            # ------------------------------------------------------------
+            # Pre-flight check on the Background Color entry.
+            #
+            # The user may have been mid-typing when Apply was pressed,
+            # leaving a truncated colour token behind.  Restore the
+            # authoritative value from the file, falling back to the
+            # value captured at open time, falling back to 'white'.
+            # ------------------------------------------------------------
             if hasattr(self, 'bg_color_var'):
-                current_bg = self.bg_color_var.get()
-                if current_bg in ['bla', 'bl', 'b', 'wh', 'whi', 'whit']:
-                    self.bg_color_var.set(self.current_values.get('bg_color', 'white'))
+                current_bg = (self.bg_color_var.get() or '').strip()
+
+                # Match any of the truncated prefixes that would
+                # otherwise be emitted as a literal colour name.
+                _truncated_prefixes = (
+                    'bl', 'bla', 'blac', 'black',
+                    'wh', 'whi', 'whit', 'white',
+                    'b', 'w',
+                )
+                _looks_truncated = (
+                    current_bg.lower() in _truncated_prefixes
+                    and current_bg.lower() not in ('black', 'white')
+                )
+
+                if _looks_truncated:
+                    fallback = ''
+
+                    # 1) Authoritative: the on-disk preamble.
+                    try:
+                        if (getattr(self.master, 'current_file', None)
+                                and os.path.exists(self.master.current_file)):
+                            with open(self.master.current_file,
+                                      'r', encoding='utf-8') as f:
+                                _content = f.read()
+                            import re as _re
+                            _m = _re.search(
+                                r'\\setbeamercolor\{background canvas\}'
+                                r'\{bg=([^,}]+)',
+                                _content,
+                            )
+                            if _m:
+                                fallback = _m.group(1).strip()
+                    except Exception:
+                        fallback = ''
+
+                    # 2) Fallback: the value captured when the dialog
+                    #    opened.
+                    if not fallback:
+                        fallback = self.current_values.get(
+                            'bg_color', '') or ''
+
+                    # 3) Final fallback.
+                    if not fallback:
+                        fallback = 'white'
+
+                    self.bg_color_var.set(fallback)
+
+            # ------------------------------------------------------------
+            # Run the real Apply pipeline.
+            # ------------------------------------------------------------
             self.apply_settings()
+
         except Exception as e:
+            # ------------------------------------------------------------
+            # Report the failure exactly once.
+            #
+            # apply_settings() already shows a popup for its own
+            # failures (see its ``except`` block).  Re-showing one
+            # here would produce two stacked dialogs for the same
+            # error.  We therefore always log to the terminal, and
+            # only show a popup when apply_settings() did NOT get far
+            # enough to show one itself.
+            # ------------------------------------------------------------
             import traceback
             traceback.print_exc()
-            WindowManager.show_message(
-                self,
-                "Error",
-                f"Error applying settings:\n{str(e)}\n\n"
-                "Check the terminal for details.",
-                "error"
-            )
+
+            # The flag is set to True at the start of apply_settings()
+            # and cleared to False in both its success and failure
+            # paths.  If it is still True here, apply_settings() itself
+            # never reached its own error handler (e.g. an exception
+            # during dialog construction), so we own the popup.
+            _apply_already_reported = not getattr(
+                self, '_is_applying', False)
+
+            if not _apply_already_reported:
+                try:
+                    self.write(
+                        f"✗ Error applying settings: {e}\n", "red")
+                except Exception:
+                    pass
+                WindowManager.show_message(
+                    self,
+                    "Error",
+                    f"Error applying settings:\n{str(e)}\n\n"
+                    "Check the terminal for details.",
+                    "error",
+                )
+            else:
+                try:
+                    self.write(
+                        f"✗ Error applying settings: {e}\n", "red")
+                except Exception:
+                    pass
 
     def apply_settings(self):
         """Apply settings - persist title-page config and regenerate the file."""
@@ -9007,34 +9719,20 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             return preamble
 
     def import_theme(self):
-            """Open the theme import dialog"""
-            dialog = ThemeImportDialog(self)
-            self.wait_window(dialog)
+        """Import a theme from a Beamer TeX file."""
+        dialog = CompleteThemeImportDialog(self)
+        self.wait_window(dialog)
 
-            if dialog.result:
-                self.refresh_theme_list()
-                if WindowManager.show_message(
-                    self,
-                    "Theme Imported",
-                    f"Theme '{dialog.result['name']}' imported successfully!\n\n"
-                    "Would you like to apply it now?",
-                    "yesno"
-                ):
-                    theme_name = dialog.result['name']
-                    theme_data = ThemeManager.load_theme(theme_name)
-                    if theme_data:
-                        settings = theme_data.get('settings', {})
-                        for key in ['theme', 'colortheme', 'fonttheme', 'aspect', 'bg_color', 'bg_opacity',
-                                   'progress', 'nav', 'notes_mode', 'font_size', 'line_spacing',
-                                   'table_width', 'image_width', 'content_margin', 'show_footer']:
-                            if key in settings:
-                                var_name = f"{key}_var"
-                                if hasattr(self, var_name):
-                                    getattr(self, var_name).set(settings[key])
-                        self._current_theme_name = theme_name
-                        self.theme_name_label.configure(text=f"Imported: {theme_name}")
-                        self.update_preview()
-                        self.status_message(f"Applied imported theme: {theme_name}")
+        if dialog.result:
+            self.refresh_theme_list()
+            if WindowManager.show_message(
+                self,
+                "Theme Imported",
+                f"Theme '{dialog.result['name']}' imported successfully!\n\n"
+                "Would you like to apply it now?",
+                "yesno",
+            ):
+                self.apply_loaded_theme(dialog.result['name'])
 
     def import_complete_theme(self):
             """Open the complete theme import dialog"""
@@ -9086,252 +9784,374 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
                         self.status_message(f"Applied imported theme: {theme_name}")
 
     def apply_loaded_theme(self, theme_name):
-            """Apply a loaded theme with priority to the theme settings"""
-            theme_data = ThemeManager.load_theme(theme_name)
-            if not theme_data:
-                return False
+        """Apply a loaded theme with priority to the theme settings."""
+        folder = self._current_folder()
+        theme_data = ThemeManager.load_theme_anywhere(theme_name,
+                                                      folder=folder)
+        if not theme_data:
+            WindowManager.show_message(
+                self, "Theme Not Found",
+                f"Theme '{theme_name}' not found.",
+                "error",
+            )
+            return False
 
-            try:
-                self.sync_ui_with_theme(theme_data)
-                self._current_theme_name = theme_name
-                self.theme_name_label.configure(text=f"Loaded: {theme_name}")
-                self.update_preview()
-                self.status_message(f"Applied theme: {theme_name}")
-                return True
-            except Exception as e:
-                WindowManager.show_message(self, "Error", f"Error applying theme:\n{str(e)}", "error")
-                return False
+        try:
+            self.sync_ui_with_theme(theme_data)
+            self._current_theme_name = theme_name
+            self.theme_name_label.configure(text=f"Loaded: {theme_name}")
+            self.update_preview()
+            self.status_message(f"Applied theme: {theme_name}")
+            return True
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            WindowManager.show_message(
+                self, "Error",
+                f"Error applying theme:\n{e}",
+                "error",
+            )
+            return False
 
     def load_custom_theme(self):
-            """Load a saved custom theme with priority to theme settings"""
-            themes = ThemeManager.list_themes()
-            if not themes:
-                WindowManager.show_message(
-                    self,
-                    "No Themes",
-                    "No saved themes found.\n\n"
-                    "Save a theme first using 'Save Theme' or 'Import Theme'.",
-                    "info"
-                )
-                return
+        """Load a saved custom theme."""
+        # Refresh right before building the list so a theme saved by
+        # another dialog in the meantime is visible.
+        try:
+            self.refresh_theme_list()
+        except Exception as exc:
+            print(f"Warning: could not refresh theme list: {exc}")
 
-            dialog = ctk.CTkToplevel(self)
-            dialog.title("Load Theme")
-            dialog.geometry("600x450")
-            dialog.transient(self)
-            dialog.grab_set()
-            WindowManager.ensure_on_top(dialog, self)
-            WindowManager.center_on_parent(dialog, self)
+        folder = self._current_folder()
+        themes = ThemeManager.list_themes_all(folder=folder)
 
-            header_frame = ctk.CTkFrame(dialog)
-            header_frame.pack(fill="x", padx=10, pady=10)
+        if not themes:
+            WindowManager.show_message(
+                self, "No Themes",
+                "No saved themes found.\n\n"
+                "Save a theme first using 'Save Theme' or 'Import Theme'.",
+                "info",
+            )
+            return
 
-            ctk.CTkLabel(header_frame, text="Select Theme to Load", font=("Arial", 16, "bold")).pack(side="left", padx=10)
-            ctk.CTkLabel(header_frame, text="Theme settings take priority, undefined elements preserved",
-                        font=("Arial", 10), text_color="#4ECDC4").pack(side="left", padx=20)
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Load Theme")
+        dialog.geometry("620x470")
+        dialog.transient(self)
 
-            list_frame = ctk.CTkScrollableFrame(dialog)
-            list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # Build the widgets FIRST.  Only after that is it meaningful
+        # to raise the window, deiconify it, and grab.
+        header_frame = ctk.CTkFrame(dialog)
+        header_frame.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(
+            header_frame,
+            text="Select Theme to Load",
+            font=("Arial", 16, "bold"),
+        ).pack(side="left", padx=10)
+        ctk.CTkLabel(
+            header_frame,
+            text="Theme settings take priority, undefined elements preserved",
+            font=("Arial", 10),
+            text_color="#4ECDC4",
+        ).pack(side="left", padx=20)
 
-            for theme in themes:
-                theme_frame = ctk.CTkFrame(list_frame)
-                theme_frame.pack(fill="x", padx=5, pady=3)
+        list_frame = ctk.CTkScrollableFrame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-                name_label = ctk.CTkLabel(theme_frame, text=f"📁 {theme['name']}", font=("Arial", 14, "bold"))
-                name_label.pack(side="left", padx=10)
+        for theme in themes:
+            theme_frame = ctk.CTkFrame(list_frame)
+            theme_frame.pack(fill="x", padx=5, pady=3)
 
-                theme_type = "Imported" if 'imported' in str(theme) else "Custom"
-                type_label = ctk.CTkLabel(theme_frame, text=theme_type, font=("Arial", 10), text_color="#888888")
-                type_label.pack(side="left", padx=5)
+            scope_tag = theme.get('scope', 'ide')
+            type_tag = theme.get('type', 'custom')
+            name_label = ctk.CTkLabel(
+                theme_frame,
+                text=f"📁 {theme['name']}",
+                font=("Arial", 14, "bold"),
+            )
+            name_label.pack(side="left", padx=10)
 
-                created = theme.get('created', 'Unknown')
-                if created != 'Unknown':
-                    try:
-                        dt = datetime.fromisoformat(created)
-                        created_str = dt.strftime("%Y-%m-%d %H:%M")
-                    except:
-                        created_str = created
-                else:
-                    created_str = "Unknown"
+            meta = f"{type_tag} • {scope_tag}"
+            ctk.CTkLabel(
+                theme_frame, text=meta,
+                font=("Arial", 10), text_color="#888888",
+            ).pack(side="left", padx=5)
 
-                date_label = ctk.CTkLabel(theme_frame, text=f"Created: {created_str}", font=("Arial", 10), text_color="#888888")
-                date_label.pack(side="right", padx=10)
+            created = theme.get('created', 'Unknown')
+            try:
+                dt = datetime.fromisoformat(created)
+                created_str = dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                created_str = created
+            ctk.CTkLabel(
+                theme_frame, text=f"Created: {created_str}",
+                font=("Arial", 10), text_color="#888888",
+            ).pack(side="right", padx=10)
 
-                load_btn = ctk.CTkButton(theme_frame, text="Apply Theme", width=100,
-                                        fg_color="#28a745", hover_color="#218838",
-                                        command=lambda t=theme['name']: self._apply_theme_and_close(dialog, t))
-                load_btn.pack(side="right", padx=5)
+            ctk.CTkButton(
+                theme_frame, text="Apply Theme", width=100,
+                fg_color="#28a745", hover_color="#218838",
+                command=lambda t=theme['name']:
+                    self._apply_theme_and_close(dialog, t),
+            ).pack(side="right", padx=5)
 
-                preview_btn = ctk.CTkButton(theme_frame, text="Preview", width=80,
-                                           fg_color="#17a2b8", hover_color="#138496",
-                                           command=lambda t=theme['name']: self._preview_theme(t))
-                preview_btn.pack(side="right", padx=5)
+            ctk.CTkButton(
+                theme_frame, text="Preview", width=80,
+                fg_color="#17a2b8", hover_color="#138496",
+                command=lambda t=theme['name']: self._preview_theme(t),
+            ).pack(side="right", padx=5)
 
-            cancel_btn = ctk.CTkButton(dialog, text="Cancel", command=dialog.destroy, width=100,
-                                       fg_color="#dc3545", hover_color="#c82333")
-            cancel_btn.pack(pady=10)
+        ctk.CTkButton(
+            dialog, text="Cancel", command=dialog.destroy, width=100,
+            fg_color="#dc3545", hover_color="#c82333",
+        ).pack(pady=10)
+
+        # --- safe mapping ---
+        try:
+            dialog.update_idletasks()
+            dialog.deiconify()
+            dialog.lift()
+            try:
+                dialog.wait_visibility()
+            except Exception:
+                pass
+            _show_and_grab(dialog, parent=self)
+        except Exception as exc:
+            print(f"Warning: could not finalize Load Theme dialog: {exc}")
 
     def _apply_theme_and_close(self, dialog, theme_name):
-            """Apply the theme and close the dialog"""
-            if self.apply_loaded_theme(theme_name):
-                dialog.destroy()
-                WindowManager.show_message(self, "Theme Applied", f"Theme '{theme_name}' applied successfully!", "info")
+        """Apply a theme and close the Load dialog."""
+        if self.apply_loaded_theme(theme_name):
+            dialog.destroy()
+            WindowManager.show_message(
+                self, "Theme Applied",
+                f"Theme '{theme_name}' applied successfully!",
+                "info",
+            )
 
     def _preview_theme(self, theme_name):
-            """Preview a theme without applying it"""
-            theme_data = ThemeManager.load_theme(theme_name)
-            if not theme_data:
-                return
+        """Preview a theme without applying it."""
+        folder = self._current_folder()
+        theme_data = ThemeManager.load_theme_anywhere(
+            theme_name, folder=folder)
+        if not theme_data:
+            WindowManager.show_message(
+                self, "Theme Not Found",
+                f"Could not load theme '{theme_name}'.",
+                "error",
+            )
+            return
 
-            preview_dialog = ctk.CTkToplevel(self)
-            preview_dialog.title(f"Theme Preview: {theme_name}")
-            preview_dialog.geometry("700x500")
-            preview_dialog.transient(self)
-            preview_dialog.grab_set()
-            WindowManager.ensure_on_top(preview_dialog, self)
-            WindowManager.center_on_parent(preview_dialog, self)
+        settings = dict(theme_data.get('settings') or {})
+        if not settings:
+            settings = ThemeImportDialog._theme_to_settings(theme_data)
 
-            main_frame = ctk.CTkFrame(preview_dialog)
-            main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # Human-readable feature list — one line per attribute that is set.
+        _LINES = (
+            ("Theme",           'theme'),
+            ("Colour theme",    'colortheme'),
+            ("Font theme",      'fonttheme'),
+            ("Aspect ratio",    'aspect'),
+            ("Background",      'bg_color'),
+            ("Text colour",     'fg_color'),
+            ("Title colour",    'title_color'),
+            ("Title bg",        'title_bg_color'),
+            ("Background image",'bg_image'),
+            ("BG image opacity",'bg_opacity'),
+            ("Frame bg image",  'frame_bg_image'),
+            ("Frame bg opacity",'frame_bg_opacity'),
+            ("Font size",       'font_size'),
+            ("Line spacing",    'line_spacing'),
+            ("Table width",     'table_width'),
+            ("Image width",     'image_width'),
+            ("Content margin",  'content_margin'),
+            ("Progress bar",    'progress'),
+            ("Navigation",      'nav'),
+            ("Notes mode",      'notes_mode'),
+            ("Tight spacing",   'tight_spacing'),
+            ("Footer",          'show_footer'),
+            ("Footer logo",     'footer_logo'),
+            ("Footer logo colour",'footer_logo_color'),
+        )
 
-            info_frame = ctk.CTkFrame(main_frame)
-            info_frame.pack(fill="x", pady=5)
+        lines = []
+        for label, key in _LINES:
+            if key not in settings:
+                continue
+            value = settings[key]
+            if value in (None, '', False) and key not in (
+                    'progress', 'nav', 'show_footer', 'tight_spacing'):
+                continue
+            if isinstance(value, float):
+                value = f"{value:g}"
+            lines.append(f"  • {label}: {value}")
 
-            ctk.CTkLabel(info_frame, text=f"Theme: {theme_name}", font=("Arial", 16, "bold")).pack(anchor="w", padx=10, pady=5)
-            source = theme_data.get('source', 'Unknown')
-            ctk.CTkLabel(info_frame, text=f"Source: {source}", font=("Arial", 12)).pack(anchor="w", padx=10)
+        body = "\n".join(lines) or "  (no explicit settings)"
 
-            categories = theme_data.get('categories', {})
-            total_items = 0
-            for cat_name, cat_data in categories.items():
-                if cat_data:
-                    if isinstance(cat_data, list):
-                        total_items += len(cat_data)
-                    elif isinstance(cat_data, dict):
-                        total_items += len(cat_data)
+        preview_dialog = ctk.CTkToplevel(self)
+        preview_dialog.title(f"Theme Preview: {theme_name}")
+        preview_dialog.geometry("700x500")
+        preview_dialog.transient(self)
+        # NOTE: no grab_set() here — the window is not yet mapped and
+        # Tk raises "grab failed: window not viewable".  All visibility
+        # and grab handling is delegated to _show_and_grab() below.
 
-            ctk.CTkLabel(info_frame, text=f"Total items: {total_items}", font=("Arial", 12), text_color="#4ECDC4").pack(anchor="w", padx=10, pady=5)
+        main_frame = ctk.CTkFrame(preview_dialog)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-            preview_frame = ctk.CTkFrame(main_frame)
-            preview_frame.pack(fill="both", expand=True, pady=5)
+        info_frame = ctk.CTkFrame(main_frame)
+        info_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(
+            info_frame, text=f"Theme: {theme_name}",
+            font=("Arial", 16, "bold"),
+        ).pack(anchor="w", padx=10, pady=5)
+        ctk.CTkLabel(
+            info_frame,
+            text=f"Type: {theme_data.get('type', 'custom')} • "
+                 f"Scope: {theme_data.get('scope', 'ide')} • "
+                 f"Source: {theme_data.get('source', 'Unknown')}",
+            font=("Arial", 11), text_color="#4ECDC4",
+        ).pack(anchor="w", padx=10, pady=(0, 6))
 
-            preview_text = ctk.CTkTextbox(preview_frame, font=("Courier", 10))
-            preview_text.pack(fill="both", expand=True, padx=5, pady=5)
+        preview_frame = ctk.CTkFrame(main_frame)
+        preview_frame.pack(fill="both", expand=True, pady=5)
+        preview_text = ctk.CTkTextbox(preview_frame, font=("Courier", 11))
+        preview_text.pack(fill="both", expand=True, padx=5, pady=5)
+        preview_text.insert("1.0", body)
+        preview_text.configure(state="disabled")
 
-            if 'summary' in theme_data:
-                preview_text.insert("1.0", theme_data['summary'])
-            else:
-                importer = CompleteThemeImporter()
-                summary = importer._generate_summary()
-                preview_text.insert("1.0", summary)
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", pady=10)
+        ctk.CTkButton(
+            button_frame, text="Apply Theme",
+            command=lambda: self._apply_theme_and_close(
+                preview_dialog, theme_name),
+            width=120, fg_color="#28a745", hover_color="#218838",
+        ).pack(side="left", padx=5)
+        ctk.CTkButton(
+            button_frame, text="Close",
+            command=preview_dialog.destroy, width=100,
+            fg_color="#dc3545", hover_color="#c82333",
+        ).pack(side="right", padx=5)
 
-            preview_text.configure(state="disabled")
-
-            button_frame = ctk.CTkFrame(main_frame)
-            button_frame.pack(fill="x", pady=10)
-
-            apply_btn = ctk.CTkButton(button_frame, text="Apply Theme",
-                                     command=lambda: self._apply_theme_and_close(preview_dialog, theme_name),
-                                     width=120, fg_color="#28a745", hover_color="#218838")
-            apply_btn.pack(side="left", padx=5)
-
-            close_btn = ctk.CTkButton(button_frame, text="Close", command=preview_dialog.destroy, width=100,
-                                      fg_color="#dc3545", hover_color="#c82333")
-            close_btn.pack(side="right", padx=5)
+        # Show the dialog and attempt a grab safely.  This handles
+        # deiconify, wait_visibility, lift, focus, and a guarded grab_set.
+        # A refused grab only disables modality; the dialog remains usable.
+        _show_and_grab(preview_dialog, parent=self)
 
     def sync_ui_with_theme(self, theme_data):
-            """Synchronize all UI controls with the loaded theme data."""
-            if not theme_data:
-                return
+        """Apply loaded theme data to every UI control on this dialog.
 
-            categories = theme_data.get('categories', {})
+        Themes saved through ``save_custom_theme`` carry a ``settings``
+        dict.  Themes produced by the importers may carry a ``categories``
+        dict instead.  Both forms are normalised here to ``settings`` so
+        a single table drives the update.
+        """
+        if not theme_data:
+            return
 
-            if 'themes' in categories and categories['themes']:
-                for theme in categories['themes']:
-                    if 'name' in theme:
-                        self.theme_var.set(theme['name'])
-                        break
+        settings = dict(theme_data.get('settings') or {})
+        if not settings:
+            settings = ThemeImportDialog._theme_to_settings(theme_data)
 
-            if 'colorthemes' in categories and categories['colorthemes']:
-                for theme in categories['colorthemes']:
-                    if 'name' in theme:
-                        self.colortheme_var.set(theme['name'])
-                        break
+        # (control attribute, settings key, coercion)
+        _BINDINGS = (
+            ('theme_var',              'theme',            str),
+            ('colortheme_var',         'colortheme',       str),
+            ('fonttheme_var',          'fonttheme',        str),
+            ('aspect_var',             'aspect',           str),
+            ('bg_color_var',           'bg_color',         str),
+            ('fg_color_var',           'fg_color',         str),
+            ('title_color_var',        'title_color',      str),
+            ('title_bg_color_var',     'title_bg_color',   str),
+            ('bg_image_var',           'bg_image',         str),
+            ('bg_opacity_var',         'bg_opacity',       float),
+            ('progress_var',           'progress',         bool),
+            ('nav_var',                'nav',              bool),
+            ('notes_mode_var',         'notes_mode',       str),
+            ('tight_spacing_var',      'tight_spacing',    bool),
+            ('show_footer_var',        'show_footer',      bool),
+            ('footer_logo_var',        'footer_logo',      str),
+            ('footer_logo_color_var',  'footer_logo_color',str),
+            ('frame_bg_image_var',     'frame_bg_image',   str),
+            ('frame_bg_opacity_var',   'frame_bg_opacity', float),
+            ('tp_enabled_var',         'tp_enabled',       bool),
+        )
 
-            if 'fontthemes' in categories and categories['fontthemes']:
-                for theme in categories['fontthemes']:
-                    if 'name' in theme:
-                        self.fonttheme_var.set(theme['name'])
-                        break
-
-            if 'documentclass' in categories:
-                doc = categories['documentclass']
-                if isinstance(doc, dict):
-                    if 'aspect' in doc:
-                        self.aspect_var.set(doc['aspect'])
-                    if 'font_size' in doc:
-                        self.font_size_var.set(f"{doc['font_size']}pt")
-
-            bg_color = None
-            if 'beamercolors' in categories:
-                for color in categories['beamercolors']:
-                    if isinstance(color, dict) and color.get('name') in ['background canvas', 'background']:
-                        import re
-                        match = re.search(r'bg=([^,}]+)', color.get('settings', ''))
-                        if match:
-                            bg_color = match.group(1)
-                            break
-
-            if not bg_color and 'background' in categories:
-                for bg in categories['background']:
-                    if isinstance(bg, dict) and bg.get('type') == 'background_color':
-                        import re
-                        match = re.search(r'bg=([^,}]+)', bg.get('settings', ''))
-                        if match:
-                            bg_color = match.group(1)
-                            break
-
-            if bg_color:
-                self.bg_color_var.set(bg_color)
-
-            if 'progress_bar' in categories and categories['progress_bar']:
-                self.progress_var.set(True)
+        for attr, key, coerce in _BINDINGS:
+            if key not in settings:
+                continue
+            var = getattr(self, attr, None)
+            if var is None:
+                continue
+            try:
+                value = coerce(settings[key])
+            except (TypeError, ValueError):
+                continue
+            # Formatting-only controls need unit suffixes.
+            if attr == 'font_size_var':
+                var.set(f"{int(value)}pt")
+            elif attr == 'line_spacing_var':
+                var.set(f"{float(value):.1f}")
+            elif attr in ('table_width_var', 'image_width_var', 'margin_var'):
+                var.set(f"{int(float(value) * 100)}%")
             else:
-                if 'beamertemplates' in categories:
-                    for template in categories['beamertemplates']:
-                        if isinstance(template, dict) and template.get('name') == 'frametitle':
-                            if 'progressbar' in template.get('content', ''):
-                                self.progress_var.set(True)
-                                break
+                var.set(value)
 
-            if 'navigation' in categories:
-                for nav in categories['navigation']:
-                    if isinstance(nav, dict) and nav.get('type') == 'navigation_symbols':
-                        if nav.get('content') == 'hidden' or nav.get('content') == '':
-                            self.nav_var.set(False)
-                        else:
-                            self.nav_var.set(True)
-                        break
+        # Percentage-based controls need the unit conversion pass.
+        for attr, key in (('font_size_var', 'font_size'),
+                          ('line_spacing_var', 'line_spacing'),
+                          ('table_width_var', 'table_width'),
+                          ('image_width_var', 'image_width'),
+                          ('margin_var', 'content_margin')):
+            if key not in settings:
+                continue
+            var = getattr(self, attr, None)
+            if var is None:
+                continue
+            try:
+                v = float(settings[key])
+            except (TypeError, ValueError):
+                continue
+            if attr == 'font_size_var':
+                var.set(f"{int(v)}pt")
+            elif attr == 'line_spacing_var':
+                var.set(f"{v:.1f}")
+            else:
+                var.set(f"{int(v * 100)}%")
 
-            # Extract logo and logo color
-            if 'logo' in categories and categories['logo']:
-                for logo in categories['logo']:
-                    if isinstance(logo, dict):
-                        logo_content = logo.get('content', '')
-                        if logo_content:
-                            self.footer_logo_var.set(logo_content)
-                            color_match = re.search(r'\\textcolor\{([^}]+)\}', logo_content)
-                            if color_match:
-                                self.footer_logo_color_var.set(color_match.group(1))
-                            break
+        # ------------------------------------------------------------
+        # Colours live in the semantic slots, not in bg_color_var & co.
+        # (those variables do not exist in this dialog), so the binding
+        # loop above skips them.  Push them into the slots here, or
+        # applying a saved theme changes nothing and get_changes()
+        # reports "No settings were changed".
+        # ------------------------------------------------------------
+        _slots = getattr(self, '_semantic_slots', None)
+        if _slots:
+            for _slot_key, _setting_key in (('bg', 'bg_color'),
+                                            ('fg', 'fg_color'),
+                                            ('title', 'title_color'),
+                                            ('title_bg', 'title_bg_color')):
+                if _slot_key not in _slots or _setting_key not in settings:
+                    continue
+                _val = str(settings[_setting_key] or '').strip()
+                if _val:
+                    _slots[_slot_key]['value'] = _val
+            try:
+                self._on_semantic_slot_selected(self._semantic_slot_var.get())
+            except Exception:
+                pass
 
-            if 'raw_preamble' in theme_data and theme_data['raw_preamble']:
-                self.current_preamble = theme_data['raw_preamble']
-            elif 'preamble' in theme_data and theme_data['preamble']:
-                self.current_preamble = theme_data['preamble']
+        # Adopt a preamble if the theme carried one.
+        preamble = (theme_data.get('preamble')
+                    or theme_data.get('raw_preamble')
+                    or '')
+        if preamble:
+            self.current_preamble = preamble
 
-            self.update_preview()
-            self.update_info_label()
+        self.update_preview()
+        self.update_info_label()
 
     # ========== VISUAL DASHBOARD SETUP ==========
 
@@ -10030,14 +10850,9 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
 
     def _render_semantic_setbeamercolor_block(self):
         r"""
-        Return the \setbeamercolor lines that reference the semantic
-        slot names, but only for slots whose value changed since the
-        dialog was opened.
-
-        Emitting a line for an untouched slot would overwrite whatever
-        the Front Title Page Designer (or the loaded file) had placed
-        there, which is what resets the title-page appearance on the
-        next open.
+        Return the \setbeamercolor lines for semantic slots whose value
+        changed since the dialog opened.  Untouched slots are left to
+        the file's existing definition.
         """
         if not getattr(self, '_semantic_slots', None):
             return ''
@@ -10054,48 +10869,111 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             slot = self._semantic_slots[key]
             new_val = (slot.get('value') or '').strip()
             old_val = (self.current_values.get(
-                _slot_key_to_setting.get(key, ''), ''
-            ) or '').strip()
+                _slot_key_to_setting.get(key, ''), '') or '').strip()
             if new_val == old_val:
-                # Slot untouched: preserve whatever is in the file.
                 continue
             lines.append(tmpl % slot['name'])
         return ('\n'.join(lines) + '\n') if lines else ''
 
-    def _inject_palette_block(self, preamble_text):
+    def _semantic_slot_is_changed(self, key):
+        """True when a semantic slot differs from the value read from the file."""
+        _slot_key_to_setting = {
+            'bg': 'bg_color', 'fg': 'fg_color',
+            'title': 'title_color', 'title_bg': 'title_bg_color',
+        }
+        slot = (getattr(self, '_semantic_slots', None) or {}).get(key)
+        if not slot:
+            return False
+        new_val = (slot.get('value') or '').strip()
+        old_val = (self.current_values.get(
+            _slot_key_to_setting.get(key, ''), '') or '').strip()
+        return new_val != old_val
+
+    def _inject_palette_block(self, preamble_text: str) -> str:
         r"""
-        Remove any existing palette block and semantic-slot definitions
-        and re-emit them.  Also re-emit the corresponding
-        \setbeamercolor lines.  Idempotent.
+        Re-emit the colour palette block plus the semantic colour slots.
+
+        * The marked palette block is removed and re-emitted.
+        * The four \definecolor{bsg...} lines are removed and re-emitted
+          for every slot whose value is a #RRGGBB hex.
+        * \setbeamercolor lines are rewritten ONLY for targets whose slot
+          changed.  Any other key already present on that target line
+          (e.g. the bg= half of a frametitle line) is preserved, and
+          targets whose slots did not change are left untouched.
+        * A slot holding a colour name (e.g. 'red') is referenced by that
+          name directly; only hex values go through \definecolor.
+
+        (This method used to be defined twice in this class.  Python
+        keeps the last definition, so the palette-only copy silently
+        replaced this one and slot changes never reached the file.)
+
+        Idempotent: a repeated call produces the same output.
         """
         import re as _re
 
         text = self._palette_block_pattern().sub('', preamble_text)
 
-        # Remove any previous semantic-slot \definecolor and
-        # \setbeamercolor lines, so that re-saving does not duplicate
-        # them.
-        for _display, key, _tmpl in self._semantic_slot_defs:
-            name = self._semantic_slots[key]['name']
-            text = _re.sub(
-                r'\\definecolor\{' + _re.escape(name)
-                + r'\}\{[^}]+\}\{[^}]+\}', '', text)
-        for _display, key, tmpl in self._semantic_slot_defs:
-            name = self._semantic_slots[key]['name']
-            # Match the corresponding \setbeamercolor line by its
-            # argument to the surrounding braces, so we do not
-            # accidentally remove other \setbeamercolor lines.
-            head = tmpl.split('%s')[0]
-            text = _re.sub(
-                _re.escape(head) + r'[^}]*\}', '', text)
+        slots = getattr(self, '_semantic_slots', None) or {}
 
-        # Collapse blank-line runs left by the removals.
+        def _is_hex(v):
+            return bool(_re.fullmatch(r'#[0-9a-fA-F]{6}', v or ''))
+
+        def _ref(key):
+            slot = slots[key]
+            value = (slot.get('value') or '').strip()
+            return slot['name'] if _is_hex(value) else value
+
+        # Remove previous semantic \definecolor lines (re-emitted below).
+        for key in slots:
+            name = slots[key]['name']
+            text = _re.sub(
+                r'[ \t]*\\definecolor\{' + _re.escape(name)
+                + r'\}\{[^}]+\}\{[^}]+\}[ \t]*\n?', '', text)
+
+        # target -> [(beamer key, slot key)], fg listed before bg so the
+        # extractor's r'frametitle\}\{fg=' pattern keeps matching.
+        _targets = (
+            ('background canvas', (('bg', 'bg'),)),
+            ('normal text',       (('fg', 'fg'),)),
+            ('frametitle',        (('fg', 'title'), ('bg', 'title_bg'))),
+        )
+
+        use_lines = []
+        for target, pairs in _targets:
+            changed = {bk: sk for bk, sk in pairs
+                       if sk in slots and self._semantic_slot_is_changed(sk)
+                       and (slots[sk].get('value') or '').strip()}
+            if not changed:
+                continue  # leave the file's existing line alone
+
+            line_re = _re.compile(
+                r'[ \t]*\\setbeamercolor\{' + _re.escape(target)
+                + r'\}\{([^{}]*)\}[ \t]*\n?')
+
+            # Keep whatever keys are already on that target.
+            existing = {}
+            for m in line_re.finditer(text):
+                for part in m.group(1).split(','):
+                    if '=' in part:
+                        k, v = part.split('=', 1)
+                        existing[k.strip()] = v.strip()
+            text = line_re.sub('', text)
+
+            for bk, sk in changed.items():
+                existing[bk] = _ref(sk)
+
+            ordered = [k for k in ('fg', 'bg') if k in existing]
+            ordered += [k for k in existing if k not in ('fg', 'bg')]
+            use_lines.append(
+                f"\\setbeamercolor{{{target}}}{{"
+                + ','.join(f"{k}={existing[k]}" for k in ordered) + "}")
+
         text = _re.sub(r'\n{3,}', '\n\n', text)
 
-        # Compose the new blocks.
+        # ----- emit the new blocks -----
         palette_block = self._render_palette_block()
         semantic_defs = self._render_semantic_color_block()
-        semantic_uses = self._render_semantic_setbeamercolor_block()
+        semantic_uses = ('\n'.join(use_lines) + '\n') if use_lines else ''
 
         combined = ''
         if palette_block:
@@ -10104,35 +10982,15 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             combined += semantic_defs + '\n'
         if semantic_uses:
             combined += semantic_uses + '\n'
-
         if not combined:
             return text
 
-        # Insert immediately before \begin{document}.
         anchor = _re.search(r'\\begin\{document\}', text)
         if anchor:
             insert_at = anchor.start()
             prefix = text[:insert_at].rstrip()
             return prefix + '\n\n' + combined + '\n' + text[insert_at:]
         return text.rstrip() + '\n\n' + combined + '\n'
-
-    def _inject_palette_block(self, preamble_text: str) -> str:
-        r"""
-        Remove any existing palette block and insert the current one
-        immediately before \begin{document}.
-        """
-        import re
-        text = self._palette_block_pattern().sub('', preamble_text)
-        block = self._render_palette_block()
-        if not block:
-            return text
-
-        anchor = re.search(r'\\begin\{document\}', text)
-        if anchor:
-            insert_at = anchor.start()
-            prefix = text[:insert_at].rstrip()
-            return prefix + '\n\n' + block + '\n' + text[insert_at:]
-        return text.rstrip() + '\n\n' + block + '\n'
 
     @staticmethod
     def _semantic_slot_default_name(slot_key):
@@ -10196,6 +11054,76 @@ class EnhancedThemeStyleDialog(ctk.CTkToplevel):
             except Exception:
                 pass
         print(text)
+
+    def _find_matching_theme_name(self):
+        """
+        Return the name of the preset or saved theme that the current
+        form state still matches, or None if the user has drifted away
+        from every known theme.
+
+        Only fields that define the *appearance* of a theme are
+        compared.  Fields that are document-scoped (title, author,
+        logo path, background image path, footer settings) are not
+        part of the signature, because they describe the current file,
+        not the theme.
+        """
+        # Fields that define the "shape" of a theme.  Anything not in
+        # this list is considered document-scoped and is ignored for
+        # the purpose of theme matching.
+        SIGNATURE_KEYS = (
+            'theme', 'colortheme', 'fonttheme', 'aspect',
+            'bg_color', 'fg_color', 'title_color', 'title_bg_color',
+            'font_size', 'line_spacing',
+            'table_width', 'image_width', 'content_margin',
+            'progress', 'nav', 'notes_mode', 'tight_spacing',
+        )
+
+        try:
+            current = self.get_current_settings()
+        except Exception:
+            return None
+
+        # Normalise a couple of fields that are stored as ints/floats
+        # in some places and strings in others.
+        def _norm(v):
+            if isinstance(v, float):
+                return round(v, 3)
+            if isinstance(v, int):
+                return v
+            if isinstance(v, str):
+                return v.strip()
+            return v
+
+        def _signature(settings):
+            return tuple(
+                (k, _norm(settings.get(k)))
+                for k in SIGNATURE_KEYS
+                if k in settings
+            )
+
+        target = _signature(current)
+
+        # 1) Check every built-in preset.
+        for preset_name, preset_settings in PresetThemes.get_presets().items():
+            if _signature(preset_settings) == target:
+                return preset_name
+
+        # 2) Check every saved theme (both user-saved and imported).
+        try:
+            for entry in ThemeManager.list_themes():
+                name = entry.get('name', '')
+                if not name:
+                    continue
+                data = ThemeManager.load_theme(name)
+                if not data:
+                    continue
+                settings = data.get('settings', {}) or {}
+                if _signature(settings) == target:
+                    return name
+        except Exception as exc:
+            print(f"  ⚠ Could not scan saved themes: {exc}")
+
+        return None
 
 class PreambleConflictResolver:
     """Handle conflicts when merging preambles with user choice"""
