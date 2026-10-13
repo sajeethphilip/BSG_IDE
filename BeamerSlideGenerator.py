@@ -39,6 +39,104 @@ from PIL import Image
 # ============================================================
 # TIKZ FIX FUNCTIONS
 # ============================================================
+# ============================================================
+# TIKZ FIX FUNCTIONS
+# ============================================================
+
+# ============================================================
+# TIKZ PROTECTION
+# ------------------------------------------------------------
+# Every text-processing pass in this module (and in BSG_IDE.py)
+# must run on a string whose TikZ bodies have been replaced by
+# opaque placeholders.  The pair below performs that substitution.
+#
+# The guard is deliberately the *only* TikZ-aware mechanism used
+# during sanitisation.  The per-node "fix" helpers exist for the
+# TeX export path (they operate on a picture that is already
+# known to be well-formed), but no destructive pass may ever see
+# a raw TikZ body.  This removes the entire class of bugs in
+# which an empty {} group, a \\\\ row separator, a \\% comment, or
+# a \\& column separator inside a node label is mistaken for an
+# ordinary LaTeX construct and rewritten.
+# ============================================================
+
+_TIKZ_PROTECT_ENVS = (
+    'tikzpicture',
+    'pgfpicture',
+    'scope',
+    'axis',
+    'semilogyaxis',
+    'semilogxaxis',
+    'loglogaxis',
+    'groupplot',
+)
+
+_TIKZ_PROTECT_BEGIN_RE = re.compile(r'\\begin\s*\{([^}]+)\}')
+_TIKZ_PROTECT_END_RE = re.compile(r'\\end\s*\{([^}]+)\}')
+
+
+_TIKZ_PROTECT_COUNTER = [0]
+
+def protect_tikz_content(text):
+    r"""Return ``(protected_text, blocks)``."""
+    if not text:
+        return text, []
+
+    blocks = []
+    out = []
+    i = 0
+    n = len(text)
+
+    while i < n:
+        m = _TIKZ_PROTECT_BEGIN_RE.search(text, i)
+        if not m or m.group(1).strip() not in _TIKZ_PROTECT_ENVS:
+            out.append(text[i:])
+            break
+
+        env_name = m.group(1).strip()
+        out.append(text[i:m.start()])
+
+        scan = m.end()
+        depth = 1
+        block_end = n
+        while scan < n:
+            nb = _TIKZ_PROTECT_BEGIN_RE.search(text, scan)
+            ne = _TIKZ_PROTECT_END_RE.search(text, scan)
+            if ne and (not nb or ne.start() < nb.start()):
+                if ne.group(1).strip() == env_name:
+                    depth -= 1
+                    if depth == 0:
+                        block_end = ne.end()
+                        break
+                scan = ne.end()
+            elif nb:
+                if nb.group(1).strip() == env_name:
+                    depth += 1
+                scan = nb.end()
+            else:
+                break
+
+        block = text[m.start():block_end]
+        # Use a monotonically increasing global index so that
+        # slide-level and file-level passes never collide.
+        idx = _TIKZ_PROTECT_COUNTER[0]
+        _TIKZ_PROTECT_COUNTER[0] += 1
+        blocks.append((idx, block))
+        out.append(f"@@@BSG_TIKZ_PROTECT_{idx}@@@")
+        i = block_end
+
+    return ''.join(out), blocks
+
+
+def restore_tikz_content(text, blocks):
+    """Undo :func:`protect_tikz_content`."""
+    if not text or not blocks:
+        return text
+    for idx, block in blocks:
+        text = text.replace(f"@@@BSG_TIKZ_PROTECT_{idx}@@@", block)
+    return text
+
+
 def fix_tikz_node_line_breaks(tikz_content: str) -> str:
     """
     Fix TikZ node line breaks by adding proper minipage or minimum height.
@@ -237,6 +335,58 @@ def fix_tikz_braces(tikz_content: str) -> str:
 # ============================================================
 # BRACE FIXING FUNCTIONS
 # ============================================================
+# ============================================================
+# TIKZ OPACITY GUARD
+# ------------------------------------------------------------
+# A TikZ picture is a self-contained mini-language embedded
+# inside LaTeX.  Its brace rules are NOT the same as LaTeX
+# text-mode brace rules:
+#
+#   * \node[opts](name) at (x,y) {label};  -- {label} may be
+#     empty, but must be present.
+#   * \plot({expr},{expr})                  -- two brace groups
+#     separated by a comma.
+#   * \foreach \a in {104,224,344}{ ... }   -- the brace after
+#     the coordinate list opens the loop body and MUST NOT be
+#     collapsed with the coordinate list.
+#   * \begin{axis}...\end{axis}            -- expands internally
+#     to scopes and clip paths.
+#
+# Any text-mode fixer (fix_braces, empty-{} collapsing, \cmd{}
+# rewriting) that touches a line containing one of these
+# constructs will silently unbalance the picture.  The
+# compiler then reports an "extra }" or "ended by \end{scope}"
+# at the NEXT frame boundary, which is not where the mistake
+# is.
+#
+# The guard below marks a physical line as opaque whenever it
+# contains a TikZ drawing command or environment marker.  All
+# downstream passes must test _is_tikz_opaque(line) FIRST and
+# emit the line unchanged if it returns True.
+# ============================================================
+import re as _re_tikz_guard
+
+_TIKZ_OPAQUE_RE = _re_tikz_guard.compile(
+    r'\\(?:'
+    r'node|draw|path|fill|filldraw|shade|shadedraw|clip|coordinate|'
+    r'matrix|graph|pattern|foreach|plot|pgfplotsset|addplot|'
+    r'begin\s*\{\s*(?:tikzpicture|axis|semilogyaxis|semilogxaxis|'
+    r'loglogaxis|groupplot|scope|pgfpicture)\s*\}|'
+    r'end\s*\{\s*(?:tikzpicture|axis|semilogyaxis|semilogxaxis|'
+    r'loglogaxis|groupplot|scope|pgfpicture)\s*\}'
+    r')\b'
+)
+
+
+def _is_tikz_opaque(line):
+    """True if `line` contains a TikZ drawing command or environment marker.
+
+    Such a line must be emitted byte-for-byte: no brace fixing,
+    no empty-{} collapsing, no command rewriting.
+    """
+    if not isinstance(line, str):
+        return False
+    return bool(_TIKZ_OPAQUE_RE.search(line))
 
 def fix_braces(text: str) -> str:
     """
@@ -4025,41 +4175,149 @@ def _generate_latex_code_autofit(base_name, filename, first_frame_path, content=
     """
 
     def clean_frame_title(title_text):
-        """Clean frame title to prevent compilation errors"""
+        r"""
+        Clean a frame title so it can be used inside ``\begin{frame}{...}``
+        and ``\frametitle{...}`` without causing LaTeX compilation errors.
+
+        Contract
+        --------
+        * The result is safe inside a braced argument: it contains no bare
+          ``{``, ``}``, ``\``, ``#``, ``%``, ``&``, ``$``, ``_``, ``~``, ``^``
+          that would be misread by TeX.
+        * Characters that are meaningful in text mode but dangerous inside a
+          brace argument are escaped: ``&``, ``%``, ``#``, ``_``, ``$``, ``~``,
+          ``^``.
+        * LaTeX commands that were already in the title and are known to be
+          safe inside a frame title are preserved (``\textbf{...}``,
+          ``\textit{...}``, ``\emph{...}``, ``\textcolor{...}{...}``,
+          ``\alert{...}``, font-size commands).
+        * The result is non-empty.  If cleaning leaves nothing, the string
+          ``"Untitled"`` is returned.
+        * The function is idempotent: ``clean_frame_title(clean_frame_title(x))
+          == clean_frame_title(x)``.  This is important because the same title
+          may pass through the cleaner more than once (parser, then writer).
+
+        Notes
+        -----
+        The earlier version of this function stripped every backslash and every
+        brace, which destroyed math-mode fragments such as ``$V_{oc}$`` and
+        ``$\neq$``.  It also re-escaped the ampersands in an already-escaped
+        ``\&``, producing ``\\&`` and, subsequently, a runaway argument.
+
+        This version protects math-mode spans and known-safe commands before
+        it touches the surrounding text, so the round trip
+        TeX -> TXT -> TeX is stable for titles that contain math or formatting.
+        """
+        import re
+
         if not title_text:
             return "Untitled"
 
-        import re  # <-- Add this import
-
         title_text = str(title_text)
 
-        # First, handle the problematic \\& pattern
-        # Replace \\& with just & (we'll escape it properly)
-        title_text = title_text.replace('\\\\&', '&')
-        title_text = title_text.replace('\\&', '&')
+        # ============================================================
+        # STEP 1: If the title already contains a raw TikZ block, do not
+        # attempt to clean it.  Return it unchanged so the block survives.
+        # ============================================================
+        if '\\begin{tikzpicture}' in title_text or '\\begin{scope}' in title_text:
+            return title_text.strip() or "Untitled"
 
-        # Remove any remaining backslashes that might cause issues
-        title_text = title_text.replace('\\', ' ')
+        # ============================================================
+        # STEP 2: Protect math-mode spans and known-safe commands.
+        # ============================================================
+        protected = {}
+        counter = [0]
 
-        # Remove excessive braces
+        def _protect(match):
+            key = f"@@BSGSAFE{len(protected)}@@"
+            protected[key] = match.group(0)
+            return key
+
+        # Display math \[...\]
+        title_text = re.sub(r'\\\[.*?\\\]', _protect, title_text, flags=re.DOTALL)
+
+        # Inline math $...$
+        title_text = re.sub(r'\$[^$]+\$', _protect, title_text)
+
+        # \(...\)
+        title_text = re.sub(r'\\\(.*?\\\)', _protect, title_text, flags=re.DOTALL)
+
+        # \textbf{...}, \textit{...}, \emph{...}, \alert{...}
+        title_text = re.sub(r'\\textbf\{[^{}]*\}', _protect, title_text)
+        title_text = re.sub(r'\\textit\{[^{}]*\}', _protect, title_text)
+        title_text = re.sub(r'\\emph\{[^{}]*\}', _protect, title_text)
+        title_text = re.sub(r'\\alert\{[^{}]*\}', _protect, title_text)
+
+        # \textcolor{...}{...}
+        title_text = re.sub(
+            r'\\textcolor\{[^{}]*\}\{[^{}]*\}', _protect, title_text
+        )
+
+        # \textsuperscript{...}, \textsubscript{...}
+        title_text = re.sub(r'\\textsuperscript\{[^{}]*\}', _protect, title_text)
+        title_text = re.sub(r'\\textsubscript\{[^{}]*\}', _protect, title_text)
+
+        # Font-size commands are safe on their own; protect them so the
+        # later backslash-stripping pass does not delete them.
+        for _cmd in ('\\tiny', '\\scriptsize', '\\footnotesize', '\\small',
+                     '\\normalsize', '\\large', '\\Large', '\\LARGE',
+                     '\\huge', '\\Huge'):
+            title_text = title_text.replace(_cmd, f"@@BSGCFONT{len(protected)}@@")
+            protected[f"@@BSGCFONT{len(protected)}@@"] = _cmd
+
+        # ============================================================
+        # STEP 3: The remaining string is text plus possibly some raw
+        # backslash commands.  Drop raw commands that are not
+        # brace-delimited, so a stray ``\`` cannot break the brace argument.
+        # ============================================================
+        title_text = re.sub(r'\\[A-Za-z]+', ' ', title_text)
+
+        # ============================================================
+        # STEP 4: Strip braces outside the protected spans.  Any remaining
+        # brace pair here belongs to something that is not a protected
+        # command, and it would unbalance the enclosing frame argument.
+        # ============================================================
         title_text = title_text.replace('\\{', '').replace('\\}', '')
         title_text = title_text.replace('{', '').replace('}', '')
 
-        # Escape special characters
+        # ============================================================
+        # STEP 5: Escape text-mode special characters.  ``&``, ``%``,
+        # ``#``, ``_``, ``$``, ``~``, ``^`` are all dangerous inside a
+        # brace argument.  ``\`` has already been removed.
+        # ============================================================
+        title_text = title_text.replace('\\&', '&')      # unescape any pre-escaped &
         title_text = title_text.replace('&', '\\&')
         title_text = title_text.replace('%', '\\%')
         title_text = title_text.replace('#', '\\#')
         title_text = title_text.replace('_', '\\_')
         title_text = title_text.replace('$', '\\$')
-        title_text = title_text.replace('~', '\\textasciitilde')
-        title_text = title_text.replace('^', '\\textasciicircum')
+        title_text = title_text.replace('~', '\\textasciitilde{}')
+        title_text = title_text.replace('^', '\\textasciicircum{}')
 
-        # Clean up extra spaces
+        # ============================================================
+        # STEP 6: Restore the protected spans.  Do this AFTER the
+        # escaping so that characters inside math or inside a protected
+        # command are never re-escaped.
+        # ============================================================
+        for key, value in protected.items():
+            title_text = title_text.replace(key, value)
+
+        # ============================================================
+        # STEP 7: Final tidy-up.  Collapse whitespace, remove empty
+        # brace groups left by any of the above passes, and guarantee
+        # a non-empty result.
+        # ============================================================
         title_text = re.sub(r'\s+', ' ', title_text).strip()
 
-        if not title_text:
-            return "Untitled"
-        return title_text
+        # Collapse any accidental double braces produced by nested
+        # protect/restore of a command such as \textbf{\emph{x}}.
+        while '{{' in title_text or '}}' in title_text:
+            title_text = title_text.replace('{{', '{').replace('}}', '}')
+
+        # Empty braces around nothing are harmless but noisy; remove them.
+        title_text = re.sub(r'\{\s*\}', '', title_text)
+
+        return title_text or "Untitled"
 
     # ============================================================
     # FIX TIKZ CONTENT BEFORE PROCESSING
@@ -6214,8 +6472,25 @@ def process_input_file(file_path, output_filename='movie.tex',
             print("  ⏭ Skipping cleaning (level 3 - preserve everything)")
 
         # ============================================================
-        # CRITICAL FIX: ONLY FIX TIKZ IF cleaning_level < 3
+        # PROTECT TIKZ BEFORE ANY DESTRUCTIVE PASS
+        # ------------------------------------------------------------
+        # Replace every TikZ environment with an opaque placeholder.
+        # The cleaning functions, the per-line fix helpers, and the
+        # parsers all run on the placeholder-only text.  The original
+        # TikZ bodies are restored at the very end, immediately before
+        # the file is written.
         # ============================================================
+        _tikz_restore_blocks = []
+        if lines:
+            _joined_lines = ''.join(lines)
+            _joined_protected, _tikz_restore_blocks = protect_tikz_content(
+                _joined_lines
+            )
+            if _tikz_restore_blocks:
+                print(f"  ✓ Protected {len(_tikz_restore_blocks)} TikZ "
+                      f"block(s) from cleaning")
+            lines = _joined_protected.splitlines(keepends=True)
+
         print("\n🔧 Fixing TikZ content...")
         if cleaning_level < 3:
             fixed_lines = []
@@ -6795,15 +7070,24 @@ def process_input_file(file_path, output_filename='movie.tex',
             for slide in slides:
                 if slide.get('content'):
                     protected_content = []
+                    per_slide_blocks = []
                     for line in slide['content']:
                         try:
-                            protected_line = protect_tikz_content(line)
+                            # protect_tikz_content returns (text, blocks).
+                            # Capture BOTH halves.
+                            protected_line, line_blocks = protect_tikz_content(line)
                             protected_content.append(protected_line)
+                            if line_blocks:
+                                per_slide_blocks.extend(line_blocks)
                         except Exception as e:
                             print(f"  ⚠ Protect TikZ error: "
                                   f"{str(e)[:50]}, using original")
                             protected_content.append(line)
                     slide['content'] = protected_content
+                    # Extend the top-level restore list so the file-level
+                    # restore pass has these blocks too.
+                    if per_slide_blocks:
+                        _tikz_restore_blocks.extend(per_slide_blocks)
 
                 try:
                     processed_slide = process_slide_with_features(
@@ -6823,28 +7107,29 @@ def process_input_file(file_path, output_filename='movie.tex',
             outfile.write("\n\\end{document}\n")
 
         # ============================================================
-        # CRITICAL FIX: Only apply final TikZ fixes to TeX if cleaning_level < 3
+        # RESTORE TIKZ BLOCKS
+        # ------------------------------------------------------------
+        # The cleaning passes ran on placeholders.  Restore the
+        # original TikZ bodies into the generated .tex file now.
         # ============================================================
-        print("\n🔧 Applying final TikZ fixes to TeX output...")
-        if cleaning_level < 3:
+        if _tikz_restore_blocks:
             try:
                 with open(output_filename, 'r', encoding='utf-8') as f:
                     tex_content = f.read()
 
-                fixed_tex_content = fix_tikz_in_tex_content(tex_content)
+                tex_content = restore_tikz_content(
+                    tex_content, _tikz_restore_blocks)
 
-                if fixed_tex_content != tex_content:
-                    with open(output_filename, 'w', encoding='utf-8') as f:
-                        f.write(fixed_tex_content)
-                    print("  ✓ Applied TikZ fixes to TeX output")
-                else:
-                    print("  ℹ No additional TikZ fixes needed")
+                with open(output_filename, 'w', encoding='utf-8') as f:
+                    f.write(tex_content)
+
+                print(f"  ✓ Restored {len(_tikz_restore_blocks)} TikZ "
+                      f"block(s) into the generated TeX")
             except Exception as e:
-                print(f"  ⚠ Failed to apply TikZ fixes to TeX output: "
+                print(f"  ⚠ Failed to restore TikZ blocks: "
                       f"{str(e)[:50]}")
         else:
-            print("  ⏭ Skipping final TikZ fixes to TeX "
-                  "(level 3 - preserve everything)")
+            print("  ℹ No TikZ blocks to restore")
 
         print(f"\nProcessed {processed} slides, {failed} failed")
 
@@ -6890,12 +7175,28 @@ def fix_latex_errors(line: str) -> str:
 
 
 def clean_content_line(line: str) -> str:
-    """Clean content lines (Level 1+)."""
+    """Clean content lines (Level 1+).
+
+    Any line that opens or is inside a verbatim region is returned
+    unchanged.  Callers that stream a document must run the whole
+    text through ``protect_tikz_content`` first; this guard exists
+    so a stray direct call cannot damage a TikZ body.
+    """
     if not line:
+        return line
+
+    if _TIKZ_PROTECT_BEGIN_RE.search(line):
         return line
 
     # Apply basic fixes first
     line = fix_latex_errors(line)
+
+    #
+    # Never clean a title that contains a TikZ block.  The block is
+    # opaque, and stripping its braces would destroy it.  Return the
+    # title unchanged.
+    if _TIKZ_PROTECT_BEGIN_RE.search(title) or '\\begin{tikzpicture}' in title:
+        return title.strip() or "Untitled"
 
     # Extract and preserve math mode content
     math_content = {}
@@ -6991,6 +7292,8 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
             # Use cleaning level when cleaning title
             title = clean_title(title, cleaning_level)
 
+            # NEW: initialise frame_options so downstream code can always
+            # call slide.get('frame_options', '') without a KeyError.
             current_slide = {
                 'title': title,
                 'content': [],
@@ -6999,7 +7302,8 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                 'layout': None,
                 'layout_params': None,
                 'playable': False,
-                'source_url': None
+                'source_url': None,
+                'frame_options': '',
             }
             content_buffer = []
             notes_buffer = []
@@ -7041,6 +7345,15 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
 
         # Process content
         if in_content:
+            # NEW: recognise \frameoptions.  This directive is emitted by the
+            # TeX importer and carries frame-level options such as `fragile`,
+            # `allowframebreaks`, `t`, `plain`, `shrink=5`.  It must be read
+            # BEFORE any other Content handling so it never reaches the
+            # frame body.
+            if stripped.startswith('\\frameoptions'):
+                current_slide['frame_options'] = stripped[len('\\frameoptions'):].strip()
+                continue
+
             if not stripped or stripped.startswith('%'):
                 if stripped:
                     content_buffer.append(stripped)
@@ -7051,7 +7364,6 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
             # ============================================================
             if '\\begin{tabular}' in stripped or '\\begin{array}' in stripped:
                 in_tabular = True
-                # Close any open itemize before tabular
                 while itemize_stack:
                     content_buffer.append("\\end{itemize}")
                     itemize_stack.pop()
@@ -7060,7 +7372,6 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
 
             if '\\end{tabular}' in stripped or '\\end{array}' in stripped:
                 in_tabular = False
-                # Close any open itemize before ending tabular
                 while itemize_stack:
                     content_buffer.append("\\end{itemize}")
                     itemize_stack.pop()
@@ -7074,12 +7385,10 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                 layout_params = layout_match.group(2)
                 current_slide['layout'] = layout_type
                 current_slide['layout_params'] = layout_params
-                # Don't add to content - it's handled separately
                 continue
 
             # ========== CHECK FOR MEDIA DIRECTIVES ==========
             if not found_media:
-                # Check for play directive with URL or file
                 play_match = re.match(r'\\play\s+(.+)$', stripped)
                 if play_match:
                     media_source = play_match.group(1).strip()
@@ -7122,10 +7431,8 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
             # ============================================================
             # CRITICAL FIX: Bullet points - skip if inside tabular
             # ============================================================
-            # Bullet points
             if not in_tabular and (stripped.startswith('-') or stripped.startswith('•')):
                 bullet_content = re.sub(r'^[-•]\s*', '', stripped)
-                # Apply cleaning if needed
                 if cleaning_level < 3:
                     bullet_content = clean_content_line(bullet_content)
                 if itemize_stack:
@@ -7136,13 +7443,10 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                     content_buffer.append(f"\\item {bullet_content}")
                 continue
             elif stripped.startswith('-') or stripped.startswith('•'):
-                # Inside tabular - keep as-is (don't convert to item)
                 content_buffer.append(stripped)
                 continue
 
             # ========== PROCESS CONTENT WITH FULL FEATURE SUPPORT ==========
-
-            # Font size commands
             font_commands = ['\\tiny', '\\scriptsize', '\\footnotesize', '\\small',
                            '\\normalsize', '\\large', '\\Large', '\\LARGE', '\\huge', '\\Huge']
             is_font_cmd = False
@@ -7154,13 +7458,11 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
             if is_font_cmd:
                 continue
 
-            # Special effects
             if '\\shadowtext' in stripped or '\\glowtext' in stripped or '\\gradienttext' in stripped:
                 stripped = process_special_effects(stripped)
                 content_buffer.append(stripped)
                 continue
 
-            # TikZ content - preserve exactly
             if '\\begin{tikzpicture}' in stripped:
                 while itemize_stack:
                     content_buffer.append("\\end{itemize}")
@@ -7168,7 +7470,6 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                 content_buffer.append(stripped)
                 continue
 
-            # Block environments
             if '\\begin{block}' in stripped or '\\begin{alertblock}' in stripped or '\\begin{exampleblock}' in stripped:
                 while itemize_stack:
                     content_buffer.append("\\end{itemize}")
@@ -7179,7 +7480,6 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                 content_buffer.append(stripped)
                 continue
 
-            # Columns
             if '\\begin{columns}' in stripped or '\\end{columns}' in stripped:
                 while itemize_stack:
                     content_buffer.append("\\end{itemize}")
@@ -7193,7 +7493,6 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                 content_buffer.append(stripped)
                 continue
 
-            # Itemize/Enumerate
             if '\\begin{itemize}' in stripped:
                 itemize_stack.append('itemize')
                 content_buffer.append(stripped)
@@ -7219,7 +7518,6 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                 content_buffer.append(stripped)
                 continue
 
-            # Standalone \item
             if stripped.startswith('\\item'):
                 if pending_font_cmd:
                     content_buffer.append(pending_font_cmd)
@@ -7227,43 +7525,35 @@ def parse_native_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LE
                 content_buffer.append(stripped)
                 continue
 
-            # Table commands
             if stripped in ['\\hline', '\\toprule', '\\midrule', '\\bottomrule']:
                 content_buffer.append(stripped)
                 continue
 
-            # Center environment
             if stripped == '\\begin{center}' or stripped == '\\end{center}':
                 content_buffer.append(stripped)
                 continue
 
-            # Beamercolorbox
             if stripped.startswith('\\begin{beamercolorbox}') or stripped == '\\end{beamercolorbox}':
                 content_buffer.append(stripped)
                 continue
 
-            # Text formatting
             if stripped.startswith(('\\textcolor', '\\textbf', '\\textit', '\\emph', '\\alert')):
                 stripped = process_special_effects(stripped)
                 content_buffer.append(stripped)
                 continue
 
-            # Math mode
             if stripped.startswith('$') or stripped.startswith('\\[') or stripped.startswith('\\('):
                 content_buffer.append(stripped)
                 continue
 
-            # URL or hyperlink
             if stripped.startswith(('http://', 'https://', '\\url{', '\\href{')):
                 content_buffer.append(stripped)
                 continue
 
-            # Vspace and spacing
             if stripped.startswith('\\vspace') or stripped.startswith('\\hspace'):
                 content_buffer.append(stripped)
                 continue
 
-            # Regular text - fix braces and add
             if stripped:
                 if cleaning_level < 3:
                     stripped = clean_content_line(stripped)
@@ -7314,17 +7604,15 @@ def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
         # Detect title
         title_match = re.match(r'^%?\s*\\title\s+(.+)$', line)
         if title_match:
-            # Save previous slide
             if current_slide:
                 current_slide['content'] = content_buffer.copy()
                 current_slide['notes'] = notes_buffer.copy()
                 slides.append(current_slide)
 
-            # Start new slide
             title = title_match.group(1).strip()
-            # Use cleaning level when cleaning title
             title = clean_title(title, cleaning_level)
 
+            # NEW: initialise frame_options.
             current_slide = {
                 'title': title,
                 'content': [],
@@ -7333,7 +7621,8 @@ def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
                 'layout': None,
                 'layout_params': None,
                 'playable': False,
-                'source_url': None
+                'source_url': None,
+                'frame_options': '',
             }
             content_buffer = []
             notes_buffer = []
@@ -7343,17 +7632,15 @@ def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
             i += 1
             continue
 
-        # If we're not in a slide, skip
         if current_slide is None:
             i += 1
             continue
 
-        # Check for Content block - if found, switch to native parser
         if '\\begin{Content}' in stripped:
+            # Delegate to the native parser — it now understands \frameoptions.
             print(f"  Hybrid parser: Found \\begin{{Content}}, switching to native parser")
             return parse_native_slides_full(lines, warnings, cleaning_level)
 
-        # Check for Notes block
         if '\\begin{Notes}' in stripped:
             in_notes = True
             i += 1
@@ -7363,7 +7650,13 @@ def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
             i += 1
             continue
 
-        # Check for end of slide (next title or end of file)
+        # NEW: recognise \frameoptions in the hybrid path as well.  This
+        # preserves the option if a hybrid file contains it directly.
+        if stripped.startswith('\\frameoptions'):
+            current_slide['frame_options'] = stripped[len('\\frameoptions'):].strip()
+            i += 1
+            continue
+
         if re.match(r'^%?\s*\\title\s+', line):
             if current_slide:
                 current_slide['content'] = content_buffer.copy()
@@ -7375,9 +7668,7 @@ def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
             i += 1
             continue
 
-        # Process content
         if not in_notes:
-            # Check for media directive
             if not found_media and stripped and stripped.startswith(('\\file', '\\play')):
                 media = stripped
                 found_media = True
@@ -7392,7 +7683,6 @@ def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
                 if clean_line and clean_line not in ['\\None', 'None']:
                     content_buffer.append(clean_line)
 
-        # Process notes
         if in_notes:
             if stripped and not stripped.startswith('%'):
                 if cleaning_level < 3:
@@ -7405,7 +7695,6 @@ def parse_hybrid_slides(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEVEL):
 
         i += 1
 
-    # Save last slide
     if current_slide:
         current_slide['content'] = content_buffer.copy()
         current_slide['notes'] = notes_buffer.copy()
@@ -7525,11 +7814,49 @@ def parse_latex_slides_full(lines, warnings, cleaning_level=DEFAULT_CLEANING_LEV
     return slides
 
 
-def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_level=DEFAULT_CLEANING_LEVEL):
-    """
+def process_slide_with_features(slide, outfile=None, warnings=None,
+                                cleaning_level=DEFAULT_CLEANING_LEVEL):
+    r"""
     Process a slide with FULL feature support and cleaning level awareness.
+
+    Both the frame body AND the speaker-notes block are routed through
+    ``process_content_with_features``, which understands itemize /
+    enumerate / math / formatting commands.  This restores the earlier
+    behaviour in which notes could contain highlighted points, bullet
+    lists, links, and math.
+
+    Frame options (``fragile``, ``allowframebreaks``, ...) are attached
+    to the ``\begin{frame}`` line from ``slide['frame_options']``.
     """
     import re
+
+    def _coerce_str(value):
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (tuple, list)):
+            return '\n'.join(_coerce_str(v) for v in value)
+        return str(value)
+
+    slide = dict(slide)
+
+    slide['title'] = _coerce_str(slide.get('title', 'Untitled')) or 'Untitled'
+    slide['media'] = _coerce_str(slide.get('media', ''))
+    slide['layout_params'] = _coerce_str(slide.get('layout_params', ''))
+    slide['frame_options'] = _coerce_str(slide.get('frame_options', ''))
+
+    raw_content = slide.get('content', [])
+    if isinstance(raw_content, str):
+        raw_content = raw_content.split('\n')
+    slide['content'] = [_coerce_str(item) for item in raw_content
+                        if item is not None]
+
+    raw_notes = slide.get('notes', [])
+    if isinstance(raw_notes, str):
+        raw_notes = raw_notes.split('\n')
+    slide['notes'] = [_coerce_str(item) for item in raw_notes
+                      if item is not None]
 
     title = slide.get('title', 'Untitled')
     content = slide.get('content', [])
@@ -7539,11 +7866,13 @@ def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_lev
     layout_params = slide.get('layout_params')
     playable = slide.get('playable', False)
     source_url = slide.get('source_url')
+    frame_options = slide.get('frame_options', '').strip()
 
-    # Clean title if needed
     if cleaning_level < 3:
         title = clean_title(title, cleaning_level)
     clean_title_text = clean_title_for_latex(title)
+
+    frame_opt_str = f"[{frame_options}]" if frame_options else ""
 
     # ========== HANDLE LAYOUT DIRECTIVES ==========
     if layout:
@@ -7573,13 +7902,10 @@ def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_lev
     media_path = None
 
     if media and media != "\\None":
-        # Parse media directive
         directive_type, media_source, is_playable, original_directive = parse_media_directive(media)
         playable = playable or is_playable
 
-        # Handle YouTube videos
         if directive_type == 'url' and media_source and ('youtube.com' in media_source or 'youtu.be' in media_source):
-            # Download YouTube video
             result = download_youtube_video(media_source)
             if result:
                 base_name, filename, filepath = result
@@ -7588,20 +7914,16 @@ def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_lev
                 playable = True
                 source_url = media_source
             else:
-                # Fallback to URL
                 media_path = media_source
                 playable = False
 
-        # Handle local files
         elif directive_type == 'file' and media_source:
             media_path = media_source
             if not os.path.exists(media_path):
-                # Try in media_files
                 test_path = os.path.join('media_files', os.path.basename(media_path))
                 if os.path.exists(test_path):
                     media_path = test_path
             if os.path.exists(media_path):
-                # Generate preview for videos
                 video_extensions = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv', '.wmv')
                 if media_path.lower().endswith(video_extensions):
                     first_frame_path = generate_preview_frame(media_path)
@@ -7611,14 +7933,12 @@ def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_lev
 
     # ========== GENERATE FRAME ==========
     frame_lines = []
-    frame_lines.append(f"\\begin{{frame}}{{{clean_title_text}}}")
+    frame_lines.append(f"\\begin{{frame}}{frame_opt_str}{{{clean_title_text}}}")
     frame_lines.append(f"\\frametitle{{{clean_title_text}}}")
     frame_lines.append("")
 
-    # Add media (playable or static)
     if media_path and media_path != "\\None":
         if playable and first_frame_path:
-            # Playable media with preview
             frame_lines.append("\\begin{center}")
             frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{first_frame_path}}}")
             frame_lines.append("    \\vspace{0.3em}")
@@ -7626,24 +7946,20 @@ def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_lev
             frame_lines.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play}}}}}}{{{media_path}}}")
             frame_lines.append("\\end{center}")
         elif playable:
-            # Playable media without preview
             frame_lines.append("\\begin{center}")
             frame_lines.append(f"    \\movie[externalviewer]{{\\textcolor{{blue}}{{\\underline{{Play Video}}}}}}{{{media_path}}}")
             frame_lines.append("\\end{center}")
         else:
-            # Static image
             frame_lines.append("\\begin{center}")
             frame_lines.append(f"    \\includegraphics[width=0.7\\textwidth,keepaspectratio]{{{media_path}}}")
             frame_lines.append("\\end{center}")
 
-    # Add source URL citation if present
     if source_url:
         frame_lines.append("\\vspace{0.3em}")
         frame_lines.append(f"\\begin{{center}}{{\\tiny Source: \\href{{{source_url}}}{{\\textcolor{{blue}}{{[Link]}}}}}}\\end{{center}}")
 
-    # Add content with cleaning level awareness
+    # ---------- frame body ----------
     if content:
-        # Clean content if needed
         if cleaning_level < 3:
             cleaned_content = []
             for line in content:
@@ -7653,13 +7969,24 @@ def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_lev
                     cleaned_content.append(line)
             content = cleaned_content
 
-        # Process content for itemize/enumerate
         processed_content = process_content_with_features(content)
-
         if processed_content:
             frame_lines.append(processed_content)
 
-    # Add notes with cleaning level awareness
+    # ==================================================================
+    # NOTES
+    # ------------------------------------------------------------------
+    # Notes must be routed through the SAME content processor as the
+    # frame body, so that:
+    #   * \begin{itemize} / \begin{enumerate} environments survive,
+    #   * every \item survives and stays on its own line,
+    #   * inline math $...$ is preserved,
+    #   * \textbf, \emph, \href, \textcolor, \cite, \ldots survive,
+    #   * line breaks inside math or inside lists are not merged.
+    #
+    # The previous implementation joined the note lines with plain
+    # whitespace and lost the list structure and the \item commands.
+    # ==================================================================
     if notes:
         if cleaning_level < 3:
             cleaned_notes = []
@@ -7670,23 +7997,17 @@ def process_slide_with_features(slide, outfile=None, warnings=None, cleaning_lev
                     cleaned_notes.append(note)
             notes = cleaned_notes
 
-        frame_lines.append("")
-        frame_lines.append("\\note{")
-        has_bullets = any(note.strip().startswith(('•', '-', '\\item')) for note in notes if note.strip())
-        if has_bullets:
-            frame_lines.append("\\begin{itemize}")
-            for note in notes:
-                if note and note.strip():
-                    note_text = re.sub(r'^[•-]\s*', '', note.strip())
-                    note_text = re.sub(r'^\\item\s*', '', note_text)
-                    if note_text:
-                        frame_lines.append(f"    \\item {note_text}")
-            frame_lines.append("\\end{itemize}")
-        else:
-            for note in notes:
-                if note and note.strip():
-                    frame_lines.append(f"    {note}")
-        frame_lines.append("}")
+        processed_notes = process_content_with_features(notes)
+
+        if processed_notes:
+            frame_lines.append("")
+            frame_lines.append("\\note{")
+            # Indent each line by four spaces for readability.  The
+            # processor already produced well-formed LaTeX, so we only
+            # add indentation here; we do not alter any line's content.
+            for note_line in processed_notes.split('\n'):
+                frame_lines.append("    " + note_line)
+            frame_lines.append("}")
 
     frame_lines.append("\\end{frame}")
     return '\n'.join(frame_lines)
@@ -8297,7 +8618,13 @@ def generate_corner_layout(title, params, content, media):
     return '\n'.join(frame_lines)
 
 def process_content_with_features(content):
-    """Process content with full feature support including itemize/enumerate"""
+    """Process content with full feature support including itemize/enumerate.
+
+    TikZ bodies are opaque to this pass.  Every input is first routed
+    through ``protect_tikz_content`` so the picture is never seen by
+    the itemize/tabular/math classifiers below, and then restored at
+    the end.
+    """
     import re
 
     if not content:
@@ -8306,6 +8633,12 @@ def process_content_with_features(content):
     # If content is a string, split it into lines
     if isinstance(content, str):
         content = content.split('\n')
+
+    # Protect TikZ bodies before this pass inspects the lines.
+    _joined = '\n'.join(str(c) for c in content)
+    _protected, _blocks = protect_tikz_content(_joined)
+    if _blocks:
+        content = _protected.split('\n')
 
     # ============================================================
     # CRITICAL FIX: Detect and PRESERVE TikZ content exactly as-is
@@ -8323,7 +8656,25 @@ def process_content_with_features(content):
         if not line or not line.strip():
             continue
 
+        # ------------------------------------------------------------
+        # OPAQUE TIKZ SHORT-CIRCUIT
+        # ------------------------------------------------------------
+        # A TikZ drawing command or environment marker makes the
+        # entire physical line opaque.  Emit it unchanged and move
+        # on; do not fix its braces, do not collapse its empty
+        # groups, do not rewrite \cmd{...}.
+        # ------------------------------------------------------------
+        if _is_tikz_opaque(line):
+            # Close any open itemize first so the picture starts
+            # from a clean environment state.
+            while itemize_stack:
+                result.append("\\end{itemize}")
+                itemize_stack.pop()
+            result.append(line)
+            continue
+
         stripped = line.strip()
+
 
         # ============================================================
         # CRITICAL: Detect TikZ environment - PRESERVE COMPLETELY
@@ -8564,9 +8915,12 @@ def process_content_with_features(content):
         itemize_stack.pop()
 
     # ============================================================
-    # Join the result
+    # Join the result and restore any TikZ bodies
     # ============================================================
-    return '\n'.join(result)
+    result_text = '\n'.join(result)
+    if _blocks:
+        result_text = restore_tikz_content(result_text, _blocks)
+    return result_text
 
 
 def clean_title_for_latex(title):
@@ -8579,14 +8933,33 @@ def fix_braces(text):
         return text
 
     import re
+
+    # ------------------------------------------------------------
+    # OPAQUE TIKZ SHORT-CIRCUIT
+    # ------------------------------------------------------------
+    # Never rewrite a line that contains a TikZ drawing command.
+    # The brace rules for TikZ are not the brace rules for text:
+    #   * \node[opts](name) {label};        -- empty {} is legal
+    #   * \plot({expr},{expr})              -- two brace groups
+    #   * \foreach \a in {..}{ body }       -- the brace after the
+    #                                          coordinate list opens
+    #                                          the loop body
+    #   * \begin{axis}...\end{axis}         -- expands to scopes
+    # Touching any of these silently unbalances the picture.
+    # ------------------------------------------------------------
+    if _is_tikz_opaque(text):
+        return text
+
+    # A placeholder left by protect_tikz_content is also opaque.
+    if '@@@BSG_TIKZ_PROTECT_' in text:
+        return text
+
     if re.match(r"^\\(?:BSGPPTX(?:Background|Text|Image|Line|Media)|PPTX(?:Background|TextBox|Image|Line|Media))(?:\[[^]]*\])?\{", text.lstrip()):
         return text
 
     # Log input
     if isinstance(text, str) and ('tabular' in text or '@{}' in text):
         logger.debug(f"fix_braces INPUT: {repr(text)}")
-
-    import re
 
     # ============================================================
     # CRITICAL: If this contains ANY tabular, array, or @{} patterns,
@@ -8605,7 +8978,7 @@ def fix_braces(text):
         return text
 
     # ============================================================
-    # CRITICAL: Detect and preserve TikZ content
+    # CRITICAL: Detect and preserve a full tikzpicture environment
     # ============================================================
     if '\\begin{tikzpicture}' in text or '\\end{tikzpicture}' in text:
         logger.debug(f"fix_braces OUTPUT: {repr(text)}")
@@ -10139,23 +10512,34 @@ def _generate_latex_code_autofit(base_name, filename, first_frame_path, content=
         #----------------------------------------------------------------------
 
 
-def generate_latex_code(base_name, filename, first_frame_path, content=None, title=None, playable=False, source_url=None, layout=None):
-    """Generate slide LaTeX, honoring the Presentation Settings auto-fit switch."""
+def generate_latex_code(base_name, filename, first_frame_path,
+                        content=None, title=None, playable=False,
+                        source_url=None, layout=None, frame_options=""):
+    """Generate slide LaTeX, honoring the Presentation Settings auto-fit switch
+    and forwarding the caller's frame options."""
     latex_code = _generate_latex_code_autofit(
         base_name, filename, first_frame_path, content, title,
-        playable, source_url, layout
+        playable, source_url, layout, frame_options=frame_options,
     )
 
     if AUTO_FIT_ENABLED:
         return latex_code
 
     # Automatic fitting OFF: restore the original frame/image constructs.
-    latex_code = latex_code.replace(r'\begin{frame}[t,shrink=0]{', r'\begin{frame}{')
-    latex_code = latex_code.replace(r'\begin{frame}[t,shrink=0]', r'\begin{frame}')
+    # IMPORTANT: the [t,shrink=0] we strip here may carry the caller's
+    # options after the comma, so preserve them.
+    latex_code = re.sub(
+        r'\\begin\{frame\}\[t,shrink=0,([^\]]*)\]\{',
+        r'\\begin{frame}[\1]{',
+        latex_code,
+    )
+    latex_code = latex_code.replace(r'\begin{frame}[t,shrink=0]{',
+                                    r'\begin{frame}{')
+    latex_code = latex_code.replace(r'\begin{frame}[t,shrink=0]',
+                                    r'\begin{frame}')
     latex_code = latex_code.replace(r'    \begin{AutoFitFrameBody}\n', '')
     latex_code = latex_code.replace(r'    \end{AutoFitFrameBody}\n', '')
 
-    # Restore normal includegraphics commands used before auto-fit was enabled.
     latex_code = re.sub(
         r'\\AutoFitImageWithText\[width=([^\]]+)\]\{([^{}]+)\}',
         r'\\includegraphics[width=\1,keepaspectratio]{\2}', latex_code
@@ -10626,6 +11010,22 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
         if content is None:
             content = []
 
+        # ============================================================
+        # PROTECT TIKZ BODIES
+        # ------------------------------------------------------------
+        # process_media and everything it calls must not see raw TikZ.
+        # Replace every picture with a placeholder; restore it in the
+        # generated LaTeX code immediately before returning.
+        # ============================================================
+        _media_tikz_blocks = []
+        if content:
+            _joined_content = '\n'.join(str(c) for c in content)
+            _protected_content, _media_tikz_blocks = protect_tikz_content(
+                _joined_content
+            )
+            if _media_tikz_blocks:
+                content = _protected_content.split('\n')
+
         # Process footnotes and anbg commands
         processed_content = []
         footnotes = []
@@ -10666,7 +11066,9 @@ def process_media(url, content=None, title=None, playable=False, slide_index=Non
 
         # Handle explicit \None directive
         if url.strip() == "\\None":
-            return generate_latex_code(None, "\\None", None, processed_content, title, False), "\\None"
+            return _restore(generate_latex_code(
+                None, "\\None", None, processed_content, title, False
+            )), "\\None"
 
         # Helper function to download video from URL
         def download_video_from_url(video_url, output_folder='media_files'):

@@ -1985,6 +1985,7 @@ class IntelligentAutocomplete:
             self.current_suggestion_index = index
             self.on_suggestion_selected()
 
+
     def on_suggestion_highlight(self, event=None):
         """Handle suggestion highlighting"""
         if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_highlight'):
@@ -1998,23 +1999,37 @@ class IntelligentAutocomplete:
             self.current_suggestion_index = selection[0]
 
     def on_suggestion_selected(self, event=None):
-        """Handle suggestion selection"""
-        if self.use_enhanced and hasattr(self.enhanced_system, 'on_suggestion_selected'):
-            return self.enhanced_system.on_suggestion_selected(event)
-
         if not self.suggestions or not self.autocomplete_window:
             return
 
         selection = self.suggestion_listbox.curselection()
-        if selection:
-            selected_index = selection[0]
-            command, info = self.suggestions[selected_index]
+        if not selection:
+            return
 
-            current_widget = self.selected_widget
+        selected_index = selection[0]
+        command, info = self.suggestions[selected_index]
+
+        widget = self.selected_widget
+        if widget is None:
             self.hide_autocomplete()
+            return
 
-            if current_widget:
-                self.apply_autocomplete_to_widget(current_widget, command, info)
+        # Capture the insertion point *before* hide_autocomplete moves focus,
+        # then restore it so the completion applier sees the correct cursor.
+        try:
+            saved_cursor = widget.index("insert")
+        except Exception:
+            saved_cursor = None
+
+        self.hide_autocomplete()
+
+        if saved_cursor is not None:
+            try:
+                widget.mark_set("insert", saved_cursor)
+            except Exception:
+                pass
+
+        self.apply_autocomplete_to_widget(widget, command, info)
 
     def apply_autocomplete_to_widget(self, widget, command, info):
         """Apply autocomplete to a specific widget"""
@@ -2028,48 +2043,72 @@ class IntelligentAutocomplete:
             self.apply_regular_completion(widget, command, info, line_content, cursor_pos)
 
     def apply_environment_completion(self, widget, command, info):
-        """Apply environment completion with proper formatting"""
+        """
+        Apply environment completion.
+
+        Two sub-cases:
+
+        * ``\\begin{...}`` — the partial command that must be replaced is the
+          entire ``\\begin{partial`` up to the cursor.
+        * ``\\end{...}`` — same, but with ``\\end``.
+
+        In both cases the deletion must be anchored to the correct line.
+        """
         completion = info.get('completion', command)
 
         cursor_pos = widget.index("insert")
-        widget.insert(cursor_pos, completion)
+        line_number = int(cursor_pos.split('.')[0])
+        line_start = widget.index(f"{line_number}.0")
+        line_content = widget.get(line_start, cursor_pos)
+
+        # Locate the start of the partial command on this line.
+        last_backslash = line_content.rfind('\\')
+        if last_backslash == -1:
+            widget.insert(cursor_pos, completion)
+        else:
+            delete_start = f"{line_number}.{last_backslash}"
+            widget.delete(delete_start, cursor_pos)
+            widget.insert(delete_start, completion)
+
         self.position_cursor_at_placeholder(widget, completion)
         widget.focus_set()
 
-    def apply_regular_completion(self, widget, command, info, line_content, cursor_pos):
-        """Apply regular command completion"""
-        last_backslash = line_content.rfind('\\')
-        if last_backslash != -1:
-            delete_start = f"{cursor_pos.split('.')[0]}.{last_backslash}"
-            widget.delete(delete_start, cursor_pos)
-
-            completion = info.get('completion', command)
-            widget.insert(delete_start, completion)
-            self.position_cursor_at_placeholder(widget, completion)
-
-        widget.focus_set()
-
     def position_cursor_at_placeholder(self, widget, completion):
-        """Position cursor at the first placeholder ($1)"""
+        """
+        Place the caret at the first ``$1`` placeholder in ``completion``.
+
+        ``completion`` was just inserted at the cursor.  We therefore look for
+        ``$1`` within the freshly inserted region only, which is
+        ``len(completion)`` characters long and ends at the current cursor.
+        If there is no ``$1``, fall back to ``$2``, then to the end of the
+        inserted text.
+        """
         if self.use_enhanced and hasattr(self.enhanced_system, 'position_cursor_at_placeholder'):
             return self.enhanced_system.position_cursor_at_placeholder(widget, completion)
 
-        if '$1' in completion:
-            cursor_pos = widget.index("insert")
-            search_start = f"{cursor_pos} - {len(completion)} chars"
-            placeholder_pos = widget.search('$1', search_start, cursor_pos)
+        cursor_pos = widget.index("insert")
+        line_number = int(cursor_pos.split('.')[0])
+        cursor_column = int(cursor_pos.split('.')[1])
 
-            if placeholder_pos:
-                widget.delete(placeholder_pos, f"{placeholder_pos}+2 chars")
-                widget.mark_set("insert", placeholder_pos)
-        elif '$2' in completion:
-            cursor_pos = widget.index("insert")
-            search_start = f"{cursor_pos} - {len(completion)} chars"
-            placeholder_pos = widget.search('$1', search_start, cursor_pos)
+        insertion_start_column = max(0, cursor_column - len(completion))
+        insertion_start = f"{line_number}.{insertion_start_column}"
 
-            if placeholder_pos:
-                widget.delete(placeholder_pos, f"{placeholder_pos}+2 chars")
-                widget.mark_set("insert", placeholder_pos)
+        for placeholder in ('$1', '$2', '$3'):
+            idx = completion.find(placeholder)
+            if idx < 0:
+                continue
+
+            # Column of the placeholder inside the just-inserted text.
+            target_column = insertion_start_column + idx
+            target_index = f"{line_number}.{target_column}"
+
+            # Remove the placeholder marker itself, and put the caret there.
+            widget.delete(target_index, f"{target_index}+{len(placeholder)}c")
+            widget.mark_set("insert", target_index)
+            return
+
+        # No placeholder at all: leave the caret at the end of the insertion.
+        widget.mark_set("insert", cursor_pos)
 
     def on_tab(self, event):
         """Handle tab for autocomplete selection"""

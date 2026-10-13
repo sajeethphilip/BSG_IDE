@@ -16,7 +16,7 @@ import zipfile
 import tarfile
 
 # Configuration
-VERSION = "14.7.1"
+VERSION = "15.1.2"
 PACKAGE_NAME = "bsg_ide"
 PYPI_NAME = "bsg-ide"
 AUTHOR = "Ninan Sajeeth Philip"

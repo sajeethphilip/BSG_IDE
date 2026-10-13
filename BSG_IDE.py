@@ -16822,13 +16822,39 @@ _SPLIT_BEFORE_COMMANDS = frozenset({
 })
 
 
+# Environments whose bodies must never be rewritten by the normalizer.
+_VERBATIM_LATEX_ENVIRONMENTS = frozenset({
+    'tikzpicture',
+    'pgfpicture',
+    'scope',
+    'axis',
+    'semilogyaxis',
+    'semilogxaxis',
+    'loglogaxis',
+    'groupplot',
+})
+
+_VERBATIM_ENV_RE = re.compile(
+    r'\\(?:begin|end)\s*\{(?:'
+    + '|'.join(re.escape(e) for e in sorted(_VERBATIM_LATEX_ENVIRONMENTS))
+    + r')\}'
+)
+
 def normalize_latex_line(line):
     r"""
     Streaming, state-free normalizer for one physical line.
     See module docstring above for the exact rule.
     Idempotent.
+
+    A line that begins or ends a verbatim LaTeX environment (TikZ and its
+    family) is returned unchanged.  Callers that stream a whole document
+    are responsible for suppressing this function between such markers;
+    this check exists so that a stray direct call cannot corrupt TikZ.
     """
     if not line or '\\' not in line:
+        return line
+
+    if _VERBATIM_ENV_RE.search(line):
         return line
 
     # Detach trailing newline so we can rebuild cleanly.
@@ -16990,6 +17016,12 @@ class BeamerSyntaxHighlighter:
         # Bind events to the CTkTextbox
         self.ctk_text.bind('<KeyRelease>', self.highlight)
         self.ctk_text.bind('<Control-v>', lambda e: self.after_paste())
+
+        # Attach matching-bracket highlighting.  This binds its own
+        # handlers on the underlying Text widget with add='+' so that the
+        # syntax-highlighting handler above is preserved.
+        self._install_bracket_matching()
+
         # Initialize presentation metadata
         self.presentation_info = {
             'title': '',
@@ -17016,6 +17048,7 @@ class BeamerSyntaxHighlighter:
         """Remove all highlighting"""
         for tag in self.colors.keys():
             self.text.tag_remove(tag, "1.0", "end")
+        self._clear_bracket_tags()
 
     def highlight(self, event=None) -> None:
         """Apply syntax highlighting to the text"""
@@ -17045,6 +17078,178 @@ class BeamerSyntaxHighlighter:
         # Also trigger spell checking
         if hasattr(self.ctk_text.master, 'spell_checking_enabled') and self.ctk_text.master.spell_checking_enabled:
             self.ctk_text.master.check_spelling()
+
+    # ================================================================
+    # MATCHING BRACKET HIGHLIGHTING
+    # ----------------------------------------------------------------
+    # Tk's Text widget does not highlight matching brackets by itself.
+    # This implementation mirrors the behaviour of mainstream editors:
+    #
+    #   * When the caret sits immediately after an opening bracket, the
+    #     matching closing bracket is highlighted, and vice versa.
+    #   * While the mouse hovers over a bracket, that bracket and its
+    #     partner are highlighted.
+    #   * Highlighting is removed when the caret or the mouse leaves the
+    #     bracket.
+    #
+    # The scan is depth-aware and skips escaped brackets (\{ \} \[ \]
+    # \( \)) so that LaTeX escapes are never treated as delimiters.
+    # It also stops at line boundaries only when the bracket is a
+    # single-line pair, which keeps the scan bounded on large files.
+    # ================================================================
+
+    # Bracket pairs this highlighter recognises.
+    _BRACKET_PAIRS = {
+        '{': '}', '}': '{',
+        '[': ']', ']': '[',
+        '(': ')', ')': '(',
+    }
+
+    def _install_bracket_matching(self) -> None:
+        """Attach the bracket-matching event handlers to the widget."""
+        if getattr(self, '_bracket_matching_installed', False):
+            return
+
+        self.text.tag_configure(
+            'matching_bracket',
+            background='#3A4A5A',
+            foreground='#FFFFFF',
+        )
+        self.text.tag_configure(
+            'matching_bracket_hover',
+            background='#5A6A7A',
+            foreground='#FFFFFF',
+        )
+
+        self.text.bind('<KeyRelease>', self._on_bracket_key, add='+')
+        self.text.bind('<ButtonRelease-1>', self._on_bracket_click, add='+')
+        self.text.bind('<Motion>', self._on_bracket_motion, add='+')
+        self.text.bind('<Leave>', self._on_bracket_leave, add='+')
+
+        self._bracket_matching_installed = True
+
+    def _is_escaped(self, index: str) -> bool:
+        """True when the character at `index` is preceded by a backslash."""
+        try:
+            prev = self.text.index(f"{index}-1c")
+            return self.text.get(prev, index) == '\\'
+        except tk.TclError:
+            return False
+
+    def _char_at(self, index: str) -> str:
+        try:
+            return self.text.get(index, f"{index}+1c")
+        except tk.TclError:
+            return ''
+
+    def _find_match_forward(self, index: str, open_ch: str, close_ch: str):
+        """Scan forward for the bracket that closes `open_ch`."""
+        depth = 0
+        pos = index
+        end = self.text.index('end-1c')
+        while True:
+            ch = self._char_at(pos)
+            if not ch:
+                return None
+            if ch == open_ch and not self._is_escaped(pos):
+                depth += 1
+            elif ch == close_ch and not self._is_escaped(pos):
+                depth -= 1
+                if depth == 0:
+                    return pos
+            nxt = self.text.index(f"{pos}+1c")
+            if nxt == pos or self.text.compare(nxt, '>', end):
+                return None
+            pos = nxt
+
+    def _find_match_backward(self, index: str, close_ch: str, open_ch: str):
+        """Scan backward for the bracket that opens `close_ch`."""
+        depth = 0
+        pos = index
+        while True:
+            ch = self._char_at(pos)
+            if ch == close_ch and not self._is_escaped(pos):
+                depth += 1
+            elif ch == open_ch and not self._is_escaped(pos):
+                depth -= 1
+                if depth == 0:
+                    return pos
+            if pos == '1.0':
+                return None
+            prev = self.text.index(f"{pos}-1c")
+            if prev == pos:
+                return None
+            pos = prev
+
+    def _match_for(self, index: str):
+        """
+        Return (bracket_index, partner_index) for a bracket under or just
+        before the caret, or None when there is nothing to match.
+        """
+        ch = self._char_at(index)
+        if ch not in self._BRACKET_PAIRS:
+            return None
+        if self._is_escaped(index):
+            return None
+        partner_ch = self._BRACKET_PAIRS[ch]
+        if ch in '{([':
+            partner = self._find_match_forward(index, ch, partner_ch)
+        else:
+            partner = self._find_match_backward(index, ch, partner_ch)
+        if partner is None:
+            return None
+        return index, partner
+
+    def _highlight_pair(self, tag: str, index: str, partner: str) -> None:
+        self.text.tag_remove(tag, '1.0', 'end')
+        self.text.tag_add(tag, index, f"{index}+1c")
+        self.text.tag_add(tag, partner, f"{partner}+1c")
+
+    def _clear_bracket_tags(self) -> None:
+        self.text.tag_remove('matching_bracket', '1.0', 'end')
+        self.text.tag_remove('matching_bracket_hover', '1.0', 'end')
+
+    def _update_caret_bracket(self) -> None:
+        """Highlight the bracket pair adjacent to the caret, if any."""
+        self.text.tag_remove('matching_bracket', '1.0', 'end')
+
+        insert = self.text.index('insert')
+
+        # The caret sits between two characters.  Prefer the bracket the
+        # user just typed or just stepped over, i.e. the character to the
+        # left of the caret, then fall back to the character to the right.
+        candidates = []
+        try:
+            candidates.append(self.text.index(f"{insert}-1c"))
+        except tk.TclError:
+            pass
+        candidates.append(insert)
+
+        for cand in candidates:
+            pair = self._match_for(cand)
+            if pair:
+                self._highlight_pair('matching_bracket', *pair)
+                return
+
+    def _on_bracket_key(self, event=None):
+        self._update_caret_bracket()
+
+    def _on_bracket_click(self, event=None):
+        self._update_caret_bracket()
+
+    def _on_bracket_motion(self, event=None):
+        """Highlight the bracket pair under the mouse pointer."""
+        self.text.tag_remove('matching_bracket_hover', '1.0', 'end')
+        try:
+            index = self.text.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return
+        pair = self._match_for(index)
+        if pair:
+            self._highlight_pair('matching_bracket_hover', *pair)
+
+    def _on_bracket_leave(self, event=None):
+        self.text.tag_remove('matching_bracket_hover', '1.0', 'end')
 
 class LaTeXErrorEditor(ctk.CTkToplevel):
     r"""Interactive editor for fixing LaTeX compilation errors - works with TXT files directly"""
@@ -23762,8 +23967,33 @@ class BeamerSlideEditor(ctk.CTk):
                 # Just show the content as is (no extra placeholder)
                 pass
 
+            content_verbatim_depth = 0
             for i, item in enumerate(content_items):
                 if item and item.strip():
+                    # ============================================================
+                    # VERBATIM REGION SHORT-CIRCUIT
+                    # Lines inside a TikZ body are inserted unchanged, with
+                    # no % prefix and no hidden tag, regardless of what the
+                    # stored hidden-index list says.  This protects slides
+                    # whose indices were produced before the verbatim guard
+                    # existed.
+                    # ============================================================
+                    if content_verbatim_depth > 0:
+                        self.content_editor.insert('end', f"{item}\n")
+                        bm = self._LOADER_ENV_BEGIN_RE.search(item)
+                        em = self._LOADER_ENV_END_RE.search(item)
+                        if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                            content_verbatim_depth += 1
+                        if em and em.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                            content_verbatim_depth = max(0, content_verbatim_depth - 1)
+                        continue
+
+                    bm = self._LOADER_ENV_BEGIN_RE.search(item)
+                    if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                        self.content_editor.insert('end', f"{item}\n")
+                        content_verbatim_depth = 1
+                        continue
+
                     # Check if this line should be hidden
                     is_hidden = i in hidden_content_indices
 
@@ -23782,8 +24012,26 @@ class BeamerSlideEditor(ctk.CTk):
                 self.content_editor.insert('end', "% No content for this slide\n")
 
             # Update notes with proper masking display
+            notes_verbatim_depth = 0
             for i, note in enumerate(slide.get('notes', [])):
                 if note and note.strip():
+                    # Verbatim short-circuit for notes, mirroring content.
+                    if notes_verbatim_depth > 0:
+                        self.notes_editor.insert('end', f"{note}\n")
+                        bm = self._LOADER_ENV_BEGIN_RE.search(note)
+                        em = self._LOADER_ENV_END_RE.search(note)
+                        if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                            notes_verbatim_depth += 1
+                        if em and em.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                            notes_verbatim_depth = max(0, notes_verbatim_depth - 1)
+                        continue
+
+                    bm = self._LOADER_ENV_BEGIN_RE.search(note)
+                    if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                        self.notes_editor.insert('end', f"{note}\n")
+                        notes_verbatim_depth = 1
+                        continue
+
                     is_hidden = i in hidden_note_indices
 
                     if is_hidden:
@@ -25406,7 +25654,7 @@ Created by {self.__author__}
                 messagebox.showinfo("Success", "Slide duplicated successfully!")
             else:
                 messagebox.showwarning("Warning", "No slide to duplicate!")
-#---------------------------------------------------------------------------------------------------
+    #---------------------------------------------------------------------------------------------------
     def create_main_editor(self) -> None:
         """Create main editor area with enhanced media controls and editor options"""
         self.editor_frame = ctk.CTkFrame(self)
@@ -27603,16 +27851,39 @@ Created by {self.__author__}
 
     # In the section where slides are written to the TXT file
     def _generate_slide_content_only(self) -> str:
-        """Generate only the slide content (without preamble) for the TXT file.
+        r"""
+        Generate only the slide content (without preamble) for the TXT file.
 
-        Blank ``\\None`` sentinels are never written: their absence already
-        means "no media" in BSG-TXT.  Title pages are written exactly once.
+        Contract
+        --------
+        * Blank ``\None`` sentinels are never written: their absence already
+          means "no media" in BSG-TXT.
+        * Title pages are written exactly once.
+        * Per-slide frame options (``fragile``, ``allowframebreaks``, ``t``,
+          ``plain``, ``shrink=5``, ...) are re-emitted as
+          ``\frameoptions <opt>`` on the first line of the ``Content`` block.
+        * Verbatim-like and TikZ-family environments are opaque: their
+          bodies are copied line-for-line with no trimming, escaping, or
+          re-joining.  This is what makes the round trip stable for
+          ``verbatim``/``lstlisting``/``minted`` and for TikZ pictures.
         """
+        import re
+
         content_lines = []
         content_lines.append("\\begin{document}\n")
 
+        # Names of environments whose bodies must be copied byte-for-byte.
+        # This set must match _VERBATIM_ENVIRONMENTS in the importer.
+        _VERBATIM_ENVIRONMENTS = frozenset({
+            'verbatim', 'lstlisting', 'minted', 'alltt', 'comment',
+            'Verbatim', 'BVerbatim', 'LVerbatim',
+            'tikzpicture', 'pgfpicture', 'scope',
+            'axis', 'semilogxaxis', 'semilogyaxis',
+            'loglogaxis', 'groupplot',
+        })
+
         for idx, slide in enumerate(self.slides):
-            # Detect title page
+            # Detect title page.
             content = slide.get('content', [])
             is_title_page = any('\\titlepage' in line for line in content) or \
                             any('\\begin{frame}[plain]' in line for line in content)
@@ -27624,7 +27895,7 @@ Created by {self.__author__}
                 content_lines.append("")
                 continue
 
-            # Skip fully masked slides
+            # Skip fully masked slides.
             if slide.get('_fully_masked', False):
                 title = slide.get('title', 'Masked Slide')
                 clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
@@ -27638,44 +27909,77 @@ Created by {self.__author__}
                 content_lines.append("")
                 continue
 
-            # Normal slide
+            # Normal slide.
             title = slide.get('title', 'Untitled')
             clean_title = re.sub(r'^\[DELETED\]\s*', '', title)
             content_lines.append(f"\\title {clean_title}")
 
             content_lines.append("\\begin{Content}")
 
-            # Media — never write the \None sentinel.
+            # ---------- frame options ----------
+            # Emit as the first line of the Content block, BEFORE any media
+            # or content line.  The TXT parser recognises this directive and
+            # re-attaches the options to the frame.
+            frame_options = (slide.get('frame_options') or '').strip()
+            if frame_options:
+                content_lines.append(f"\\frameoptions {frame_options}")
+
+            # ---------- media ----------
             media = slide.get('media', '')
             media_masked = slide.get('_media_masked', False)
             if media_masked:
                 if media and media != "\\None":
                     content_lines.append(f"% {media}")
-                # else: masked empty media — emit nothing at all
             elif media and media != "\\None":
                 content_lines.append(media)
-            # else: no media — emit nothing at all
 
-            # Content items
+            # ---------- content ----------
             hidden_indices = set(slide.get('_hidden_content_indices', []))
+            verbatim_env = None
+
             for i, item in enumerate(slide.get('content', [])):
-                if item and item.strip():
+                if not isinstance(item, str):
+                    item = str(item) if item is not None else ''
+
+                # Inside a verbatim-like region: emit unchanged.
+                if verbatim_env is not None:
+                    content_lines.append(item)
+                    if re.search(
+                            r'\\end\s*\{\s*' + re.escape(verbatim_env) + r'\s*\}',
+                            item):
+                        verbatim_env = None
+                    continue
+
+                stripped = item.strip()
+                if not stripped:
+                    continue
+
+                # Detect entry into a verbatim-like environment.
+                m = re.search(r'\\begin\s*\{\s*([^}]+?)\s*\}', item)
+                if m and m.group(1).strip() in _VERBATIM_ENVIRONMENTS:
+                    verbatim_env = m.group(1).strip()
                     if i in hidden_indices:
                         content_lines.append(f"% {item}")
                     else:
                         content_lines.append(item)
+                    continue
+
+                if i in hidden_indices:
+                    content_lines.append(f"% {item}")
+                else:
+                    content_lines.append(item)
 
             content_lines.append("\\end{Content}")
 
-            # Notes block
+            # ---------- notes ----------
             content_lines.append("\\begin{Notes}")
             hidden_note_indices = set(slide.get('_hidden_note_indices', []))
             for i, note in enumerate(slide.get('notes', [])):
-                if note and note.strip():
+                if note and str(note).strip():
                     if i in hidden_note_indices:
                         content_lines.append(f"% {note}")
                     else:
-                        content_lines.append(note)
+                        content_lines.append(str(note))
             if not slide.get('notes', []):
                 content_lines.append("% No notes for this slide")
             content_lines.append("\\end{Notes}")
@@ -32227,9 +32531,33 @@ Created by {self.__author__}
         content_text = self.content_editor.get('1.0', 'end-1c')
         content_lines = content_text.split('\n')
 
+        # Verbatim-region tracker for the content editor.
+        content_verbatim_depth = 0
+
         for i, line in enumerate(content_lines):
             line = line.rstrip()
             if not line:
+                continue
+
+            # ------------------------------------------------
+            # VERBATIM REGION SHORT-CIRCUIT
+            # Inside a TikZ body the line is saved verbatim:
+            # no masking, no % stripping, no hiding.
+            # ------------------------------------------------
+            if content_verbatim_depth > 0:
+                content_with_hidden.append(line)
+                bm = self._LOADER_ENV_BEGIN_RE.search(line)
+                em = self._LOADER_ENV_END_RE.search(line)
+                if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    content_verbatim_depth += 1
+                if em and em.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    content_verbatim_depth = max(0, content_verbatim_depth - 1)
+                continue
+
+            bm = self._LOADER_ENV_BEGIN_RE.search(line)
+            if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                content_with_hidden.append(line)
+                content_verbatim_depth = 1
                 continue
 
             stripped = line.lstrip()
@@ -32251,9 +32579,27 @@ Created by {self.__author__}
         notes_text = self.notes_editor.get('1.0', 'end-1c')
         notes_lines = notes_text.split('\n')
 
+        notes_verbatim_depth = 0
+
         for i, line in enumerate(notes_lines):
             line = line.rstrip()
             if not line:
+                continue
+
+            if notes_verbatim_depth > 0:
+                notes_with_hidden.append(line)
+                bm = self._LOADER_ENV_BEGIN_RE.search(line)
+                em = self._LOADER_ENV_END_RE.search(line)
+                if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    notes_verbatim_depth += 1
+                if em and em.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    notes_verbatim_depth = max(0, notes_verbatim_depth - 1)
+                continue
+
+            bm = self._LOADER_ENV_BEGIN_RE.search(line)
+            if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                notes_with_hidden.append(line)
+                notes_verbatim_depth = 1
                 continue
 
             stripped = line.lstrip()
@@ -34457,12 +34803,48 @@ Created by {self.__author__}
             if match:
                 existing_cmd_names.add(match.group(1))
 
+        # define.  Only these need a \ifcsname guard.  Every other command
+        # is purely local, so emitting it unguarded is both safer and
+        # simpler: a corrupted guard body cannot swallow the frame.
+        _GUARDED_COMMANDS = frozenset({'split', 'hl', 'tb'})
+
         for cmd_name, cmd_def in layout_commands:
             if cmd_name in existing_cmd_names:
                 continue
-            lines.append(f"\\ifcsname {cmd_name}\\endcsname\\else")
-            lines.append(cmd_def)
-            lines.append("\\fi")
+
+            # Validate the body before emitting it.  A stray unbalanced
+            # brace or a bare # inside a macro body is the usual cause of
+            # "Missing \endcsname" once the body is wrapped in a guard.
+            if cmd_def.count('{') != cmd_def.count('}'):
+                raise ValueError(
+                    f"Refusing to emit unbalanced definition for "
+                    f"\\{cmd_name}: {cmd_def.count('{')} '{{' vs "
+                    f"{cmd_def.count('}')} '}}'"
+                )
+            # A literal # followed by a digit inside the body is a macro
+            # parameter and must be doubled unless it is part of the
+            # intended parameter list.  The layout commands use #1 and #2
+            # legitimately, so we only reject a bare '#' not followed by
+            # a digit.
+            if re.search(r'#(?!\d)', cmd_def):
+                raise ValueError(
+                    f"Refusing to emit definition for \\{cmd_name}: "
+                    f"bare '#' is not a valid macro parameter marker"
+                )
+
+            if cmd_name in _GUARDED_COMMANDS:
+                # Wrap the guarded definition in a group so that an
+                # unbalanced brace inside `cmd_def` -- which would
+                # otherwise let the guard swallow the rest of the frame --
+                # is contained.  The group is closed immediately, before
+                # any user content can follow.
+                lines.append('{')
+                lines.append(f"\\ifcsname {cmd_name}\\endcsname\\else")
+                lines.append(cmd_def)
+                lines.append("\\fi")
+                lines.append('}')
+            else:
+                lines.append(cmd_def)
 
         # ============================================================
         # Progress bar (always include)
@@ -34926,53 +35308,40 @@ Created by {self.__author__}
     @staticmethod
     def convert_beamer_tex_to_simple_text(tex_file_path):
         r"""
-        Convert a Beamer .tex file to the native BSG TEXT format (clean version).
+        Convert a Beamer .tex file to the native BSG TEXT format.
 
         FIXES APPLIED
         -------------
-        1. Math-safe title cleaning:
-           `$\neq$` and `$\rightarrow$` are no longer collapsed into `$$`.
-           Math-mode spans are protected before command stripping and restored
-           afterwards.  The same protection is applied to every title that is
-           subsequently laundered by BeamerSlideGenerator.clean_title(), so the
-           round trip TeX -> TEXT -> TeX is stable.
+        1. Math-safe title cleaning: math-mode spans in titles are protected
+           before command stripping and restored afterwards.
 
-        2. Title-page frame is emitted as a NATIVE BSG slide:
-               \title Title Page
-               \begin{Content}
-               \titlepage
-               \end{Content}
-               \begin{Notes}
-               % No notes for this slide
-               \end{Notes}
-           The previous code skipped the frame entirely and re-added a raw
-           LaTeX frame from the writer, which is not a first-class BSG slide.
+        2. Title-page frame is emitted as a NATIVE BSG slide.
 
-        3. Table row separator is not merged with a following table rule:
-               Stage & Emphasis & Grades\\\midrule
-           becomes
-               Stage & Emphasis & Grades\\
-               \midrule
-           so the native parser and the downstream LaTeX writer both see a
-           well-formed row boundary.
+        3. Table row separator is not merged with a following table rule.
 
-        4. The original TeX preamble is copied byte-for-byte (unchanged
-           behaviour), and \begin{document} is written exactly once.
+        4. The original TeX preamble is copied byte-for-byte, and
+           \begin{document} is written exactly once.
 
-        5. OUTPUT FILENAME SAFETY:
-           The converted TXT file is written as `<tex_stem>_converted.txt`
-           instead of `<tex_stem>.txt`.  This guarantees that a later
-           "Generate PDF" / "Convert to TeX" step cannot silently overwrite
-           the user's original .tex file.
+        5. OUTPUT FILENAME SAFETY: the converted TXT file is written as
+           `<tex_stem>_converted.txt`.
 
         6. LaTeX COMMAND LINE NORMALIZATION (streaming):
            Every physical line written to the TXT file passes through
-           `normalize_latex_line()`, which splits a block-level LaTeX command
-           that is glued to preceding text onto its own line.  The pass is
-           one-line-at-a-time (no whole-file buffering) and never touches
-           escapes (\\%, \\&, \\_, ...), line breaks (\\\\), math delimiters
-           (\\[, \\], \\(, \\)), or accents (\\', \\").  See the classifier
-           table and the transform function immediately above this method.
+           `normalize_latex_line()`, EXCEPT while inside a verbatim
+           environment or a TikZ-family environment.
+
+        7. FRAME OPTION PRESERVATION:
+           Frame options such as `[fragile]`, `[allowframebreaks]`, `[t]`,
+           `[plain]`, `[shrink=5]` are captured and re-emitted on the
+           `\begin{frame}` line.  Without `[fragile]`, a frame that contains
+           a `verbatim` / `lstlisting` / `minted` environment will fail with
+           `Illegal parameter number in definition of \iterate`.
+
+        8. VERBATIM ENVIRONMENT PRESERVATION:
+           `verbatim`, `lstlisting`, `minted`, `alltt`, `comment`,
+           `Verbatim`, `BVerbatim`, `LVerbatim` are treated as opaque.
+           Their bodies are copied byte-for-byte: no trimming, no escaping,
+           no collapsing of line breaks.
         """
         import re
         from pathlib import Path
@@ -34984,7 +35353,7 @@ Created by {self.__author__}
             errors.append({
                 'line': line_num,
                 'message': error_msg,
-                'context': context_line
+                'context': context_line,
             })
             print(f"  ⚠ Line {line_num}: {error_msg}")
 
@@ -34992,29 +35361,19 @@ Created by {self.__author__}
             warnings.append({
                 'line': line_num,
                 'message': warning_msg,
-                'context': context_line
+                'context': context_line,
             })
             print(f"  ℹ Line {line_num}: {warning_msg}")
 
         # ============================================================
-        # MATH-SAFE TITLE CLEANING  (Defect 1)
+        # MATH-SAFE TITLE CLEANING
         # ============================================================
         def clean_latex_title(title):
-            r"""
-            Clean a LaTeX frame title without corrupting math mode.
-
-            The previous implementation did:
-                title = re.sub(r'\\[a-zA-Z]+\s*', '', title)
-            which turned `$\neq$` into `$$` and `$\rightarrow$` into `$$`.
-            Math-mode spans are now protected before stripping and restored
-            after stripping, so `$...$` survives intact.
-            """
             if not title:
                 return "Untitled"
 
             title = str(title)
 
-            # -------- protect math mode --------
             math_placeholders = {}
 
             def _protect_math(match):
@@ -35022,14 +35381,10 @@ Created by {self.__author__}
                 math_placeholders[key] = match.group(0)
                 return key
 
-            # Inline math: $...$
             title = re.sub(r'\$[^$]+\$', _protect_math, title)
-            # Display math: \[...\]
             title = re.sub(r'\\\[.*?\\\]', _protect_math, title, flags=re.DOTALL)
-            # Quote-bracket math: '[...]' and "[...]"
             title = re.sub(r'[\'"]\[.*?[\'"]\]', _protect_math, title, flags=re.DOTALL)
 
-            # -------- strip only known formatting commands --------
             title = re.sub(r'\\textbf\{([^}]*)\}', r'\1', title)
             title = re.sub(r'\\textit\{([^}]*)\}', r'\1', title)
             title = re.sub(r'\\emph\{([^}]*)\}', r'\1', title)
@@ -35044,13 +35399,9 @@ Created by {self.__author__}
             title = re.sub(r'\\tiny\s*', '', title)
             title = re.sub(r'\\footnotesize\s*', '', title)
 
-            # -------- restore math mode --------
             for key, value in math_placeholders.items():
                 title = title.replace(key, value)
 
-            # -------- escape special characters OUTSIDE math mode --------
-            # We do a second pass that walks the string and only escapes when
-            # we are not inside a $...$ span.
             out = []
             in_math = False
             i = 0
@@ -35075,25 +35426,15 @@ Created by {self.__author__}
             return title or "Untitled"
 
         # ============================================================
-        # TABLE RULE SPLITTING  (Defect 3)
+        # TABLE RULE SPLITTING
         # ============================================================
         def split_table_rules(line):
-            r"""
-            Split `...\\\midrule` into `...\\` + newline + `\midrule`.
-
-            The previous converter preserved `Grades\\\midrule` as a single
-            token, which the native parser then mis-parsed.  After this
-            transformation, each table rule is on its own line.
-            """
-            # \\\midrule, \\\toprule, \\\bottomrule, \\\hline, \\\cmidrule
             line = re.sub(
                 r'\\\\(?=\\(?:mid|top|bottom|h|cmid)rule)',
                 '\\\\\\\\\n',
                 line
             )
             return line
-
-
 
         # ============================================================
         # READ FILE
@@ -35120,11 +35461,8 @@ Created by {self.__author__}
 
             tex_path = Path(tex_file_path)
 
-            # ------------------------------------------------------------------
-            # SAFETY: never write the converted file next to the source TeX file
-            # using the same stem.  Otherwise a later "Convert to TeX" step
-            # would overwrite the user's original .tex file.
-            # ------------------------------------------------------------------
+            # OUTPUT FILENAME SAFETY: never write to <stem>.txt if that would
+            # be the same name as the source .tex file with a different suffix.
             output_path = tex_path.parent / f"{tex_path.stem}_converted.txt"
 
             # ============================================================
@@ -35133,20 +35471,14 @@ Created by {self.__author__}
             doc_match = re.search(r'(.*?)\\begin{document}', tex_content, re.DOTALL)
 
             if doc_match:
-                # The original TeX preamble is copied byte-for-byte.  No
-                # reconstruction, merging or normalisation is performed.
                 original_preamble = doc_match.group(1)
                 preamble = original_preamble
                 document_body = tex_content[doc_match.end():]
                 has_begin_document = True
                 print(f"✓ Extracted original preamble ({len(original_preamble)} chars)")
 
-                # Strip document wrappers from the body.
                 document_body = re.sub(r'\\begin\{document\}\s*', '', document_body)
                 document_body = re.sub(r'\\end\{document\}\s*', '', document_body)
-
-                # Remove \maketitle at top level; title pages are handled as
-                # first-class slides below.
                 document_body = re.sub(r'\\maketitle\s*', '', document_body)
             else:
                 print("⚠ No preamble found in TeX file")
@@ -35164,22 +35496,88 @@ Created by {self.__author__}
                 add_warning(1, "No preamble found, using default", "")
 
             # ============================================================
+            # ENVIRONMENT SETS
+            # ============================================================
+            # Environments whose bodies must be copied byte-for-byte.
+            #
+            # NOTE: `verbatim` and friends require the enclosing frame to be
+            # declared `[fragile]`.  The frame-option capture below preserves
+            # `[fragile]` automatically, so the two mechanisms are always in
+            # sync.
+            _VERBATIM_ENVIRONMENTS = frozenset({
+                # Verbatim-like environments.
+                'verbatim', 'lstlisting', 'minted', 'alltt', 'comment',
+                'Verbatim', 'BVerbatim', 'LVerbatim',
+                # TikZ-family environments: bodies are opaque because
+                # ``\\`` and ``&`` have different meanings inside them.
+                'tikzpicture', 'pgfpicture', 'scope',
+                'axis', 'semilogyaxis', 'semilogxaxis',
+                'loglogaxis', 'groupplot',
+            })
+
+            _TIKZ_ENVIRONMENTS = frozenset({
+                'tikzpicture', 'pgfpicture', 'scope',
+                'axis', 'semilogyaxis', 'semilogxaxis',
+                'loglogaxis', 'groupplot',
+            })
+
+            _FRAME_VERBATIM_ENVS = frozenset({
+                'tikzpicture', 'pgfpicture', 'scope',
+                'axis', 'semilogyaxis', 'semilogxaxis',
+                'loglogaxis', 'groupplot',
+            })
+
+            _FRAME_VERBATIM_WRAPPERS = frozenset({
+                'tikzfig', 'tikzfigbox', 'tikzpic',
+            })
+
+            _TIKZ_WRAPPER_CMDS = tuple(sorted(_FRAME_VERBATIM_WRAPPERS))
+            _ENV_BEGIN_RE = re.compile(r'\\begin\s*\{([^}]+)\}')
+            _ENV_END_RE = re.compile(r'\\end\s*\{([^}]+)\}')
+
+            # Environments whose bodies are copied verbatim by the walker.
+            _WALKER_VERBATIM_ENVS = _TIKZ_ENVIRONMENTS
+
+            # ============================================================
             # BRACE-MATCHING HELPERS
             # ============================================================
             def _find_matching_brace(text, open_idx):
-                """Return index of matching '}' for '{' at open_idx, or -1."""
                 if open_idx >= len(text) or text[open_idx] != '{':
                     return -1
                 depth = 0
                 escaped = False
+                verbatim = False
+                verbatim_depth = 0
+
                 for j in range(open_idx, len(text)):
+                    if text.startswith('\\begin{', j):
+                        end = text.find('}', j + 7)
+                        if end > 0:
+                            name = text[j + 7:end].strip()
+                            if name in _WALKER_VERBATIM_ENVS:
+                                verbatim = True
+                                verbatim_depth += 1
+                    elif text.startswith('\\end{', j):
+                        end = text.find('}', j + 5)
+                        if end > 0:
+                            name = text[j + 5:end].strip()
+                            if name in _WALKER_VERBATIM_ENVS:
+                                verbatim_depth = max(0, verbatim_depth - 1)
+                                if verbatim_depth == 0:
+                                    verbatim = False
+
                     ch = text[j]
+
                     if escaped:
                         escaped = False
                         continue
+
                     if ch == '\\':
+                        if verbatim and j + 1 < len(text) and text[j + 1] == '\\':
+                            continue
                         escaped = True
                         continue
+
                     if ch == '{':
                         depth += 1
                     elif ch == '}':
@@ -35189,7 +35587,7 @@ Created by {self.__author__}
                 return -1
 
             # ============================================================
-            # TRAILING \note{...} COLLECTION  (post-\end{frame} notes)
+            # FRAME EXTRACTION  (captures frame options)
             # ============================================================
             _NOTE_OPEN_RE = re.compile(
                 r'\\note\s*(?:<[^>]*>)?\s*(?:\[[^\]]*\])?\s*\{'
@@ -35227,9 +35625,6 @@ Created by {self.__author__}
                     return [], start_pos
                 return collected, cursor
 
-            # ============================================================
-            # FRAME EXTRACTION
-            # ============================================================
             def extract_frames_from_document(body):
                 frames = []
                 pos = 0
@@ -35240,10 +35635,12 @@ Created by {self.__author__}
                     start = pos + m.start()
                     i = pos + m.end()
 
-                    # Optional frame options [..]
+                    # ---- optional frame options [..] ----
+                    frame_options = ''
                     while i < len(body) and body[i].isspace():
                         i += 1
                     if i < len(body) and body[i] == '[':
+                        opt_start = i + 1
                         depth = 1
                         i += 1
                         while i < len(body) and depth:
@@ -35255,8 +35652,9 @@ Created by {self.__author__}
                             elif body[i] == ']':
                                 depth -= 1
                             i += 1
+                        frame_options = body[opt_start:i - 1].strip()
 
-                    # Optional short frame title {..}
+                    # ---- optional short frame title {..} ----
                     frame_title = ''
                     while i < len(body) and body[i].isspace():
                         i += 1
@@ -35275,7 +35673,6 @@ Created by {self.__author__}
                     body_end = body_start + end_match.start()
                     end_pos = body_start + end_match.end()
 
-                    # Consume \note{...} that sit after \end{frame}.
                     trailing_notes, after_notes_pos = _collect_trailing_notes(
                         body, end_pos
                     )
@@ -35285,6 +35682,7 @@ Created by {self.__author__}
                         'content': body[body_start:body_end],
                         'raw': body[start:end_pos],
                         'trailing_notes': trailing_notes,
+                        'options': frame_options,
                     })
 
                     pos = max(after_notes_pos, end_pos)
@@ -35367,8 +35765,9 @@ Created by {self.__author__}
                 slide_count += 1
                 title = frame['title'].strip()
                 frame_content = frame['content']
+                frame_options = frame.get('options', '').strip()
 
-                # ---------- TITLE PAGE  (Defect 2) ----------
+                # ---------- TITLE PAGE ----------
                 if '\\titlepage' in frame_content or '\\maketitle' in frame_content:
                     print(f"  ✓ Converting title-page frame {slide_count} to native BSG slide")
                     slides.append({
@@ -35377,8 +35776,118 @@ Created by {self.__author__}
                         'notes': [],
                         'media': '',
                         'is_title_page': True,
+                        'frame_options': frame_options,
                     })
                     continue
+
+                # ---------- EXTRACT VERBATIM BLOCKS ----------
+                _verbatim_blocks = []
+
+                def _match_brace(text, open_idx):
+                    depth = 0
+                    i = open_idx
+                    n = len(text)
+                    while i < n:
+                        ch = text[i]
+                        if ch == '\\' and i + 1 < n:
+                            nxt = text[i + 1]
+                            if nxt == '\\':
+                                i += 2
+                                continue
+                            elif nxt in '{}':
+                                i += 2
+                                continue
+                            elif nxt.isalpha() or nxt == '@':
+                                i += 1
+                                while i < n and (text[i].isalpha() or text[i] == '@'):
+                                    i += 1
+                                continue
+                            else:
+                                i += 2
+                                continue
+                        if ch == '{':
+                            depth += 1
+                        elif ch == '}':
+                            depth -= 1
+                            if depth == 0:
+                                return i
+                        i += 1
+                    return -1
+
+                def _stash_verbatim(body):
+                    """
+                    Replace each stashed block with a placeholder.
+
+                    The blocks are:
+                      - any environment whose name is in _FRAME_VERBATIM_ENVS
+                        (TikZ-family only; verbatim-like environments are
+                        handled separately below).
+                      - any wrapper command in _TIKZ_WRAPPER_CMDS.
+                    """
+                    out = []
+                    i = 0
+                    n = len(body)
+                    while i < n:
+                        env_match = _ENV_BEGIN_RE.search(body, i)
+                        wrapper_match = None
+                        for cmd in _TIKZ_WRAPPER_CMDS:
+                            wm = re.search(r'\\' + re.escape(cmd) + r'\s*\{', body[i:])
+                            if wm:
+                                abs_start = i + wm.start()
+                                if wrapper_match is None or abs_start < wrapper_match[0]:
+                                    brace_open = i + wm.end() - 1
+                                    wrapper_match = (abs_start, brace_open)
+
+                        env_start = env_match.start() if env_match else None
+                        if env_match and env_match.group(1).strip() not in _FRAME_VERBATIM_ENVS:
+                            env_start = None
+
+                        if env_start is None and wrapper_match is None:
+                            out.append(body[i:])
+                            break
+
+                        if wrapper_match is not None and (env_start is None or wrapper_match[0] < env_start):
+                            start = wrapper_match[0]
+                            brace_open = wrapper_match[1]
+                            brace_close = _match_brace(body, brace_open)
+                            if brace_close < 0:
+                                out.append(body[i:brace_open + 1])
+                                i = brace_open + 1
+                                continue
+                            block_end = brace_close + 1
+                        else:
+                            start = env_start
+                            env_name = env_match.group(1).strip()
+                            scan = env_match.end()
+                            depth = 1
+                            block_end = n
+                            while scan < n:
+                                nb = _ENV_BEGIN_RE.search(body, scan)
+                                ne = _ENV_END_RE.search(body, scan)
+                                if ne and (not nb or ne.start() < nb.start()):
+                                    if ne.group(1).strip() == env_name:
+                                        depth -= 1
+                                        if depth == 0:
+                                            block_end = ne.end()
+                                            break
+                                    scan = ne.end()
+                                elif nb:
+                                    if nb.group(1).strip() == env_name:
+                                        depth += 1
+                                    scan = nb.end()
+                                else:
+                                    break
+
+                        out.append(body[i:start])
+                        block = body[start:block_end]
+                        placeholder = f"@@@BSG_VERBATIM_{len(_verbatim_blocks)}@@@"
+                        _verbatim_blocks.append(block)
+                        out.append(placeholder)
+                        i = block_end
+
+                    return ''.join(out)
+
+                frame_content = _stash_verbatim(frame_content)
 
                 # ---------- TITLE ----------
                 frame_content_no_title, frame_titles = extract_balanced_commands(
@@ -35402,8 +35911,6 @@ Created by {self.__author__}
                     if not note_body:
                         continue
 
-                    # Reverse the synthetic outer itemize added by the
-                    # downstream slide writer when notes contain bullet lists.
                     note_lines = note_body.splitlines()
                     if (len(note_lines) >= 2 and
                             note_lines[0].strip() == '\\begin{itemize}' and
@@ -35432,15 +35939,63 @@ Created by {self.__author__}
                 # ---------- MEDIA ----------
                 frame_content, media = extract_media_directive(frame_content)
 
-                # ---------- CONTENT LINES  (Defect 3) ----------
+                # ---------- CONTENT LINES ----------
+                # This loop distinguishes three regions:
+                #   (a) TikZ-family environments: opaque, emit unchanged.
+                #   (b) Verbatim-like environments: opaque, emit unchanged,
+                #       AND the enclosing frame must be [fragile] (already
+                #       captured in frame_options).
+                #   (c) Everything else: apply the normal passes.
                 content_lines = []
+                in_tikz = False
+                tikz_depth = 0
+                in_verbatim = False
+                verbatim_env_name = None
+
                 for raw_line in frame_content.splitlines():
                     line = raw_line.strip()
                     if not line or line == '\\f':
                         continue
                     if line == r'\None':
                         continue
-                    # Split \\\midrule etc. onto separate lines.
+
+                    begin_match = _ENV_BEGIN_RE.search(line)
+                    end_match = _ENV_END_RE.search(line)
+
+                    # ---- (b) verbatim-like region: emit unchanged ----
+                    if in_verbatim:
+                        content_lines.append(line)
+                        if end_match and end_match.group(1).strip() == verbatim_env_name:
+                            in_verbatim = False
+                            verbatim_env_name = None
+                        continue
+
+                    if (begin_match and
+                            begin_match.group(1).strip() in _VERBATIM_ENVIRONMENTS and
+                            begin_match.group(1).strip() not in _TIKZ_ENVIRONMENTS):
+                        content_lines.append(line)
+                        in_verbatim = True
+                        verbatim_env_name = begin_match.group(1).strip()
+                        continue
+
+                    # ---- (a) TikZ-family region: emit unchanged ----
+                    if in_tikz:
+                        content_lines.append(line)
+                        if begin_match and begin_match.group(1).strip() in _TIKZ_ENVIRONMENTS:
+                            tikz_depth += 1
+                        if end_match and end_match.group(1).strip() in _TIKZ_ENVIRONMENTS:
+                            tikz_depth = max(0, tikz_depth - 1)
+                            if tikz_depth == 0:
+                                in_tikz = False
+                        continue
+
+                    if begin_match and begin_match.group(1).strip() in _TIKZ_ENVIRONMENTS:
+                        content_lines.append(line)
+                        in_tikz = True
+                        tikz_depth = 1
+                        continue
+
+                    # ---- (c) normal region: apply the normal passes ----
                     line = split_table_rules(line)
                     line = BeamerSlideEditor.fix_special_characters(line)
                     for sub in line.split('\n'):
@@ -35451,6 +36006,26 @@ Created by {self.__author__}
                 if not content_lines:
                     content_lines = ['% No content for this slide']
 
+                # ---------- RESTORE VERBATIM BLOCKS ----------
+                restored_lines = []
+                for line in content_lines:
+                    restored = False
+                    for idx, block in enumerate(_verbatim_blocks):
+                        placeholder = f"@@@BSG_VERBATIM_{idx}@@@"
+                        if placeholder in line:
+                            before, _, after = line.partition(placeholder)
+                            if before.strip():
+                                restored_lines.append(before)
+                            block_lines = block.splitlines()
+                            restored_lines.extend(block_lines)
+                            if after.strip():
+                                restored_lines.append(after)
+                            restored = True
+                            break
+                    if not restored:
+                        restored_lines.append(line)
+                content_lines = restored_lines
+
                 # ---------- TITLE (math-safe) ----------
                 title_out = clean_latex_title(title) if title else f'Slide {len(slides) + 1}'
 
@@ -35459,6 +36034,7 @@ Created by {self.__author__}
                     'content': content_lines,
                     'notes': notes,
                     'media': media,
+                    'frame_options': frame_options,
                 })
 
             # ============================================================
@@ -35477,40 +36053,72 @@ Created by {self.__author__}
             slides = deduped_slides
 
             # ============================================================
-            # WRITE OUTPUT  (native BSG TEXT)
+            # WRITE OUTPUT
             # ============================================================
-            # === NEW: single normalized writer. Every physical line the
-            # === converter emits passes through normalize_latex_line().
             output_preamble = original_preamble if has_begin_document else preamble
 
-            def emit(fh, line):
-                """Write one physical line, normalized, and always newline-terminated."""
-                if not line.endswith('\n'):
-                    line = line + '\n'
-                fh.write(normalize_latex_line(line))
+            class _TikzAwareWriter:
+                """
+                Line writer that never rewrites content inside a verbatim-like
+                or TikZ-family environment.
+
+                Outside those environments, each physical line is passed
+                through normalize_latex_line().  Inside, it is written
+                unchanged.
+                """
+
+                def __init__(self, handle):
+                    self._fh = handle
+                    self._depth = 0
+
+                def _environment_for(self, line):
+                    m = re.search(r'\\(begin|end)\s*\{([^}]+)\}', line)
+                    if not m:
+                        return None, None
+                    return m.group(1), m.group(2).strip()
+
+                def write_line(self, line):
+                    if not line.endswith('\n'):
+                        line = line + '\n'
+
+                    kind, name = self._environment_for(line)
+
+                    if self._depth > 0:
+                        self._fh.write(line)
+                        if kind == 'begin' and name in _VERBATIM_ENVIRONMENTS:
+                            self._depth += 1
+                        elif kind == 'end' and name in _VERBATIM_ENVIRONMENTS:
+                            self._depth = max(0, self._depth - 1)
+                        return
+
+                    if kind == 'begin' and name in _VERBATIM_ENVIRONMENTS:
+                        self._fh.write(line)
+                        self._depth = 1
+                        return
+
+                    self._fh.write(normalize_latex_line(line))
 
             with open(output_path, 'w', encoding='utf-8') as f:
-                # Preamble is copied VERBATIM.  Do NOT normalize it — it is
-                # the user's own TeX and must remain byte-identical for the
-                # integrity check below to pass.
                 f.write(output_preamble)
                 f.write("\n\n")
 
-                emit(f, "\\begin{document}")
-                emit(f, "")
+                emit = _TikzAwareWriter(f).write_line
+
+                emit("\\begin{document}")
+                emit("")
 
                 for slide in slides:
                     # -------- title page --------
                     if slide.get('is_title_page', False):
-                        emit(f, "\\title Title Page")
-                        emit(f, "\\begin{Content}")
-                        emit(f, "\\titlepage")
-                        emit(f, "\\end{Content}")
-                        emit(f, "")
-                        emit(f, "\\begin{Notes}")
-                        emit(f, "% No notes for this slide")
-                        emit(f, "\\end{Notes}")
-                        emit(f, "")
+                        emit("\\title Title Page")
+                        emit("\\begin{Content}")
+                        emit("\\titlepage")
+                        emit("\\end{Content}")
+                        emit("")
+                        emit("\\begin{Notes}")
+                        emit("% No notes for this slide")
+                        emit("\\end{Notes}")
+                        emit("")
                         continue
 
                     # -------- normal slide --------
@@ -35519,33 +36127,36 @@ Created by {self.__author__}
                         raw_media = ''
                     slide['media'] = raw_media
 
-                    emit(f, f"\\title {slide['title']}")
-                    emit(f, "\\begin{Content}")
+                    emit(f"\\title {slide['title']}")
+                    emit("\\begin{Content}")
+
+                    # ---------- frame options ----------
+                    frame_options = (slide.get('frame_options') or '').strip()
+                    if frame_options:
+                        emit(f"\\frameoptions {frame_options}")
 
                     if slide['media']:
-                        emit(f, slide['media'])
-                    # Absence of a media line is the correct encoding for
-                    # "no media".  Never write the \None sentinel.
+                        emit(slide['media'])
 
                     for line in slide['content']:
                         if isinstance(line, str) and line.strip() == r'\None':
                             continue
-                        emit(f, line)
-                    emit(f, "\\end{Content}")
-                    emit(f, "")
+                        emit(line)
+                    emit("\\end{Content}")
+                    emit("")
 
                     if slide['notes']:
-                        emit(f, "\\begin{Notes}")
+                        emit("\\begin{Notes}")
                         for note in slide['notes']:
-                            emit(f, note)
-                        emit(f, "\\end{Notes}")
+                            emit(note)
+                        emit("\\end{Notes}")
                     else:
-                        emit(f, "\\begin{Notes}")
-                        emit(f, "% No notes for this slide")
-                        emit(f, "\\end{Notes}")
-                    emit(f, "")
+                        emit("\\begin{Notes}")
+                        emit("% No notes for this slide")
+                        emit("\\end{Notes}")
+                    emit("")
 
-                emit(f, "\\end{document}")
+                emit("\\end{document}")
 
             # ============================================================
             # PREAMBLE INTEGRITY CHECK
@@ -36305,8 +36916,30 @@ Created by {self.__author__}
         return result
 
     #----------------update ends -------------------------
+    # Environments whose bodies are copied verbatim by the TXT loader.
+    # Kept identical to the sets used by the TeX importer and by
+    # normalize_latex_line() so the three passes agree on what is opaque.
+    _LOADER_VERBATIM_ENVS = frozenset({
+        'tikzpicture',
+        'pgfpicture',
+        'scope',
+        'axis',
+        'semilogyaxis',
+        'semilogxaxis',
+        'loglogaxis',
+        'groupplot',
+    })
+    _LOADER_ENV_BEGIN_RE = re.compile(r'\\begin\s*\{([^}]+)\}')
+    _LOADER_ENV_END_RE = re.compile(r'\\end\s*\{([^}]+)\}')
+
     def _parse_old_format_enhanced(self, content: str) -> list:
-        """Enhanced parsing of old format with proper title extraction and title page handling"""
+        """Enhanced parsing of old format with proper title extraction and title page handling.
+
+        Lines inside a TikZ (or pgfplots / scope) environment are appended
+        to the slide unchanged.  They are never examined for \\title,
+        \\begin{Content}, \\begin{Notes}, \\titlepage, or malformed-brace
+        patterns, and they never pass through fix_special_characters().
+        """
         import re
 
         slides_raw = []
@@ -36320,8 +36953,46 @@ Created by {self.__author__}
         slide_has_content = False
         is_title_page = False
 
+        # Verbatim-region tracker.  While this is non-zero the parser
+        # short-circuits every other rule below.
+        verbatim_depth = 0
+
         for i, line in enumerate(lines):
             stripped = line.strip()
+
+            # ============================================================
+            # VERBATIM REGION SHORT-CIRCUIT
+            # ------------------------------------------------------------
+            # Inside a TikZ body the entire line is opaque.  Append it
+            # as-is and only track nested begin/end markers.
+            # ============================================================
+            if verbatim_depth > 0:
+                current_slide_lines.append(line)
+                if in_content:
+                    # A non-empty, non-comment line inside a verbatim
+                    # region still counts as slide content.
+                    if stripped and not stripped.startswith('%'):
+                        slide_has_content = True
+
+                bm = self._LOADER_ENV_BEGIN_RE.search(line)
+                em = self._LOADER_ENV_END_RE.search(line)
+                if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    verbatim_depth += 1
+                if em and em.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    verbatim_depth = max(0, verbatim_depth - 1)
+                continue
+
+            # ============================================================
+            # Detect entry into a verbatim region.
+            # The opening line itself is also copied verbatim.
+            # ============================================================
+            bm = self._LOADER_ENV_BEGIN_RE.search(line)
+            if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                current_slide_lines.append(line)
+                verbatim_depth = 1
+                if in_content and stripped:
+                    slide_has_content = True
+                continue
 
             # ============================================================
             # Skip malformed lines
@@ -36508,7 +37179,13 @@ Created by {self.__author__}
         return title.strip()
 
     def _process_old_format_slide_enhanced(self, slide_data: dict, slide_idx: int) -> dict:
-        """Enhanced processing of old format slides with proper content extraction"""
+        """Enhanced processing of old format slides with proper content extraction.
+
+        Lines inside a TikZ (or pgfplots / scope) environment are copied
+        verbatim.  They are never treated as media, never checked for a
+        leading %, never passed through fix_special_characters(), and
+        never scanned for \\None.
+        """
         import re
 
         # Check if this is a title page
@@ -36539,8 +37216,47 @@ Created by {self.__author__}
         content_line_index = 0
         found_media = False
 
+        # Verbatim-region tracker.  While non-zero, every line below is
+        # appended to whichever buffer is currently active, unchanged.
+        verbatim_depth = 0
+
         for line in slide_lines:
             stripped = line.strip()
+
+            # ============================================================
+            # VERBATIM REGION SHORT-CIRCUIT
+            # ============================================================
+            if verbatim_depth > 0:
+                if in_content:
+                    content_lines.append(line.rstrip())
+                    content_line_index += 1
+                elif in_notes:
+                    notes_lines.append(line.rstrip())
+
+                bm = self._LOADER_ENV_BEGIN_RE.search(line)
+                em = self._LOADER_ENV_END_RE.search(line)
+                if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    verbatim_depth += 1
+                if em and em.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                    verbatim_depth = max(0, verbatim_depth - 1)
+                continue
+
+            # ============================================================
+            # Detect entry into a verbatim region.
+            # The opening line is itself copied verbatim.
+            # ============================================================
+            bm = self._LOADER_ENV_BEGIN_RE.search(line)
+            if bm and bm.group(1).strip() in self._LOADER_VERBATIM_ENVS:
+                if in_content:
+                    # The first Content line is normally the media slot.
+                    # A TikZ opening line is never media; it is content.
+                    found_media = True
+                    content_lines.append(line.rstrip())
+                    content_line_index += 1
+                elif in_notes:
+                    notes_lines.append(line.rstrip())
+                verbatim_depth = 1
+                continue
 
             # Skip the title line itself
             if re.search(r'^%?\s*\\title\s+', line):
@@ -37753,27 +38469,65 @@ Created by {self.__author__}
             # 1. Value sanitisation
             # ============================================================
             def _san(value) -> str:
+                r"""
+                Sanitize a metadata value for insertion into a LaTeX
+                command argument.
+
+                Rules
+                -----
+                * Never rewrite a backslash.  The user's ``\&`` must
+                  remain ``\&``; rewriting it to ``\textbackslash{}``
+                  produces a bare ``&`` when the string is reparsed.
+                * Escape only *bare* special characters (``& % # _ $ ~ ^``).
+                  The negative lookbehind ``(?<!\\)`` leaves an
+                  already-escaped character untouched, so the function
+                  is idempotent.
+                * Strip LaTeX text-formatting commands that are not
+                  meaningful in a plain metadata field, then clean up
+                  extra whitespace.
+
+                The value returned is safe to place inside
+                ``\title{...}``, ``\author{...}``, ``\institute{...}``,
+                and ``\date{...}``.
+                """
                 if value is None:
                     return ''
+
                 text = str(value)
-                text = re.sub(r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text)
+
+                # ------------------------------------------------------------
+                # Unwrap harmless formatting commands that do not affect
+                # the plain-text meaning of the metadata field.  Leave the
+                # contents; drop only the wrapper.
+                # ------------------------------------------------------------
+                text = re.sub(
+                    r'\\textcolor\{[^}]*\}\{([^}]*)\}', r'\1', text
+                )
                 text = re.sub(
                     r'\\(?:textbf|textit|emph|textrm|textsf|texttt|textsc)'
-                    r'\{([^}]*)\}', r'\1', text)
+                    r'\{([^}]*)\}', r'\1', text
+                )
                 text = re.sub(r'\\[A-Za-z]+\{([^}]*)\}', r'\1', text)
                 text = re.sub(r'\\[A-Za-z]+', '', text)
                 text = re.sub(r'\s+', ' ', text).strip()
 
-                text = text.replace('{', r'\{')
-                text = text.replace('}', r'\}')
-                text = text.replace('#', r'\#')
-                text = text.replace('%', r'\%')
-                text = text.replace('&', r'\&')
-                text = text.replace('$', r'\$')
-                text = text.replace('_', r'\_')
-                text = text.replace('^', r'\textasciicircum{}')
-                text = text.replace('~', r'\textasciitilde{}')
-                text = text.replace('\\', r'\textbackslash{}')
+                # ------------------------------------------------------------
+                # Escape only BARE special characters.  The lookbehind
+                # (?<!\\) leaves ``\&``, ``\%``, ``\#``, ``\_``, ``\$``
+                # untouched.
+                #
+                # NOTE: braces are handled by the caller, not here.  The
+                # PS scalar slots wrap their values in braces themselves,
+                # so escaping braces inside _san would double-escape them.
+                # ------------------------------------------------------------
+                text = re.sub(r'(?<!\\)&',  r'\\&',                 text)
+                text = re.sub(r'(?<!\\)%',  r'\\%',                 text)
+                text = re.sub(r'(?<!\\)#',  r'\\#',                 text)
+                text = re.sub(r'(?<!\\)_',  r'\\_',                 text)
+                text = re.sub(r'(?<!\\)\$', r'\\$',                 text)
+                text = re.sub(r'(?<!\\)\^', r'\\textasciicircum{}',  text)
+                text = re.sub(r'(?<!\\)~',  r'\\textasciitilde{}',   text)
+
                 return text
 
             def _san_path(value) -> str:
@@ -42540,11 +43294,19 @@ Created by {self.__author__}
                 result.append(line)
                 continue
 
-            # Clean up any placeholder artifacts
+            # Clean up any placeholder artifacts.  A placeholder that
+            # survives to this point means a verbatim block was never
+            # restored; keep it opaque rather than let its hash-like
+            # text end up in the .tex output.
             if isinstance(line, str):
                 line = re.sub(r'@@@[^@]+@@@', '', line)
                 line = re.sub(r'PROTECTED_\d+', '', line)
                 line = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', line)
+                line = re.sub(r'@@@BSG_VERBATIM_\d+@@@', '', line)
+                # Reject any line that still looks like a leaked Python
+                # tuple/list from an upstream corruption.
+                if re.search(r"^\s*\(\s*'", line) or re.search(r"',\s*\[\]\s*\)\s*$", line):
+                    continue
 
             # TikZ environment - preserve completely
             if '\\begin{tikzpicture}' in stripped:
@@ -42974,7 +43736,7 @@ Created by {self.__author__}
 
 
     @staticmethod
-    def fix_special_characters(text):
+    def fix_special_characters(text, in_verbatim=False):
         r"""
         Fix special character issues in LaTeX content.
 
@@ -42985,8 +43747,18 @@ Created by {self.__author__}
         - \\_ -> \_ (escaped underscore)
         - \\$ -> \$ (escaped dollar)
         - But preserves \\ for line breaks when NOT followed by special characters
+
+        When ``in_verbatim`` is True the text is returned unchanged.  The
+        TikZ family of environments treats ``\\`` as a row separator and
+        ``&`` as a column separator, so every rewrite above would corrupt
+        a diagram.  Callers that stream a frame body must set this flag
+        on entry to a verbatim environment and clear it on exit.
         """
         import re
+
+        # Verbatim regions (TikZ and friends) are copied byte-for-byte.
+        if in_verbatim:
+            return text
 
         # ============================================================
         # CRITICAL FIX: \\& -> \& (escaped ampersand)
@@ -45641,11 +46413,16 @@ def compile_with_notes_mode(input_file: str, mode: str, keep_temp: bool = False)
         temp_tex = os.path.join(temp_dir, f"{base_name}_{mode}.tex")
         temp_pdf = os.path.join(temp_dir, f"{base_name}_{mode}.pdf")
 
-        # Read and normalize the exact source before creating the temp build.
-        # FIX11 is intentionally the final gate: the compiler never receives
-        # an unvalidated intermediate file.
-        from BeamerCompileGuard import normalize_file
-        normalize_file(input_file, None)
+        # Read the source verbatim.  BeamerCompileGuard is a development-only
+        # helper that is not shipped in the pip wheel; it must not be a hard
+        # dependency of the notes-compile path.  When it happens to be
+        # importable (running from a source checkout), it is used exactly as
+        # before; otherwise the file is compiled exactly as written.
+        try:
+            from BeamerCompileGuard import normalize_file
+            normalize_file(input_file, None)
+        except ImportError:
+            pass
         with open(input_file, 'r', encoding='utf-8') as f:
             content = f.read()
 
@@ -46564,6 +47341,7 @@ def check_bsg_file():
             shutil.copy2(bsg_file, 'BeamerSlideGenerator.py')
         except Exception as e:
             print(f"Warning: Could not copy BeamerSlideGenerator.py to current directory: {e}")
+
 
 
 #-------------------------------------INSTALLATION----------------------------
